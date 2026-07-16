@@ -1,0 +1,19 @@
+[package]
+name = "inla_math"
+version = "0.1.0"
+edition = "2024"
+description = "Sparse linear algebra, LDLT, optimization, and design-matrix helpers (gmrflib-like)"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+sprs = "0.11"
+rayon = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "ar1_ldlt"
+harness = false

@@ -43,14 +43,85 @@ for (i in 2:n) {
 y <- x + rnorm(n, sd = 0.2)
 df <- data.frame(y = y, idx = 1:n)
 
-res_ar1 <- rinla_core_inla(y ~ f(idx, model = "ar1", obs_precision = 25.0), data = df)
+res_ar1 <- rinla_core_inla(y ~ -1 + f(idx, model = "ar1", obs_precision = 25.0), data = df)
 cat("AR1 Hyperparameter Mode (log_tau, logit_rho):", paste(round(res_ar1$mode, 4), collapse = ", "), "\n")
 cat("AR1 Marginal Log-Likelihood:", round(res_ar1$marginal_log_lik, 4), "\n")
 
 cat("\n--- Testing Formula Parser & Inference (FGN) ---\n")
-res_fgn <- rinla_core_inla(y ~ f(idx, model = "fgn", obs_precision = 25.0), data = df)
+res_fgn <- rinla_core_inla(y ~ -1 + f(idx, model = "fgn", obs_precision = 25.0), data = df)
 cat("FGN Hyperparameter Mode (log_tau, logit_hurst):", paste(round(res_fgn$mode, 4), collapse = ", "), "\n")
 cat("FGN Marginal Log-Likelihood:", round(res_fgn$marginal_log_lik, 4), "\n")
+
+cat("\n--- Classic-style FGN formula (order=4 AR mixture) ---\n")
+set.seed(7)
+n_c <- 40
+# Toy FGN-like series (exact sim not required for API smoke)
+yc <- scale(as.numeric(arima.sim(list(ar = 0.8), n = n_c)))
+df_c <- data.frame(y = as.numeric(yc), time = seq_len(n_c))
+res_fgn4 <- rinla_core_inla(
+  y ~ -1 + f(time, model = "fgn", order = 4L),
+  data = df_c,
+  control.family = list(hyper = list(prec = list(initial = 8, fixed = TRUE)))
+)
+cat("FGN order=4 mode (log_tau, H_intern):", paste(round(res_fgn4$mode, 4), collapse = ", "), "\n")
+# Structured API returns raw mode; convert H_intern → H for approx FGN
+h_est <- if (!is.null(res_fgn4$hurst) && is.numeric(res_fgn4$hurst)) {
+  res_fgn4$hurst
+} else {
+  # H = 0.5 * (1 + exp(H_intern)/(1+exp(H_intern)))  via fgn_hurst_from_intern
+  # Match rust: 0.5 + 0.5 * logistic(H_intern)  — check fgn_hurst_from_intern
+  hi <- res_fgn4$mode[2]
+  0.5 + 0.5 / (1 + exp(-hi))
+}
+cat("FGN order=4 est H (R-INLA scale):", round(h_est, 4), "\n")
+
+cat("\n--- Testing Formula Parser & Inference (RW2) ---\n")
+t <- seq_len(n) / n
+y_rw <- t^2 + rnorm(n, sd = 0.05)
+df_rw <- data.frame(y = y_rw, idx = 1:n)
+res_rw2 <- rinla_core_inla(y ~ -1 + f(idx, model = "rw2", obs_precision = 100.0), data = df_rw)
+cat("RW2 Hyperparameter Mode (log_tau):", paste(round(res_rw2$mode, 4), collapse = ", "), "\n")
+cat("RW2 Marginal Log-Likelihood:", round(res_rw2$marginal_log_lik, 4), "\n")
+
+cat("\n--- Non-Gaussian families (poisson / binomial / laplace) ---\n")
+set.seed(3)
+counts <- c(2, 3, 2, 4, 3, 2, 3, 2)
+df_p <- data.frame(y = counts, idx = seq_along(counts))
+res_pois <- rinla_core_inla(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_p,
+  family = "poisson",
+  initial_theta = 1.0
+)
+cat("Poisson+IID mode:", paste(round(res_pois$mode, 4), collapse = ", "), "\n")
+cat("Poisson+IID mlik:", round(res_pois$marginal_log_lik, 4), "\n")
+
+ys_b <- c(2, 5, 3, 7, 4, 6)
+df_b <- data.frame(y = ys_b, idx = seq_along(ys_b))
+res_bin <- rinla_core_inla(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_b,
+  family = "binomial",
+  Ntrials = rep(10, length(ys_b)),
+  initial_theta = 0.0
+)
+cat("Binomial+IID mode:", paste(round(res_bin$mode, 4), collapse = ", "), "\n")
+
+y_lap <- c(0.2, -0.1, 0.4, 0.0, -0.3, 0.1, 0.2, -0.2)
+df_l <- data.frame(y = y_lap, idx = seq_along(y_lap))
+res_lap <- rinla_core_inla(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_l,
+  family = "laplace",
+  alpha = 0.5,
+  gamma = 0.2,
+  initial_theta = 1.0
+)
+cat("Laplace+IID mode:", paste(round(res_lap$mode, 4), collapse = ", "), "\n")
+
+q_fgn4 <- rinla_core_fgn_approx_precision_csc(20L, 0.7, 1.0, order = 4L)
+cat("FGN approx order=4 dim=", paste(dim(q_fgn4), collapse = "x"),
+    " nnz=", length(q_fgn4@x), " (sparse)\n", sep = "")
 
 cat("\n--- FGN Parameter Estimation Validation ---\n")
 sim_fgn <- function(n, H) {
@@ -64,7 +135,8 @@ sim_fgn <- function(n, H) {
 }
 
 set.seed(123)
-n_val <- 250
+# Exact dense FGN: keep moderate n (O(n³)). For n≈500 use order=3/4 approx.
+n_val <- 100
 h_targets <- c(0.6, 0.7, 0.8, 0.9)
 
 for (H_true in h_targets) {
@@ -79,13 +151,12 @@ for (H_true in h_targets) {
   df_fgn <- data.frame(y = y_fgn, idx = 1:n_val)
 
   # 2. Profile the INLA fit
-  cat("  [Fit] Fitting FGN model via INLA...\n")
+  cat("  [Fit] Fitting FGN model via INLA (exact dense)...\n")
   t_fit <- system.time({
-    res_val <- rinla_core_inla(y ~ f(idx, model = "fgn", obs_precision = 1000.0), data = df_fgn)
+    res_val <- rinla_core_inla(y ~ f(idx, model = "fgn", order = 0L, obs_precision = 1000.0), data = df_fgn)
   })
 
-  est_logit_H <- res_val$mode[2]
-  est_H <- 1.0 / (1.0 + exp(-est_logit_H))
+  est_H <- res_val$hurst
   est_tau <- exp(res_val$mode[1])
 
   cat(sprintf("  [Fit] Completed in %.3f seconds\n", t_fit["elapsed"]))

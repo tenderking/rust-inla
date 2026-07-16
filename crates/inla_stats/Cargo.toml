@@ -1,0 +1,19 @@
+[package]
+name = "inla_stats"
+version = "0.1.0"
+edition = "2024"
+description = "Likelihoods, latent GMRF models, INLA inference, and model selection"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+gmrflib-ffi = ["dep:inla_sys"]
+
+[dependencies]
+sprs = "0.11"
+rayon = "1"
+inla_math = { path = "../inla_math" }
+inla_fmesher = { path = "../inla_fmesher" }
+inla_sys = { path = "../inla_sys", optional = true }

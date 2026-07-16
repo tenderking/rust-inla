@@ -2,22 +2,16 @@
 name = "inla_core"
 version = "0.1.0"
 edition = "2024"
+description = "Facade re-exporting inla_fmesher + inla_math + inla_stats (legacy monolith API)"
 
 [lib]
 crate-type = ["rlib"]
 
 [features]
 default = []
-gmrflib-ffi = ["dep:inla_sys"]
+gmrflib-ffi = ["inla_stats/gmrflib-ffi"]
 
 [dependencies]
-sprs = "0.11"
-rayon = "1"
-inla_sys = { path = "../inla_sys", optional = true }
-
-[dev-dependencies]
-criterion = "0.5"
-
-[[bench]]
-name = "ar1_ldlt"
-harness = false
+inla_fmesher = { path = "../inla_fmesher" }
+inla_math = { path = "../inla_math" }
+inla_stats = { path = "../inla_stats" }

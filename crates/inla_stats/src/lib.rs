@@ -1,0 +1,50 @@
+//! Statistical layer: likelihoods, latent GMRFs, INLA inference, model selection.
+
+pub mod ar1;
+pub mod arp;
+pub mod besag;
+pub mod crw;
+pub mod fgn;
+pub mod hyper_opt;
+pub mod inference;
+pub mod latent_models;
+pub mod matern2d;
+pub mod model_selection;
+pub mod rw2d;
+pub mod spde;
+
+pub use ar1::{Ar1Precision, ar1_precision, ar1_precision_csc};
+pub use arp::arp_precision_csc;
+pub use besag::{besag_precision_csc, bym_precision_csc, read_graph_file};
+pub use crw::{crw1_precision_csc, crw2_precision_csc};
+pub use fgn::{
+    fgn_approx_latent_len, fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern,
+    fgn_intern_from_hurst,
+};
+pub use hyper_opt::{
+    ModelConfig, compute_hessian, evaluate_neg_log_posterior, nelder_mead,
+};
+pub use inference::{
+    BinomialObs, ExponentialSurvivalObs, GammaPrior, GaussianObs, GaussianPrior, InferenceResult,
+    LaplaceObs, Link, NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs,
+    ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType, eval_likelihood,
+    eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
+    eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
+    eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
+    eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
+    eval_prior_loggamma, find_latent_mode, find_latent_mode_a, run_inla_inference,
+    run_inla_inference_a,
+};
+pub use latent_models::{
+    fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,
+    rw2_cyclic_precision_csc, rw2_precision_csc, seasonal_precision_csc, two_diid_precision_csc,
+};
+pub use matern2d::matern2d_precision_csc;
+pub use model_selection::{
+    CpoResult, DicResult, compute_cpo_pit, compute_dic, compute_marginal_log_lik_gaussian,
+};
+pub use rw2d::rw2d_precision_csc;
+pub use spde::spde_precision_csc;
+
+// Re-export math primitives commonly used with stats APIs.
+pub use inla_math::{CscMatrix, Eval1D};

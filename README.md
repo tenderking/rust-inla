@@ -4,14 +4,19 @@ A fast, memory-safe Rust implementation of the [Integrated Nested Laplace Approx
 
 ## Workspace Structure
 
-The repository is a Cargo workspace with clear separation between the core engine and language bindings:
+The repository is a Cargo workspace mirroring the classic R-INLA split (fmesher / gmrflib / inference):
 
 | Crate | Description |
 |---|---|
-| `crates/inla_core` | Pure-Rust math/stats engine — precision matrices, likelihoods, LDLT, FEM meshes |
+| `crates/inla_fmesher` | Mesh generation, topology, point location, FEM block assembly |
+| `crates/inla_math` | Sparse CSC, LDLT, design helpers, CCD/grid, Nelder–Mead (gmrflib-like) |
+| `crates/inla_stats` | Likelihoods, latent GMRFs, INLA inference, DIC/CPO/PIT |
+| `crates/inla_core` | Thin facade re-exporting the three crates (stable API for bindings) |
 | `crates/inla_sys` | Optional legacy C FFI bindings to `gmrflib` via `bindgen` |
 | `py-rinla` | Python front-end via `PyO3` / `Maturin` |
 | `r-inla` | R front-end via `extendr` |
+
+Downstream crates should prefer `inla_core::…` for a stable surface, or depend on `inla_math` / `inla_fmesher` / `inla_stats` directly when iterating on one layer.
 
 ## Features
 

@@ -3,3 +3,6 @@
 Cargo.lock
 **/*.rs.bk
 .DS_Store
+
+# Upstream R-INLA test dump (do not commit)
+r-inla-testing-main.zip

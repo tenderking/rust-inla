@@ -1,100 +1,129 @@
-pub mod ar1;
-pub mod arp;
-pub mod besag;
-pub mod crw;
-pub mod fmesher;
+//! Compatibility facade for the split workspace.
+//!
+//! | Crate | Role |
+//! |-------|------|
+//! | [`inla_fmesher`] | Mesh / FEM geometry |
+//! | [`inla_math`] | Sparse LDLT, design matrices, CCD/grid, Nelder–Mead |
+//! | [`inla_stats`] | Likelihoods, latent models, INLA inference, DIC/CPO |
+//!
+//! Downstream code (`r-inla`, `py-rinla`) can keep `use inla_core::...`.
+//! Prefer depending on the leaf crates directly when working inside one layer;
+//! this facade exists so existing `inla_core::module::…` paths keep compiling.
+//!
+//! Module re-exports below mirror the pre-split layout. Each submodule doc
+//! notes the owning crate (and any cross-crate exceptions).
 
-pub mod inference;
-pub mod latent_models;
-pub mod ldlt;
-pub mod mesh;
-pub mod matern2d;
-pub mod rw2d;
-pub mod spde;
-pub mod sparse;
-pub mod hyper_opt;
-pub mod integration;
-pub mod model_selection;
+pub use inla_fmesher as fmesher;
+pub use inla_math as math;
 
-
-
-
-pub use ar1::{Ar1Precision, ar1_precision};
-pub use fmesher::{
-    BoundaryInput, EdgeRef, FemBlocks, Mesh2D, PathStep, PathTrace, PointLocation, SparseTriplet,
-    Triangle, Vertex2, build_boundary_segments, build_mesh2d, load_fmesher_boundary_input,
-    load_fmesher_raw_boundary_input, read_boundary_indices, read_positions_xy,
+// --- Geometry ([`inla_fmesher`]) ---
+pub use inla_fmesher::{
+    BoundaryInput, EdgeRef, FemBlocks, Mesh2D, MeshSummary, PathStep, PathTrace, PointLocation,
+    SparseTriplet, Triangle, Vertex2, build_boundary_segments, build_mesh2d,
+    load_fmesher_boundary_input, load_fmesher_raw_boundary_input, read_boundary_indices,
+    read_mesh_summary, read_positions_xy,
 };
-pub use inference::{
-    BinomialObs, Eval1D, ExponentialSurvivalObs, GammaPrior, GaussianObs, GaussianPrior,
-    LaplaceObs, Link, NegativeBinomialObs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
-    ZeroInflatedPoissonObs, ZeroInflationType, eval_likelihood_binomial,
-    eval_likelihood_exponential_survival, eval_likelihood_gaussian, eval_likelihood_laplace,
-    eval_likelihood_negative_binomial, eval_likelihood_poisson,
+
+// --- Math / sparse engine ([`inla_math`]) ---
+// `math_compute_hessian` / `math_nelder_mead` are the generic math optimizers;
+// flat `compute_hessian` / `nelder_mead` below are the INLA wrappers from stats.
+pub use inla_math::{
+    CscForR, CscMatrix, Eval1D, LdltFactor, add_csc, at_diag_a, block_diag_csc, ccd_design,
+    compute_hessian as math_compute_hessian, csc_for_r_dgcmatrix, csc_from_triplets_0based,
+    csc_to_dense, grid_design, identity_csc, invert_symmetric_matrix, jacobi_eigen,
+    laplace_newton_step, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize,
+    ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place, matvec_csc, matvec_transpose_csc,
+    nelder_mead as math_nelder_mead, predictor_variances_diag, scale_csc, scale_model_csc,
+    sparse_from_triplets, triplets_to_csc,
+};
+
+/// CSC helpers from [`inla_math::sparse`], plus [`ar1_precision_csc`] from [`inla_stats`]
+/// (kept here for the historical `inla_core::sparse::ar1_precision_csc` path).
+pub mod sparse {
+    pub use inla_math::sparse::*;
+    pub use inla_stats::ar1_precision_csc;
+}
+/// LDLᵀ factorization — [`inla_math::ldlt`].
+pub mod ldlt {
+    pub use inla_math::ldlt::*;
+}
+/// Design / A-matrix helpers — [`inla_math::design`].
+pub mod design {
+    pub use inla_math::design::*;
+}
+/// CCD / grid integration designs — [`inla_math::integration`].
+pub mod integration {
+    pub use inla_math::integration::*;
+}
+/// INLA hyperparameter optimization — [`inla_stats::hyper_opt`].
+pub mod hyper_opt {
+    pub use inla_stats::hyper_opt::*;
+}
+/// Likelihoods and INLA inference — [`inla_stats::inference`].
+pub mod inference {
+    pub use inla_stats::inference::*;
+}
+/// Generic latent GMRF builders — [`inla_stats::latent_models`].
+pub mod latent_models {
+    pub use inla_stats::latent_models::*;
+}
+/// DIC / CPO / PIT / marginal likelihood — [`inla_stats::model_selection`].
+pub mod model_selection {
+    pub use inla_stats::model_selection::*;
+}
+/// AR(1) precision — [`inla_stats::ar1`].
+pub mod ar1 {
+    pub use inla_stats::ar1::*;
+}
+/// AR(p) precision — [`inla_stats::arp`].
+pub mod arp {
+    pub use inla_stats::arp::*;
+}
+/// Besag / BYM — [`inla_stats::besag`].
+pub mod besag {
+    pub use inla_stats::besag::*;
+}
+/// Continuous RW — [`inla_stats::crw`].
+pub mod crw {
+    pub use inla_stats::crw::*;
+}
+/// Fractional Gaussian noise — [`inla_stats::fgn`].
+pub mod fgn {
+    pub use inla_stats::fgn::*;
+}
+/// Matérn 2D lattice — [`inla_stats::matern2d`].
+pub mod matern2d {
+    pub use inla_stats::matern2d::*;
+}
+/// RW2D — [`inla_stats::rw2d`].
+pub mod rw2d {
+    pub use inla_stats::rw2d::*;
+}
+/// SPDE precision from FEM blocks — [`inla_stats::spde`].
+pub mod spde {
+    pub use inla_stats::spde::*;
+}
+/// Mesh summary I/O — [`inla_fmesher`] (`mesh` module).
+pub mod mesh {
+    pub use inla_fmesher::{MeshSummary, read_mesh_summary};
+}
+
+// --- Stats flat re-exports (previous inla_core public API) ---
+pub use inla_stats::{
+    Ar1Precision, BinomialObs, CpoResult, DicResult, ExponentialSurvivalObs, GammaPrior,
+    GaussianObs, GaussianPrior, InferenceResult, LaplaceObs, Link, ModelConfig,
+    NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
+    ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision, ar1_precision_csc, arp_precision_csc,
+    besag_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic, compute_hessian,
+    compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
+    eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
+    eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
     eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
     eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
-    eval_prior_loggamma, Obs, find_latent_mode, InferenceResult, run_inla_inference,
+    eval_prior_loggamma, evaluate_neg_log_posterior, fgn_approx_latent_len,
+    fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern, fgn_intern_from_hurst,
+    fgn_precision_csc, find_latent_mode, find_latent_mode_a, iid_precision_csc,
+    matern2d_precision_csc, nelder_mead, read_graph_file, run_inla_inference, run_inla_inference_a,
+    rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
+    rw2d_precision_csc, seasonal_precision_csc, spde_precision_csc, two_diid_precision_csc,
 };
-pub use hyper_opt::{ModelConfig, nelder_mead, compute_hessian, evaluate_neg_log_posterior};
-pub use integration::{ccd_design, grid_design, invert_symmetric_matrix, jacobi_eigen};
-pub use model_selection::{CpoResult, DicResult, compute_marginal_log_lik_gaussian, compute_dic, compute_cpo_pit};
-pub use ldlt::{
-    LdltFactor, csc_to_dense, laplace_newton_step, ldlt_diagonal_inverse, ldlt_factorize,
-    ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place,
-};
-pub use latent_models::{
-    rw1_precision_csc, rw2_precision_csc, rw1_cyclic_precision_csc, rw2_cyclic_precision_csc,
-    seasonal_precision_csc, two_diid_precision_csc, iid_precision_csc, fgn_precision_csc,
-};
-pub use arp::arp_precision_csc;
-pub use besag::{besag_precision_csc, bym_precision_csc, read_graph_file};
-pub use crw::{crw1_precision_csc, crw2_precision_csc};
-pub use matern2d::matern2d_precision_csc;
-pub use rw2d::rw2d_precision_csc;
-pub use spde::spde_precision_csc;
-pub use mesh::{MeshSummary, read_mesh_summary};
-pub use sparse::{CscForR, CscMatrix, ar1_precision_csc, csc_for_r_dgcmatrix, triplets_to_csc, sparse_triplet_to_csc};
-
-#[cfg(test)]
-mod tests {
-    use super::{ar1_precision, read_mesh_summary};
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn unique_temp_file(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time went backwards")
-            .as_nanos();
-        env::temp_dir().join(format!("{}_{}.txt", name, nanos))
-    }
-
-    #[test]
-    fn builds_ar1_precision_matrix() {
-        let q = ar1_precision(4, 0.5, 2.0).expect("ar1 precision should be valid");
-        assert_eq!(q.n, 4);
-        assert_eq!(q.row_major_values.len(), 16);
-        assert_eq!(q.row_major_values[0], 2.0);
-        assert_eq!(q.row_major_values[1], -1.0);
-        assert_eq!(q.row_major_values[5], 2.5);
-        assert_eq!(q.row_major_values[15], 2.0);
-    }
-
-    #[test]
-    fn reads_simple_mesh_file() {
-        let path = unique_temp_file("rinla_core_mesh");
-        let mesh_data = "# x y\n0.0 0.0\n1.0 0.0\n1.0 2.0\n";
-        fs::write(&path, mesh_data).expect("write mesh file");
-
-        let summary = read_mesh_summary(&path).expect("parse mesh");
-        assert_eq!(summary.n_vertices, 3);
-        assert_eq!(summary.xmin, 0.0);
-        assert_eq!(summary.xmax, 1.0);
-        assert_eq!(summary.ymin, 0.0);
-        assert_eq!(summary.ymax, 2.0);
-
-        fs::remove_file(path).expect("remove temporary mesh file");
-    }
-}

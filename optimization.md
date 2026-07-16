@@ -144,17 +144,22 @@ equivalence for the dense algebra.
 Exact FGN remains **dense**. Cost per hyperparameter eval stays Θ(n³) and
 memory Θ(n²). That will not scale like AR(1)/RW (banded sparse).
 
+**Sparse FGN approximation (partially done):** `fgn_approx_precision_csc`
+interpolates the legacy `FGN_K3_PARAM` / `FGN_K4_PARAM` tables and builds a
+sparse AR-mixture precision of size `(order+1)·n` (`order` ∈ {3,4}). The
+matrix itself is sparse and matches R-INLA’s Qfunc_fgn path. However,
+`ldlt_factorize` still **densifies** CSC → dense LDLT, so large-`n` FGN
+approx fits do **not** yet get O(n) banded/sparse solve cost. Next step:
+time-major reorder (bandwidth O(order)) or a true sparse LDLT/CHOLMOD.
+
 Natural next steps if larger `n` is required:
 
-1. **Sparse FGN approximation** (as in R-INLA): weighted sum of AR(1)
-   processes → sparse `Q`, sparse LDLT / CHOLMOD / etc.
+1. **Sparse LDLT / banded factor** for FGN-approx (and AR1/RW/Besag) so CSC
+   densification is never on that path.
 2. **Toeplitz algorithms** for Σ (Levinson / Trench) if staying exact but
    wanting cheaper `Q` construction than generic Cholesky of a filled matrix.
 3. **Gaussian closed form:** skip Newton confirmations and reuse algebra when
    the likelihood Hessian is constant.
-4. Keep a true **sparse** LDLT for AR1/RW/Besag so dense densification is never
-   on that path (today’s dense helper is correct but not optimal for banded
-   models).
 
 ---
 
@@ -164,6 +169,7 @@ Natural next steps if larger `n` is required:
 |------|--------|
 | `crates/inla_core/src/integration.rs` | O(n³) `invert_symmetric_matrix` |
 | `crates/inla_core/src/latent_models.rs` | FGN via Cholesky invert |
+| `crates/inla_core/src/fgn.rs` / `fgn_tables.rs` | R-INLA AR-mixture FGN tables → sparse Q |
 | `crates/inla_core/src/ldlt.rs` | Dense factor/solve, diag(Q⁻¹), Newton returns factor |
 | `crates/inla_core/src/inference.rs` | Reuse Newton factor; fast variances |
 | `crates/inla_core/src/lib.rs` | Re-exports |
