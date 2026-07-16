@@ -565,7 +565,7 @@ rinla_core_inla <- function(
   if (is.null(Ntrials)) Ntrials <- numeric(0)
   if (is.null(event)) event <- numeric(0)
 
-  rinla_core_run_inla_structured(
+  raw <- rinla_core_run_inla_structured(
     initial_theta = theta,
     y_obs = y,
     obs_precision = obs_precision,
@@ -595,4 +595,157 @@ rinla_core_inla <- function(
     gamma = gamma,
     shape = shape
   )
+
+  .rinla_attach_summaries(
+    raw,
+    effect_types = effect_types,
+    effect_ns = effect_ns,
+    effect_orders = effect_orders,
+    effect_names = {
+      nm <- character(length(f_structs))
+      for (i in seq_along(f_structs)) {
+        nm[i] <- f_structs[[i]]$name
+      }
+      if (p > 0L) {
+        nm <- c(nm, colnames(X))
+      }
+      nm
+    },
+    fixed_names = if (p > 0L) colnames(X) else character(0)
+  )
+}
+
+#' Build Gaussian interim summary tables + class `"rinla"`.
+.rinla_attach_summaries <- function(raw, effect_types, effect_ns, effect_orders = NULL,
+                                    effect_names, fixed_names) {
+  means <- as.numeric(raw$latent_means)
+  vars <- as.numeric(raw$latent_variances)
+  off <- 0L
+  summary.random <- list()
+  summary.fixed <- NULL
+
+  for (i in seq_along(effect_types)) {
+    n_e <- as.integer(effect_ns[i])
+    idx <- (off + 1L):(off + n_e)
+    mu <- means[idx]
+    sd <- sqrt(pmax(vars[idx], 0))
+    tab <- data.frame(
+      ID = seq_len(n_e),
+      mean = mu,
+      sd = sd,
+      `0.025quant` = mu - 1.96 * sd,
+      `0.5quant` = mu,
+      `0.975quant` = mu + 1.96 * sd,
+      mode = mu,
+      check.names = FALSE
+    )
+    typ <- effect_types[i]
+    nm <- if (i <= length(effect_names) && nzchar(effect_names[i])) {
+      effect_names[i]
+    } else {
+      paste0(typ, i)
+    }
+    if (identical(typ, "fixed")) {
+      if (length(fixed_names) == n_e) {
+        rownames(tab) <- fixed_names
+      }
+      summary.fixed <- tab[, c("mean", "sd", "0.025quant", "0.5quant", "0.975quant", "mode")]
+    } else {
+      summary.random[[nm]] <- tab
+    }
+    off <- off + n_e
+  }
+
+  pmu <- as.numeric(raw$predictor_means)
+  psd <- sqrt(pmax(as.numeric(raw$predictor_variances), 0))
+  summary.linear.predictor <- data.frame(
+    mean = pmu,
+    sd = psd,
+    `0.025quant` = pmu - 1.96 * psd,
+    `0.5quant` = pmu,
+    `0.975quant` = pmu + 1.96 * psd,
+    mode = pmu,
+    check.names = FALSE
+  )
+
+  # Hyperpar: mode from optim; sd/quantiles from internal 1D marginals when present
+  mode <- as.numeric(raw$mode)
+  m <- length(mode)
+  hyp_mean <- mode
+  hyp_sd <- rep(NA_real_, m)
+  hyp_q025 <- rep(NA_real_, m)
+  hyp_q50 <- mode
+  hyp_q975 <- rep(NA_real_, m)
+  im <- raw$internal_marginals_hyperpar
+  if (!is.null(im) && length(im) == m) {
+    for (j in seq_len(m)) {
+      mat <- im[[j]]
+      if (is.null(dim(mat)) || ncol(mat) < 2L) next
+      # Gaussian interim from density moments
+      x <- mat[, 1]
+      y <- mat[, 2]
+      dx <- diff(x)
+      mass <- sum(0.5 * (y[-length(y)] + y[-1]) * dx)
+      if (mass > 0) {
+        y <- y / mass
+        ex <- sum(0.5 * (x[-length(x)] * y[-length(y)] + x[-1] * y[-1]) * dx)
+        ex2 <- sum(0.5 * (x[-length(x)]^2 * y[-length(y)] + x[-1]^2 * y[-1]) * dx)
+        hyp_mean[j] <- ex
+        hyp_sd[j] <- sqrt(max(ex2 - ex * ex, 0))
+        # Approximate quantiles via cumulative trapz
+        cdf <- c(0, cumsum(0.5 * (y[-length(y)] + y[-1]) * dx))
+        cdf <- cdf / max(cdf[length(cdf)], .Machine$double.eps)
+        hyp_q025[j] <- approx(cdf, x, xout = 0.025, rule = 2)$y
+        hyp_q50[j] <- approx(cdf, x, xout = 0.5, rule = 2)$y
+        hyp_q975[j] <- approx(cdf, x, xout = 0.975, rule = 2)$y
+      }
+    }
+  }
+  summary.hyperpar <- if (m > 0L) {
+    data.frame(
+      mean = hyp_mean,
+      sd = hyp_sd,
+      `0.025quant` = hyp_q025,
+      `0.5quant` = hyp_q50,
+      `0.975quant` = hyp_q975,
+      mode = mode,
+      check.names = FALSE,
+      row.names = paste0("theta", seq_len(m))
+    )
+  } else {
+    NULL
+  }
+
+  out <- raw
+  out$summary.random <- summary.random
+  out$summary.fixed <- summary.fixed
+  out$summary.linear.predictor <- summary.linear.predictor
+  out$summary.hyperpar <- summary.hyperpar
+  out$internal.marginals.hyperpar <- im
+  out$effects <- list(
+    types = effect_types,
+    ns = as.integer(effect_ns),
+    names = effect_names
+  )
+  # Convenience: map FGN internal θ → Hurst when a single FGN block is present.
+  fgn_i <- which(effect_types == "fgn")
+  if (length(fgn_i) == 1L && length(mode) >= 2L) {
+    ord <- if (!is.null(effect_orders) && length(effect_orders) >= fgn_i) {
+      as.integer(effect_orders[fgn_i])
+    } else {
+      0L
+    }
+    hi <- mode[2]
+    out$hurst <- if (ord %in% c(3L, 4L)) {
+      # R-INLA approx: H ∈ (1/2, 1)
+      0.5 + 0.5 / (1.0 + exp(-hi))
+    } else {
+      # Exact dense FGN: H ∈ (0, 1) via logistic
+      1.0 / (1.0 + exp(-hi))
+    }
+  } else {
+    out$hurst <- NA_real_
+  }
+  class(out) <- c("rinla", "list")
+  out
 }

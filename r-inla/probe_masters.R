@@ -6,6 +6,8 @@ LIB <- "/home/george/workspace/tenderking/rust-inla/target/release/librinla.so"
 
 cat("=== masters probe (A-matrix era) ===\n")
 source(file.path(ROOT_RINLA, "R/rinla_core.R"))
+source(file.path(ROOT_RINLA, "R/summary.R"))
+source(file.path(ROOT_RINLA, "R/plot.R"))
 .rinla_core_dynload(LIB)
 
 house <- read.csv(file.path(MASTERS, "output/house_data.csv"), stringsAsFactors = FALSE)

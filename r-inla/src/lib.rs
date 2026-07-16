@@ -630,6 +630,25 @@ fn scale_csc_entries(q: &inla_core::CscMatrix, scale: f64) -> std::result::Resul
     inla_core::scale_csc(q, scale)
 }
 
+fn marginal_to_r_matrix(m: &inla_core::Marginal1D) -> std::result::Result<Robj, Error> {
+    let n = m.x.len();
+    let mut data = Vec::with_capacity(n * 2);
+    // column-major: first column x, second column y
+    data.extend_from_slice(&m.x);
+    data.extend_from_slice(&m.y);
+    let mut mat = r!(data);
+    mat.set_attrib(sym!(dim), r!([n as i32, 2i32]))?;
+    Ok(mat)
+}
+
+fn marginals_to_r_list(ms: &[inla_core::Marginal1D]) -> std::result::Result<List, Error> {
+    let mut items: Vec<Robj> = Vec::with_capacity(ms.len());
+    for m in ms {
+        items.push(marginal_to_r_matrix(m)?);
+    }
+    Ok(List::from_values(items))
+}
+
 /// Structured INLA fit: A-matrix projector + block-diagonal multi-effect prior.
 ///
 /// `effect_types`: "iid"|"ar1"|"rw2"|"besag"|"fixed"|"fgn"
@@ -878,8 +897,11 @@ fn rinla_run_inla_structured(
         Some(&a),
         strategy,
         step_or_f0,
+        &inla_core::MarginalOptions::default(),
     )
     .map_err(Error::Other)?;
+
+    let internal_marginals_hyperpar = marginals_to_r_list(&result.internal_marginals_hyperpar)?;
 
     Ok(list!(
         mode = result.mode,
@@ -893,7 +915,9 @@ fn rinla_run_inla_structured(
         dic = result.dic,
         mean_deviance = result.mean_deviance,
         effective_params = result.effective_params,
-        cpo_n_failures = result.cpo_n_failures as i32
+        cpo_n_failures = result.cpo_n_failures as i32,
+        node_weights = result.node_weights,
+        internal_marginals_hyperpar = internal_marginals_hyperpar
     ))
 }
 

@@ -16,6 +16,8 @@ cargo build -p r-inla --release
 echo "[2/2] Running R smoke test..."
 Rscript -e '
 source("R/rinla_core.R")
+source("R/summary.R")
+source("R/plot.R")
 .rinla_core_dynload("../target/release/librinla.so")
 
 cat("--- Testing basic mesh & AR1 ---\n")
@@ -46,6 +48,12 @@ df <- data.frame(y = y, idx = 1:n)
 res_ar1 <- rinla_core_inla(y ~ -1 + f(idx, model = "ar1", obs_precision = 25.0), data = df)
 cat("AR1 Hyperparameter Mode (log_tau, logit_rho):", paste(round(res_ar1$mode, 4), collapse = ", "), "\n")
 cat("AR1 Marginal Log-Likelihood:", round(res_ar1$marginal_log_lik, 4), "\n")
+stopifnot(inherits(res_ar1, "rinla"))
+stopifnot(!is.null(res_ar1$summary.hyperpar))
+stopifnot(!is.null(res_ar1$internal.marginals.hyperpar))
+stopifnot(length(res_ar1$summary.random) >= 1L)
+cat("AR1 summary.hyperpar:\n")
+print(round(res_ar1$summary.hyperpar, 3))
 
 cat("\n--- Testing Formula Parser & Inference (FGN) ---\n")
 res_fgn <- rinla_core_inla(y ~ -1 + f(idx, model = "fgn", obs_precision = 25.0), data = df)
@@ -156,10 +164,9 @@ for (H_true in h_targets) {
     res_val <- rinla_core_inla(y ~ f(idx, model = "fgn", order = 0L, obs_precision = 1000.0), data = df_fgn)
   })
 
-  est_H <- res_val$hurst
-  est_tau <- exp(res_val$mode[1])
-
   cat(sprintf("  [Fit] Completed in %.3f seconds\n", t_fit["elapsed"]))
+  est_H <- as.numeric(res_val$hurst)
+  est_tau <- exp(res_val$mode[1])
   cat(sprintf("  [Result] Real H = %.1f | Est H = %.4f | Est tau = %.4f\n",
               H_true, est_H, est_tau))
 }

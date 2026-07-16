@@ -672,6 +672,20 @@ pub struct InferenceResult {
     pub pit: Vec<Option<f64>>,
     /// Number of CPO failures
     pub cpo_n_failures: usize,
+    /// Integration nodes θ_k (internal scale).
+    pub theta_nodes: Vec<Vec<f64>>,
+    /// Normalized integration weights Δ_k π̃(θ_k|y).
+    pub node_weights: Vec<f64>,
+    /// Internal-scale hyperparameter 1D marginals (one per θ_j). Empty if disabled.
+    pub internal_marginals_hyperpar: Vec<crate::marginals::Marginal1D>,
+    /// Opt-in latent mixture density grids (order matches `marginals_latent_indices`).
+    pub marginals_latent: Vec<crate::marginals::Marginal1D>,
+    /// Opt-in predictor mixture density grids.
+    pub marginals_predictor: Vec<crate::marginals::Marginal1D>,
+    /// Indices used for `marginals_latent`.
+    pub marginals_latent_indices: Vec<usize>,
+    /// Indices used for `marginals_predictor`.
+    pub marginals_predictor_indices: Vec<usize>,
 }
 
 pub fn run_inla_inference(
@@ -690,6 +704,7 @@ pub fn run_inla_inference(
         None,
         strategy,
         step_or_f0,
+        &crate::marginals::MarginalOptions::default(),
     )
 }
 
@@ -702,6 +717,7 @@ pub fn run_inla_inference_a(
     a: Option<&CscMatrix>,
     strategy: &str,
     step_or_f0: f64,
+    marginal_opts: &crate::marginals::MarginalOptions,
 ) -> Result<InferenceResult, String> {
     let m = initial_theta.len();
     let n_obs = obs.len();
@@ -753,7 +769,7 @@ pub fn run_inla_inference_a(
         }
     }
 
-    let results: Vec<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)> = z_points
+    let results: Vec<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)> = z_points
         .par_iter()
         .map(|z| {
             let mut theta = mode.clone();
@@ -782,18 +798,20 @@ pub fn run_inla_inference_a(
             let log_prior = log_prior_density(&theta);
             let log_post = marginal_log_lik + log_prior;
 
-            Ok((x_star, variances, eta, eta_var, log_post))
+            Ok((theta, x_star, variances, eta, eta_var, log_post))
         })
         .collect::<Result<Vec<_>, String>>()?;
 
+    let mut theta_nodes = Vec::with_capacity(results.len());
     let mut cond_means = Vec::with_capacity(results.len());
     let mut cond_vars = Vec::with_capacity(results.len());
     let mut cond_eta = Vec::with_capacity(results.len());
     let mut cond_eta_var = Vec::with_capacity(results.len());
     let mut log_posts = Vec::with_capacity(results.len());
 
-    let n_lat = results[0].0.len();
-    for (x_star, variances, eta, eta_var, log_post) in results {
+    let n_lat = results[0].1.len();
+    for (theta, x_star, variances, eta, eta_var, log_post) in results {
+        theta_nodes.push(theta);
         cond_means.push(x_star);
         cond_vars.push(variances);
         cond_eta.push(eta);
@@ -871,6 +889,51 @@ pub fn run_inla_inference_a(
         &norm_weights,
     )?;
 
+    let internal_marginals_hyperpar = if marginal_opts.hyperpar && m > 0 {
+        crate::marginals::hyperpar_marginals(
+            &theta_nodes,
+            &norm_weights,
+            marginal_opts.n_points,
+            marginal_opts.n_sd,
+        )?
+    } else {
+        Vec::new()
+    };
+
+    let mut marginals_latent = Vec::with_capacity(marginal_opts.latent_indices.len());
+    for &idx in &marginal_opts.latent_indices {
+        if idx >= n_lat {
+            return Err(format!("latent marginal index {idx} out of range (n={n_lat})"));
+        }
+        let means: Vec<f64> = cond_means.iter().map(|v| v[idx]).collect();
+        let vars: Vec<f64> = cond_vars.iter().map(|v| v[idx]).collect();
+        marginals_latent.push(crate::marginals::gaussian_mixture_marginal(
+            &means,
+            &vars,
+            &norm_weights,
+            marginal_opts.n_points,
+            marginal_opts.n_sd,
+        )?);
+    }
+
+    let mut marginals_predictor = Vec::with_capacity(marginal_opts.predictor_indices.len());
+    for &idx in &marginal_opts.predictor_indices {
+        if idx >= n_obs {
+            return Err(format!(
+                "predictor marginal index {idx} out of range (n_obs={n_obs})"
+            ));
+        }
+        let means: Vec<f64> = cond_eta.iter().map(|v| v[idx]).collect();
+        let vars: Vec<f64> = cond_eta_var.iter().map(|v| v[idx]).collect();
+        marginals_predictor.push(crate::marginals::gaussian_mixture_marginal(
+            &means,
+            &vars,
+            &norm_weights,
+            marginal_opts.n_points,
+            marginal_opts.n_sd,
+        )?);
+    }
+
     Ok(InferenceResult {
         mode,
         hessian,
@@ -886,6 +949,13 @@ pub fn run_inla_inference_a(
         cpo: cpo_result.cpo,
         pit: cpo_result.pit,
         cpo_n_failures: cpo_result.n_failures,
+        theta_nodes,
+        node_weights: norm_weights,
+        internal_marginals_hyperpar,
+        marginals_latent,
+        marginals_predictor,
+        marginals_latent_indices: marginal_opts.latent_indices.clone(),
+        marginals_predictor_indices: marginal_opts.predictor_indices.clone(),
     })
 }
 
@@ -1332,8 +1402,11 @@ mod tests {
             Some(&a),
             "ccd",
             1.0,
+            &crate::marginals::MarginalOptions::default(),
         )
         .expect("A-matrix inference");
+        assert!(!result.internal_marginals_hyperpar.is_empty());
+        assert_eq!(result.theta_nodes.len(), result.node_weights.len());
         assert_eq!(result.latent_means.len(), n_lat_tot);
         assert_eq!(result.predictor_means.len(), y.len());
         assert!(result.marginal_log_lik.is_finite());

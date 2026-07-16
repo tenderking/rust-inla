@@ -8,6 +8,7 @@ pub mod fgn;
 pub mod hyper_opt;
 pub mod inference;
 pub mod latent_models;
+pub mod marginals;
 pub mod matern2d;
 pub mod model_selection;
 pub mod rw2d;
@@ -34,6 +35,10 @@ pub use inference::{
     eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
     eval_prior_loggamma, find_latent_mode, find_latent_mode_a, run_inla_inference,
     run_inla_inference_a,
+};
+pub use marginals::{
+    Marginal1D, MarginalOptions, gaussian_mixture_marginal, hyperpar_marginals,
+    marginal_cdf, marginal_quantiles, marginal_summary_quantiles,
 };
 pub use latent_models::{
     fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,

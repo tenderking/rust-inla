@@ -123,6 +123,35 @@ impl PyCscMatrix {
     }
 }
 
+/// A 1D density grid `(x, y)` (classic INLA marginal shape).
+#[pyclass]
+#[derive(Clone)]
+pub struct PyMarginal1D {
+    #[pyo3(get)]
+    pub x: Vec<f64>,
+    #[pyo3(get)]
+    pub y: Vec<f64>,
+}
+
+#[pymethods]
+impl PyMarginal1D {
+    /// Quantiles for probabilities in (0, 1), e.g. `[0.025, 0.5, 0.975]`.
+    fn quantiles(&self, probs: Vec<f64>) -> PyResult<Vec<f64>> {
+        let m = inla_core::Marginal1D {
+            x: self.x.clone(),
+            y: self.y.clone(),
+        };
+        inla_core::marginal_quantiles(&m, &probs).map_err(PyValueError::new_err)
+    }
+}
+
+fn to_py_marginal(m: &inla_core::Marginal1D) -> PyMarginal1D {
+    PyMarginal1D {
+        x: m.x.clone(),
+        y: m.y.clone(),
+    }
+}
+
 /// The result of an end-to-end INLA inference call.
 #[pyclass]
 pub struct PyInferenceResult {
@@ -170,6 +199,18 @@ pub struct PyInferenceResult {
     /// Number of observations for which CPO computation failed.
     #[pyo3(get)]
     pub cpo_n_failures: usize,
+    /// Normalized integration weights.
+    #[pyo3(get)]
+    pub node_weights: Vec<f64>,
+    /// Internal-scale hyperparameter 1D marginals.
+    #[pyo3(get)]
+    pub internal_marginals_hyperpar: Vec<PyMarginal1D>,
+    /// Opt-in latent mixture marginals (may be empty).
+    #[pyo3(get)]
+    pub marginals_latent: Vec<PyMarginal1D>,
+    /// Indices corresponding to `marginals_latent`.
+    #[pyo3(get)]
+    pub marginals_latent_indices: Vec<usize>,
 }
 
 /// Build an AR1 precision matrix.
@@ -225,7 +266,7 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 /// step_or_f0 : float, optional
 ///     Integration step size or f0 design parameter (default 1.0).
 #[pyfunction(name = "run_inla_inference")]
-#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0))]
+#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None))]
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
@@ -234,6 +275,8 @@ fn run_inla_inference_py(
     obs: Vec<Bound<'_, PyAny>>,
     strategy: &str,
     step_or_f0: f64,
+    n_points: usize,
+    latent_marginal_indices: Option<Vec<usize>>,
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
@@ -263,15 +306,21 @@ fn run_inla_inference_py(
         })
     };
 
+    let mut opts = inla_core::MarginalOptions::default();
+    opts.n_points = n_points;
+    opts.latent_indices = latent_marginal_indices.unwrap_or_default();
+
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
     let result = py.allow_threads(|| {
-        inla_core::run_inla_inference(
+        inla_core::run_inla_inference_a(
             &initial_theta,
             &build_prior_closure,
             &log_prior_density_closure,
             &rust_obs,
+            None,
             strategy,
             step_or_f0,
+            &opts,
         )
     }).map_err(|e| PyValueError::new_err(e))?;
 
@@ -291,6 +340,14 @@ fn run_inla_inference_py(
         cpo: result.cpo,
         pit: result.pit,
         cpo_n_failures: result.cpo_n_failures,
+        node_weights: result.node_weights,
+        internal_marginals_hyperpar: result
+            .internal_marginals_hyperpar
+            .iter()
+            .map(to_py_marginal)
+            .collect(),
+        marginals_latent: result.marginals_latent.iter().map(to_py_marginal).collect(),
+        marginals_latent_indices: result.marginals_latent_indices,
     })
 }
 
@@ -441,10 +498,29 @@ fn fgn_approx_precision_matrix(
     Ok(PyCscMatrix { matrix: csc })
 }
 
+/// Map FGN internal hyperparameter → Hurst H ∈ (1/2, 1) (R-INLA `from.theta`).
+#[pyfunction]
+fn fgn_hurst_from_intern(h_intern: f64) -> f64 {
+    inla_core::fgn_hurst_from_intern(h_intern)
+}
+
+/// Map Hurst H ∈ (1/2, 1) → FGN internal hyperparameter.
+#[pyfunction]
+fn fgn_intern_from_hurst(h: f64) -> PyResult<f64> {
+    inla_core::fgn_intern_from_hurst(h).map_err(PyValueError::new_err)
+}
+
+/// Latent dimension for the AR-mixture FGN approx: `(order + 1) * n_obs`.
+#[pyfunction]
+fn fgn_approx_latent_len(n_obs: usize, order: usize) -> usize {
+    inla_core::fgn_approx_latent_len(n_obs, order)
+}
+
 /// The initialization function for the Python module.
 #[pymodule]
 fn rinla(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCscMatrix>()?;
+    m.add_class::<PyMarginal1D>()?;
     m.add_class::<PyInferenceResult>()?;
     m.add_function(wrap_pyfunction!(ar1_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ar1_precision_matrix_csc, m)?)?;
@@ -453,6 +529,9 @@ fn rinla(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(iid_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
+    m.add_function(wrap_pyfunction!(fgn_intern_from_hurst, m)?)?;
+    m.add_function(wrap_pyfunction!(fgn_approx_latent_len, m)?)?;
     m.add_function(wrap_pyfunction!(run_inla_inference_py, m)?)?;
     Ok(())
 }

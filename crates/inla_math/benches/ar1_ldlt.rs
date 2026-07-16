@@ -19,7 +19,7 @@ fn ar1_precision_csc(n: usize, rho: f64, tau: f64) -> Result<CscMatrix, String> 
             trips.push((i + 1, i, -tau * rho));
         }
     }
-    sparse_from_triplets(n, n, &trips)
+    Ok(sparse_from_triplets(n, n, &trips))
 }
 
 fn bench_ar1_build(c: &mut Criterion) {
