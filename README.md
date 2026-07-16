@@ -1,0 +1,72 @@
+# rust-inla
+
+A fast, memory-safe Rust implementation of the [Integrated Nested Laplace Approximation (INLA)](https://www.r-inla.org/) methodology. This project replaces the legacy C/Fortran backend of R-INLA with a pure-Rust engine that can be shared across both Python and R front-ends.
+
+## Workspace Structure
+
+The repository is a Cargo workspace with clear separation between the core engine and language bindings:
+
+| Crate | Description |
+|---|---|
+| `crates/inla_core` | Pure-Rust math/stats engine — precision matrices, likelihoods, LDLT, FEM meshes |
+| `crates/inla_sys` | Optional legacy C FFI bindings to `gmrflib` via `bindgen` |
+| `py-rinla` | Python front-end via `PyO3` / `Maturin` |
+| `r-inla` | R front-end via `extendr` |
+
+## Features
+
+- **Pure-Rust inference engine** — native $LDL^T$ factorization, Nelder-Mead hyperparameter optimisation, and Laplace approximation with analytic gradients/Hessians
+- **Rayon-parallelised CCD integration** — the hyperparameter grid loop runs across all CPU cores with no data races
+- **Sparse matrix support** — uses `sprs` internally; exports to `dgCMatrix` for R and SciPy for Python
+- **R bridge** — `extendr` exports precision matrices directly as native `dgCMatrix` S4 objects, bypassing file I/O
+- **Python bridge** — `PyO3` / Maturin exposes the same engine with zero-copy sparse matrix handoffs
+- **Model selection** — DIC, CPO, PIT, and marginal likelihoods with outlier detection heuristics
+
+## Supported Models
+
+**Latent GMRF precision matrices:** AR(1), AR(p), RW1, RW2, CRW1, CRW2, seasonal, Besag, BYM, Matérn 2D, SPDE (FEM-assembled)
+
+**Likelihoods:** Gaussian, Poisson, Binomial, Negative Binomial, Zero-inflated Poisson/Binomial, Laplace, Exponential survival, Weibull survival
+
+## Building
+
+```bash
+# Check all crates compile
+cargo check --workspace
+
+# Run all tests
+cargo test --workspace
+```
+
+### Python (`py-rinla`)
+
+```bash
+cd py-rinla
+pip install maturin
+maturin develop --release
+```
+
+### R (`r-inla`)
+
+```bash
+cargo build -p r-inla --release
+```
+
+Then in R:
+```r
+source("r-inla/R/rinla_core.R")
+.rinla_core_dynload("target/release/librinla.so")
+rinla_core_ar1_precision_csc(n = 100L, rho = 0.7, tau = 1.0)
+```
+
+### C FFI bindings (`inla_sys`)
+
+Pre-generated bindings are used by default. To regenerate from the `gmrflib` headers:
+
+```bash
+cargo build -p inla_sys --features generate-bindings
+```
+
+## License
+
+See [LICENSE](LICENSE).

@@ -1,0 +1,14 @@
+[package]
+name = "inla_sys"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+default = []
+generate-bindings = []
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.72"

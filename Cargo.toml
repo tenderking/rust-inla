@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/inla_core",
+    "crates/inla_sys",
+    "py-rinla",
+    "r-inla",
+]
+resolver = "2"

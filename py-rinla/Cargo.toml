@@ -1,0 +1,12 @@
+[package]
+name = "py-rinla"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rinla"
+crate-type = ["cdylib"]
+
+[dependencies]
+inla_core = { path = "../crates/inla_core" }
+pyo3 = { version = "0.23", features = ["extension-module"] }

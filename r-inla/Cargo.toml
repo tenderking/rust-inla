@@ -1,0 +1,12 @@
+[package]
+name = "r-inla"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "rinla"
+
+[dependencies]
+extendr-api = "0.9"
+inla_core = { path = "../crates/inla_core" }
