@@ -19,7 +19,7 @@ source("R/rinla_core.R")
 .rinla_core_dynload("../target/release/librinla.so")
 
 cat("--- Testing basic mesh & AR1 ---\n")
-m <- rinla_core_read_mesh("../crates/inla_core/examples/mesh_xy.txt")
+m <- rinla_core_read_mesh("../crates/inla_fmesher/examples/mesh_xy.txt")
 q <- rinla_core_ar1_precision(5L, 0.7, 1.0)
 q_csc <- rinla_core_ar1_precision_csc(5L, 0.7, 1.0)
 cat("mesh_n=", m$n_vertices,

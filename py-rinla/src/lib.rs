@@ -312,9 +312,20 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
     };
     
     let link = match link_str.as_deref() {
-        Some("identity") | None => inla_core::Link::Identity,
+        Some("identity") => inla_core::Link::Identity,
         Some("log") => inla_core::Link::Log,
         Some("logit") => inla_core::Link::Logit,
+        None | Some("default") | Some("") => {
+            match family.as_str() {
+                "gaussian" | "laplace" => inla_core::Link::Identity,
+                "poisson" | "nbinomial" | "negative_binomial" | "zero_inflated_poisson"
+                | "zeroinflatedpoisson0" | "zeroinflatedpoisson1" | "exponential"
+                | "exponential_survival" | "weibull" | "weibull_survival" => inla_core::Link::Log,
+                "binomial" | "zero_inflated_binomial" | "zeroinflatedbinomial0"
+                | "zeroinflatedbinomial1" => inla_core::Link::Logit,
+                _ => inla_core::Link::Identity,
+            }
+        }
         Some(other) => return Err(PyValueError::new_err(format!("unknown link function: {}", other))),
     };
 
