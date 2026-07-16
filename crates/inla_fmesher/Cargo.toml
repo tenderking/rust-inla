@@ -8,3 +8,6 @@ description = "Mesh generation, topology, point location, and FEM block assembly
 crate-type = ["rlib"]
 
 [dependencies]
+
+[lints]
+workspace = true

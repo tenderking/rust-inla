@@ -6,19 +6,29 @@ use std::path::Path;
 pub fn read_graph_file<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<usize>>, String> {
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut tokens = content.split_whitespace();
-    let n_str = tokens.next().ok_or_else(|| "Graph file is empty".to_string())?;
-    let n: usize = n_str.parse().map_err(|e| format!("Invalid node count: {e}"))?;
+    let n_str = tokens
+        .next()
+        .ok_or_else(|| "Graph file is empty".to_string())?;
+    let n: usize = n_str
+        .parse()
+        .map_err(|e| format!("Invalid node count: {e}"))?;
 
     let mut raw_nodes = vec![Vec::new(); n + 1];
     let mut min_node = usize::MAX;
     let mut max_node = 0;
 
     for _ in 0..n {
-        let tnode_str = tokens.next().ok_or_else(|| "Expected node index".to_string())?;
-        let tnode: usize = tnode_str.parse().map_err(|e| format!("Invalid node index: {e}"))?;
-        
+        let tnode_str = tokens
+            .next()
+            .ok_or_else(|| "Expected node index".to_string())?;
+        let tnode: usize = tnode_str
+            .parse()
+            .map_err(|e| format!("Invalid node index: {e}"))?;
+
         let degree_str = tokens.next().ok_or_else(|| "Expected degree".to_string())?;
-        let degree: usize = degree_str.parse().map_err(|e| format!("Invalid degree: {e}"))?;
+        let degree: usize = degree_str
+            .parse()
+            .map_err(|e| format!("Invalid degree: {e}"))?;
 
         if tnode > n {
             return Err(format!("Node index {} exceeds n={}", tnode, n));
@@ -28,8 +38,12 @@ pub fn read_graph_file<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<usize>>, Strin
 
         let mut nbs = Vec::with_capacity(degree);
         for _ in 0..degree {
-            let nb_str = tokens.next().ok_or_else(|| "Expected neighbor index".to_string())?;
-            let nb: usize = nb_str.parse().map_err(|e| format!("Invalid neighbor index: {e}"))?;
+            let nb_str = tokens
+                .next()
+                .ok_or_else(|| "Expected neighbor index".to_string())?;
+            let nb: usize = nb_str
+                .parse()
+                .map_err(|e| format!("Invalid neighbor index: {e}"))?;
             nbs.push(nb);
             min_node = std::cmp::min(min_node, nb);
             max_node = std::cmp::max(max_node, nb);
@@ -47,11 +61,12 @@ pub fn read_graph_file<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<usize>>, Strin
             adj[i - 1] = shifted_nbs;
         }
     } else if min_node == 0 && max_node == n - 1 {
-        for i in 0..n {
-            adj[i] = raw_nodes[i].clone();
-        }
+        adj[..n].clone_from_slice(&raw_nodes[..n]);
     } else {
-        return Err(format!("Graph indexing is inconsistent: min={}, max={}, n={}", min_node, max_node, n));
+        return Err(format!(
+            "Graph indexing is inconsistent: min={}, max={}, n={}",
+            min_node, max_node, n
+        ));
     }
 
     Ok(adj)
@@ -140,12 +155,7 @@ mod tests {
     #[test]
     fn test_besag_and_bym() {
         // Small cycle graph of size 4: 0-1, 1-2, 2-3, 3-0
-        let adj = vec![
-            vec![1, 3],
-            vec![0, 2],
-            vec![1, 3],
-            vec![2, 0],
-        ];
+        let adj = vec![vec![1, 3], vec![0, 2], vec![1, 3], vec![2, 0]];
 
         let q_besag = besag_precision_csc(&adj, 1.5).unwrap();
         assert_eq!(q_besag.rows(), 4);

@@ -16,6 +16,4 @@ pub use ldlt::{
     Eval1D, LdltFactor, csc_to_dense, laplace_newton_step, laplace_newton_step_a,
     ldlt_diagonal_inverse, ldlt_factorize, ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place,
 };
-pub use sparse::{
-    CscForR, CscMatrix, csc_for_r_dgcmatrix, sparse_from_triplets, triplets_to_csc,
-};
+pub use sparse::{CscForR, CscMatrix, csc_for_r_dgcmatrix, sparse_from_triplets, triplets_to_csc};

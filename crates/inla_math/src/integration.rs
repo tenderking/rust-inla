@@ -47,7 +47,7 @@ pub fn ccd_design(m: usize, f0: f64) -> Result<(Vec<Vec<f64>>, Vec<f64>), String
     }
 
     let n_exp = points.len();
-    
+
     let w = if n_exp > 1 {
         1.0 / ((n_exp - 1) as f64 * (1.0 + (-0.5 * f0 * f0).exp() * (f0 * f0 / m as f64 - 1.0)))
     } else {
@@ -138,8 +138,8 @@ pub fn grid_design(
             min_j += 1;
         }
 
-        for i in -(min_i as isize)..= (max_i as isize) {
-            for j in -(min_j as isize)..= (max_j as isize) {
+        for i in -(min_i as isize)..=(max_i as isize) {
+            for j in -(min_j as isize)..=(max_j as isize) {
                 let z = vec![i as f64 * step, j as f64 * step];
                 let g = evaluator(&z);
                 if g0 - g <= threshold {
@@ -225,7 +225,11 @@ pub fn invert_symmetric_matrix(h: &[f64], m: usize) -> Result<Vec<f64>, String> 
     Ok(inv)
 }
 
-pub fn jacobi_eigen(matrix: &[f64], m: usize, max_iter: usize) -> Result<(Vec<f64>, Vec<f64>), String> {
+pub fn jacobi_eigen(
+    matrix: &[f64],
+    m: usize,
+    max_iter: usize,
+) -> Result<(Vec<f64>, Vec<f64>), String> {
     let mut a = matrix.to_vec();
     let mut v = vec![0.0; m * m];
     for i in 0..m {

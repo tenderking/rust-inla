@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use inla_math::{Eval1D, CscMatrix, laplace_newton_step, sparse_from_triplets};
+use inla_math::{CscMatrix, Eval1D, laplace_newton_step, sparse_from_triplets};
 
 /// Local AR(1) CSC for math-only benches (avoids depending on inla_stats).
 fn ar1_precision_csc(n: usize, rho: f64, tau: f64) -> Result<CscMatrix, String> {

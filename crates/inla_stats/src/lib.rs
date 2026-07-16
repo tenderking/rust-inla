@@ -22,9 +22,7 @@ pub use fgn::{
     fgn_approx_latent_len, fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern,
     fgn_intern_from_hurst,
 };
-pub use hyper_opt::{
-    ModelConfig, compute_hessian, evaluate_neg_log_posterior, nelder_mead,
-};
+pub use hyper_opt::{ModelConfig, compute_hessian, evaluate_neg_log_posterior, nelder_mead};
 pub use inference::{
     BinomialObs, ExponentialSurvivalObs, GammaPrior, GaussianObs, GaussianPrior, InferenceResult,
     LaplaceObs, Link, NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs,
@@ -36,13 +34,13 @@ pub use inference::{
     eval_prior_loggamma, find_latent_mode, find_latent_mode_a, run_inla_inference,
     run_inla_inference_a,
 };
-pub use marginals::{
-    Marginal1D, MarginalOptions, gaussian_mixture_marginal, hyperpar_marginals,
-    marginal_cdf, marginal_quantiles, marginal_summary_quantiles,
-};
 pub use latent_models::{
     fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,
     rw2_cyclic_precision_csc, rw2_precision_csc, seasonal_precision_csc, two_diid_precision_csc,
+};
+pub use marginals::{
+    Marginal1D, MarginalOptions, gaussian_mixture_marginal, hyperpar_marginals, marginal_cdf,
+    marginal_quantiles, marginal_summary_quantiles,
 };
 pub use matern2d::matern2d_precision_csc;
 pub use model_selection::{

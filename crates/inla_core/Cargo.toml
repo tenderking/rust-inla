@@ -15,3 +15,6 @@ gmrflib-ffi = ["inla_stats/gmrflib-ffi"]
 inla_fmesher = { path = "../inla_fmesher" }
 inla_math = { path = "../inla_math" }
 inla_stats = { path = "../inla_stats" }
+
+[lints]
+workspace = true

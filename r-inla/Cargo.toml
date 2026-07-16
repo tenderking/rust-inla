@@ -10,3 +10,6 @@ name = "rinla"
 [dependencies]
 extendr-api = "0.9"
 inla_core = { path = "../crates/inla_core" }
+
+[lints]
+workspace = true

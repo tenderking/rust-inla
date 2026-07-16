@@ -1,4 +1,4 @@
-use crate::inference::{eval_likelihood, log_gamma, Obs};
+use crate::inference::{Obs, eval_likelihood, log_gamma};
 
 /// Default log-scale difference threshold for CPO failure detection.
 /// From the R-INLA manual: if the difference between the maximum of the
@@ -20,7 +20,7 @@ const CPO_DIFF: f64 = 3.0;
 /// Arguments:
 /// - `log_post_at_mode`: unnormalised log-posterior evaluated at the mode θ*
 /// - `neg_hessian`: the *negative* Hessian of the log-posterior at θ*,
-///    stored row-major as m×m (i.e. −H, which should be positive-definite)
+///   stored row-major as m×m (i.e. −H, which should be positive-definite)
 /// - `m`: number of hyperparameters
 pub fn compute_marginal_log_lik_gaussian(
     log_post_at_mode: f64,
@@ -157,7 +157,9 @@ pub fn compute_cpo_pit(
     let n = obs.len();
     let k_total = cond_predictors.len();
     if norm_weights.len() != k_total || cond_pred_vars.len() != k_total {
-        return Err("cond_predictors, cond_pred_vars, and norm_weights must have equal length".to_string());
+        return Err(
+            "cond_predictors, cond_pred_vars, and norm_weights must have equal length".to_string(),
+        );
     }
     for k in 0..k_total {
         if cond_predictors[k].len() != n || cond_pred_vars[k].len() != n {
@@ -204,7 +206,10 @@ pub fn compute_cpo_pit(
         // --- CPO computation ---
         // CPO_i = 1 / Σ_k w_k / π(y_i | η*_i(θ_k))
         //       = 1 / Σ_k w_k · exp(-log_lik_ik)
-        let max_neg = log_liks.iter().map(|&v| -v).fold(f64::NEG_INFINITY, f64::max);
+        let max_neg = log_liks
+            .iter()
+            .map(|&v| -v)
+            .fold(f64::NEG_INFINITY, f64::max);
         let inv_cpo: f64 = norm_weights
             .iter()
             .zip(log_liks.iter())
@@ -248,11 +253,7 @@ pub fn compute_cpo_pit(
 /// flagged as a failure by assessing the tail behavior of its leave-one-out density.
 ///
 /// Returns `true` if the computation is unreliable.
-pub fn check_cpo_failure_for_obs(
-    obs_i: &Obs,
-    mu_ik: f64,
-    var_ik: f64,
-) -> bool {
+pub fn check_cpo_failure_for_obs(obs_i: &Obs, mu_ik: f64, var_ik: f64) -> bool {
     if var_ik <= 0.0 || !var_ik.is_finite() {
         return true;
     }
@@ -305,7 +306,10 @@ pub fn check_cpo_failure_for_obs(
     }
 
     // 6. CPO.DIFF check: max log-density must exceed both borders by at least CPO_DIFF (3.0)
-    let max_log_d = log_densities.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_log_d = log_densities
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
     let border_left = log_densities[0];
     let border_right = log_densities[4];
 
@@ -493,13 +497,21 @@ mod tests {
     #[test]
     fn dic_sanity_gaussian() {
         let obs = vec![
-            Obs::Gaussian(GaussianObs { y: 1.0, precision: 2.0, link: Link::Identity }),
-            Obs::Gaussian(GaussianObs { y: 2.0, precision: 2.0, link: Link::Identity }),
+            Obs::Gaussian(GaussianObs {
+                y: 1.0,
+                precision: 2.0,
+                link: Link::Identity,
+            }),
+            Obs::Gaussian(GaussianObs {
+                y: 2.0,
+                precision: 2.0,
+                link: Link::Identity,
+            }),
         ];
         // Two integration points: one at the mode, one slightly off
         let modes = vec![
-            vec![1.0, 2.0],   // point 0: "mode" — perfect fit
-            vec![1.1, 1.9],   // point 1: slightly off
+            vec![1.0, 2.0], // point 0: "mode" — perfect fit
+            vec![1.1, 1.9], // point 1: slightly off
         ];
         let weights = vec![0.6, 0.4];
 
@@ -507,7 +519,10 @@ mod tests {
 
         // D(θ*) at mode should be minimal (perfect fit → deviance = const)
         assert!(dic.mean_deviance.is_finite());
-        assert!(dic.effective_params >= 0.0, "p_D should be non-negative for this case");
+        assert!(
+            dic.effective_params >= 0.0,
+            "p_D should be non-negative for this case"
+        );
         // DIC = D̄ + p_D = D̄ + (D̄ − D(θ*)) = 2·D̄ − D(θ*)
         approx(dic.dic, dic.mean_deviance + dic.effective_params, 1e-12);
     }
@@ -516,7 +531,11 @@ mod tests {
 
     #[test]
     fn cpo_failure_detection_stable() {
-        let obs = Obs::Gaussian(GaussianObs { y: 1.0, precision: 2.0, link: Link::Identity });
+        let obs = Obs::Gaussian(GaussianObs {
+            y: 1.0,
+            precision: 2.0,
+            link: Link::Identity,
+        });
         // Full posterior mode and variance: tau_post = 5.0, var = 0.2
         // tau_loo = 5.0 - 2.0 = 3.0 > 0.0 (stable)
         assert!(!check_cpo_failure_for_obs(&obs, 1.0, 0.2));
@@ -524,7 +543,11 @@ mod tests {
 
     #[test]
     fn cpo_failure_detection_unstable_variance() {
-        let obs = Obs::Gaussian(GaussianObs { y: 1.0, precision: 2.0, link: Link::Identity });
+        let obs = Obs::Gaussian(GaussianObs {
+            y: 1.0,
+            precision: 2.0,
+            link: Link::Identity,
+        });
         // Full posterior variance = 0.6 (tau_post = 1.67)
         // tau_loo = 1.67 - 2.0 = -0.33 <= 0.0 (unstable, should fail)
         assert!(check_cpo_failure_for_obs(&obs, 1.0, 0.6));
@@ -533,14 +556,22 @@ mod tests {
     #[test]
     fn cpo_failure_detection_monotonic() {
         // High precision and far from mode -> linear gradient dominates -> monotonic
-        let obs = Obs::Gaussian(GaussianObs { y: 0.0, precision: 5.0, link: Link::Identity });
+        let obs = Obs::Gaussian(GaussianObs {
+            y: 0.0,
+            precision: 5.0,
+            link: Link::Identity,
+        });
         assert!(check_cpo_failure_for_obs(&obs, 10.0, 0.1));
     }
 
     #[test]
     fn cpo_failure_detection_small_diff() {
         // Highly asymmetric Poisson likelihood -> one side decays slowly -> diff < 3.0
-        let obs = Obs::Poisson(PoissonObs { y: 1.0, exposure: 10.0, link: Link::Log });
+        let obs = Obs::Poisson(PoissonObs {
+            y: 1.0,
+            exposure: 10.0,
+            link: Link::Log,
+        });
         assert!(check_cpo_failure_for_obs(&obs, 0.0, 0.05));
     }
 
@@ -628,10 +659,7 @@ mod tests {
             }
             // PIT should be in (0, 1) for Gaussian
             if let Some(p) = result.pit[i] {
-                assert!(
-                    p > 0.0 && p < 1.0,
-                    "PIT[{i}] should be in (0,1), got {p}"
-                );
+                assert!(p > 0.0 && p < 1.0, "PIT[{i}] should be in (0,1), got {p}");
             }
         }
     }

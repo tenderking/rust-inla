@@ -79,60 +79,50 @@ pub fn matern2d_precision_csc(
                         };
                     } else {
                         match nu {
-                            1 => {
-                                match dmin {
-                                    0 => match dmax {
-                                        1 => val = -2.0 * a,
-                                        2 => val = 1.0,
-                                        _ => {}
-                                    },
-                                    1 => {
-                                        if dmax == 1 {
-                                            val = 2.0;
-                                        }
-                                    }
+                            1 => match dmin {
+                                0 => match dmax {
+                                    1 => val = -2.0 * a,
+                                    2 => val = 1.0,
                                     _ => {}
+                                },
+                                1 if dmax == 1 => {
+                                    val = 2.0;
                                 }
-                            }
-                            2 => {
-                                match dmin {
-                                    0 => match dmax {
-                                        1 => val = -3.0 * (a * a + 3.0),
-                                        2 => val = 3.0 * a,
-                                        3 => val = -1.0,
-                                        _ => {}
-                                    },
-                                    1 => match dmax {
-                                        1 => val = 6.0 * a,
-                                        2 => val = -3.0,
-                                        _ => {}
-                                    },
+                                _ => {}
+                            },
+                            2 => match dmin {
+                                0 => match dmax {
+                                    1 => val = -3.0 * (a * a + 3.0),
+                                    2 => val = 3.0 * a,
+                                    3 => val = -1.0,
                                     _ => {}
-                                }
-                            }
-                            3 => {
-                                match dmin {
-                                    0 => match dmax {
-                                        1 => val = -4.0 * a * (a * a + 9.0),
-                                        2 => val = 2.0 * (3.0 * a * a + 8.0),
-                                        3 => val = -4.0 * a,
-                                        4 => val = 1.0,
-                                        _ => {}
-                                    },
-                                    1 => match dmax {
-                                        1 => val = 12.0 * (a * a + 2.0),
-                                        2 => val = -12.0 * a,
-                                        3 => val = 4.0,
-                                        _ => {}
-                                    },
-                                    2 => {
-                                        if dmax == 2 {
-                                            val = 6.0;
-                                        }
-                                    }
+                                },
+                                1 => match dmax {
+                                    1 => val = 6.0 * a,
+                                    2 => val = -3.0,
                                     _ => {}
+                                },
+                                _ => {}
+                            },
+                            3 => match dmin {
+                                0 => match dmax {
+                                    1 => val = -4.0 * a * (a * a + 9.0),
+                                    2 => val = 2.0 * (3.0 * a * a + 8.0),
+                                    3 => val = -4.0 * a,
+                                    4 => val = 1.0,
+                                    _ => {}
+                                },
+                                1 => match dmax {
+                                    1 => val = 12.0 * (a * a + 2.0),
+                                    2 => val = -12.0 * a,
+                                    3 => val = 4.0,
+                                    _ => {}
+                                },
+                                2 if dmax == 2 => {
+                                    val = 6.0;
                                 }
-                            }
+                                _ => {}
+                            },
                             _ => {}
                         }
                     }
@@ -184,9 +174,9 @@ mod tests {
         let a = 4.0 + kappa * kappa; // 6.0
         let std_var = (kappa * kappa).recip() / (4.0 * std::f64::consts::PI);
         let want_diag = (4.0 + a * a) * std_var; // 40 * std_var
-        
+
         approx(get(&d, 16, 0, 0), want_diag, 1e-12);
-        
+
         // Symmetry test
         for i in 0..16 {
             for j in 0..16 {

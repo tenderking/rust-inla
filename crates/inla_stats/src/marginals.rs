@@ -12,6 +12,10 @@ impl Marginal1D {
         self.x.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty()
+    }
+
     /// Trapezoidal integral of the density (should be ≈ 1 after normalization).
     pub fn integrate(&self) -> f64 {
         if self.x.len() < 2 {

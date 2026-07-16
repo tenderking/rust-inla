@@ -2,11 +2,7 @@ use inla_fmesher::FemBlocks;
 use inla_math::{CscMatrix, sparse_from_triplets};
 use sprs::TriMatI;
 
-pub fn spde_precision_csc(
-    fem: &FemBlocks,
-    kappa: f64,
-    tau: f64,
-) -> Result<CscMatrix, String> {
+pub fn spde_precision_csc(fem: &FemBlocks, kappa: f64, tau: f64) -> Result<CscMatrix, String> {
     let n = fem.c0.rows;
     if n == 0 {
         return Err("SPDE requires non-empty FEM blocks".to_string());
@@ -27,7 +23,7 @@ pub fn spde_precision_csc(
 
     let mut c0_inv_tri = TriMatI::<f64, usize>::with_capacity((n, n), n);
     let mut k4_c0_tri = TriMatI::<f64, usize>::with_capacity((n, n), n);
-    
+
     let k2 = kappa * kappa;
     let k4 = k2 * k2;
 
@@ -54,8 +50,11 @@ pub fn spde_precision_csc(
     let g1_c0_inv = &g1 * &c0_inv;
     let g1_c0_inv_g1 = &g1_c0_inv * &g1;
 
-    let mut q_unscaled_tri = TriMatI::<f64, usize>::with_capacity((n, n), k4_c0.nnz() + k2_2_g1.nnz() + g1_c0_inv_g1.nnz());
-    
+    let mut q_unscaled_tri = TriMatI::<f64, usize>::with_capacity(
+        (n, n),
+        k4_c0.nnz() + k2_2_g1.nnz() + g1_c0_inv_g1.nnz(),
+    );
+
     for (val, (r, c)) in k4_c0.iter() {
         q_unscaled_tri.add_triplet(r, c, *val);
     }
@@ -80,7 +79,7 @@ pub fn spde_precision_csc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inla_fmesher::{Vertex2, Triangle, build_mesh2d};
+    use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
 
     #[test]
     fn test_spde_precision() {
@@ -95,10 +94,7 @@ mod tests {
             Vertex2 { x: 0.0, y: 0.0 },
             Vertex2 { x: 1.0, y: 0.0 },
         ];
-        let triangles = vec![
-            Triangle([0, 2, 1]),
-            Triangle([1, 2, 3]),
-        ];
+        let triangles = vec![Triangle([0, 2, 1]), Triangle([1, 2, 3])];
         let mesh = build_mesh2d(vertices, triangles).unwrap();
         let fem = mesh.assemble_fem_blocks();
 

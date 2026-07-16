@@ -14,9 +14,7 @@ pub fn ar_pacf2phi(pacf: &[f64]) -> Result<Vec<f64>, String> {
         for k in 0..j {
             work[k] -= a * phi[j - k - 1];
         }
-        for k in 0..j {
-            phi[k] = work[k];
-        }
+        phi[..j].copy_from_slice(&work[..j]);
     }
     Ok(phi)
 }
@@ -33,14 +31,14 @@ pub fn ar_phi2pacf(phi: &[f64]) -> Result<Vec<f64>, String> {
         let a = pacf[j];
         let denom = 1.0 - a * a;
         if denom.abs() < 1e-14 {
-            return Err("Singular denominator in ar_phi2pacf (stationary constraint violated)".to_string());
+            return Err(
+                "Singular denominator in ar_phi2pacf (stationary constraint violated)".to_string(),
+            );
         }
         for k in 0..j {
             work[k] = (pacf[k] + a * pacf[j - k - 1]) / denom;
         }
-        for k in 0..j {
-            pacf[k] = work[k];
-        }
+        pacf[..j].copy_from_slice(&work[..j]);
     }
     Ok(pacf)
 }
@@ -110,7 +108,7 @@ pub fn ar_marginal_distribution(pacf: &[f64]) -> Result<(f64, Vec<f64>), String>
             if i == j {
                 a[i * p + j] = -1.0;
             } else {
-                let lag = (i as isize - j as isize).abs() as usize;
+                let lag = (i as isize - j as isize).unsigned_abs();
                 let lag_idx = lag - 1;
                 a[i * p + lag_idx] += phi[j];
             }
@@ -126,7 +124,7 @@ pub fn ar_marginal_distribution(pacf: &[f64]) -> Result<(f64, Vec<f64>), String>
             if i == j {
                 sigma[i * p + j] = 1.0;
             } else {
-                let lag = (i as isize - j as isize).abs() as usize;
+                let lag = (i as isize - j as isize).unsigned_abs();
                 let lag_idx = lag - 1;
                 sigma[i * p + j] = x[lag_idx];
             }
@@ -253,7 +251,7 @@ mod tests {
         assert_eq!(q.rows(), 5);
         assert_eq!(q.cols(), 5);
         let d = dense_from_csc(&q);
-        
+
         // Assert symmetry
         for i in 0..5 {
             for j in 0..5 {

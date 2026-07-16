@@ -9,3 +9,10 @@ members = [
     "r-inla",
 ]
 resolver = "2"
+
+[workspace.lints.clippy]
+# Dense index loops are clearer than forced iterators in linear-algebra kernels.
+needless_range_loop = "allow"
+# FFI / inference entry points carry many parameters by design.
+too_many_arguments = "allow"
+type_complexity = "allow"

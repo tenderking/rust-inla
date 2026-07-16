@@ -2,7 +2,7 @@
 
 use inla_math::CscMatrix;
 
-use crate::inference::{find_latent_mode_a, Obs};
+use crate::inference::{Obs, find_latent_mode_a};
 
 pub struct ModelConfig<'a> {
     pub build_prior: &'a dyn Fn(&[f64]) -> Result<CscMatrix, String>,
@@ -32,10 +32,6 @@ pub fn nelder_mead(
     })
 }
 
-pub fn compute_hessian(
-    mode: &[f64],
-    config: &ModelConfig,
-    h: f64,
-) -> Result<Vec<f64>, String> {
+pub fn compute_hessian(mode: &[f64], config: &ModelConfig, h: f64) -> Result<Vec<f64>, String> {
     inla_math::compute_hessian(mode, &|theta| evaluate_neg_log_posterior(theta, config), h)
 }

@@ -17,3 +17,6 @@ rayon = "1"
 inla_math = { path = "../inla_math" }
 inla_fmesher = { path = "../inla_fmesher" }
 inla_sys = { path = "../inla_sys", optional = true }
+
+[lints]
+workspace = true

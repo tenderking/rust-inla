@@ -22,8 +22,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../gmrflib/optimize.h");
     println!("cargo:rerun-if-changed=../gmrflib/pre-opt.h");
 
-
-
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let out_file = out_dir.join("gmrflib_bindings.rs");
     let do_bindgen = env::var_os("CARGO_FEATURE_GENERATE_BINDINGS").is_some();

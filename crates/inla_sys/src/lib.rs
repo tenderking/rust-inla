@@ -71,6 +71,10 @@ pub struct AiStore {
 }
 
 impl AiStore {
+    /// # Safety
+    ///
+    /// `ptr` must be null or a valid pointer uniquely owned by the caller and
+    /// allocated by GMRFLib (freed via `GMRFLib_free_ai_store` on drop).
     pub unsafe fn from_raw_owned(ptr: *mut GMRFLib_ai_store_tp) -> Option<Self> {
         NonNull::new(ptr).map(|ptr| Self { ptr })
     }

@@ -1,9 +1,9 @@
 use rayon::prelude::*;
 
 use inla_math::{
-    Eval1D, CscMatrix, LdltFactor, ccd_design, csc_to_dense, grid_design,
-    invert_symmetric_matrix, jacobi_eigen, laplace_newton_step_a, ldlt_diagonal_inverse,
-    ldlt_factorize_dense, matvec_csc, predictor_variances_diag,
+    CscMatrix, Eval1D, LdltFactor, ccd_design, csc_to_dense, grid_design, invert_symmetric_matrix,
+    jacobi_eigen, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize_dense, matvec_csc,
+    predictor_variances_diag,
 };
 
 #[cfg(test)]
@@ -250,7 +250,10 @@ pub fn eval_likelihood_binomial(eta: f64, o: BinomialObs) -> Result<Eval1D, Stri
     })
 }
 
-pub fn eval_likelihood_negative_binomial(eta: f64, o: NegativeBinomialObs) -> Result<Eval1D, String> {
+pub fn eval_likelihood_negative_binomial(
+    eta: f64,
+    o: NegativeBinomialObs,
+) -> Result<Eval1D, String> {
     if !eta.is_finite() {
         return Err("negative-binomial eta must be finite".to_string());
     }
@@ -278,7 +281,9 @@ pub fn eval_likelihood_negative_binomial(eta: f64, o: NegativeBinomialObs) -> Re
     let y = o.y;
     let mu_r = mu + r;
 
-    let logp = log_gamma(y + r) - log_gamma(r) - log_gamma(y + 1.0) + r * (r / mu_r).ln() + y * (mu / mu_r).ln();
+    let logp = log_gamma(y + r) - log_gamma(r) - log_gamma(y + 1.0)
+        + r * (r / mu_r).ln()
+        + y * (mu / mu_r).ln();
     let dlog_dmu = y / mu - (y + r) / mu_r;
     let d2log_dmu2 = -y / (mu * mu) + (y + r) / (mu_r * mu_r);
 
@@ -383,7 +388,10 @@ pub fn eval_likelihood_zero_inflated_binomial(
         ZeroInflationType::Type0 => (base_p, dp_base, d2p_base),
         ZeroInflationType::Type1 => {
             if base_p > (1.0 - o.zero_prob) {
-                return Err("type1 zero-inflated binomial requires base probability <= 1 - zero_prob".to_string());
+                return Err(
+                    "type1 zero-inflated binomial requires base probability <= 1 - zero_prob"
+                        .to_string(),
+                );
             }
             (
                 base_p / (1.0 - o.zero_prob),
@@ -540,7 +548,11 @@ pub fn eval_likelihood(eta: f64, o: &Obs) -> Result<Eval1D, String> {
         Obs::Laplace(lo) => eval_likelihood_laplace(eta, *lo),
         Obs::ExponentialSurvival(eso) => eval_likelihood_exponential_survival(eta, *eso),
         Obs::WeibullSurvival(wso) => eval_likelihood_weibull_survival(eta, *wso),
-        Obs::None => Ok(Eval1D { logp: 0.0, grad: 0.0, hess: 0.0 }),
+        Obs::None => Ok(Eval1D {
+            logp: 0.0,
+            grad: 0.0,
+            hess: 0.0,
+        }),
     }
 }
 
@@ -782,8 +794,7 @@ pub fn run_inla_inference_a(
             }
 
             let q_prior = build_prior(&theta)?;
-            let (x_star, ldlt, marginal_log_lik) =
-                find_latent_mode_a(&q_prior, obs, a, 50, 1e-5)?;
+            let (x_star, ldlt, marginal_log_lik) = find_latent_mode_a(&q_prior, obs, a, 50, 1e-5)?;
 
             let variances = ldlt_diagonal_inverse(&ldlt)?;
             let eta = match a {
@@ -820,7 +831,10 @@ pub fn run_inla_inference_a(
     }
 
     let max_log_post = log_posts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let scaled_densities: Vec<f64> = log_posts.iter().map(|&lp| (lp - max_log_post).exp()).collect();
+    let scaled_densities: Vec<f64> = log_posts
+        .iter()
+        .map(|&lp| (lp - max_log_post).exp())
+        .collect();
 
     let mut sum_w_dens = 0.0;
     for k in 0..cond_means.len() {
@@ -875,19 +889,11 @@ pub fn run_inla_inference_a(
     )
     .unwrap_or(f64::NAN);
 
-    let dic_result = crate::model_selection::compute_dic(
-        obs,
-        &cond_eta,
-        &norm_weights,
-        mode_index,
-    )?;
+    let dic_result =
+        crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, mode_index)?;
 
-    let cpo_result = crate::model_selection::compute_cpo_pit(
-        obs,
-        &cond_eta,
-        &cond_eta_var,
-        &norm_weights,
-    )?;
+    let cpo_result =
+        crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?;
 
     let internal_marginals_hyperpar = if marginal_opts.hyperpar && m > 0 {
         crate::marginals::hyperpar_marginals(
@@ -903,7 +909,9 @@ pub fn run_inla_inference_a(
     let mut marginals_latent = Vec::with_capacity(marginal_opts.latent_indices.len());
     for &idx in &marginal_opts.latent_indices {
         if idx >= n_lat {
-            return Err(format!("latent marginal index {idx} out of range (n={n_lat})"));
+            return Err(format!(
+                "latent marginal index {idx} out of range (n={n_lat})"
+            ));
         }
         let means: Vec<f64> = cond_means.iter().map(|v| v[idx]).collect();
         let vars: Vec<f64> = cond_vars.iter().map(|v| v[idx]).collect();
@@ -1002,11 +1010,11 @@ pub(crate) fn log_gamma(z: f64) -> f64 {
     const COEFF: [f64; 9] = [
         676.5203681218851,
         -1259.1392167224028,
-        771.32342877765313,
-        -176.61502916214059,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
         12.507343278686905,
         -0.13857109526572012,
-        9.9843695780195716e-6,
+        9.984_369_578_019_572e-6,
         1.5056327351493116e-7,
         0.0,
     ];
@@ -1333,15 +1341,9 @@ mod tests {
         };
 
         // Run inference using Grid strategy (step size 1.0)
-        let result = run_inla_inference(
-            &[0.0],
-            &build_prior,
-            &log_prior_density,
-            &obs,
-            "grid",
-            1.0,
-        )
-        .expect("inference should succeed");
+        let result =
+            run_inla_inference(&[0.0], &build_prior, &log_prior_density, &obs, "grid", 1.0)
+                .expect("inference should succeed");
 
         assert_eq!(result.mode.len(), 1);
         assert!(result.mode[0].is_finite());
@@ -1382,9 +1384,7 @@ mod tests {
             a_cols.push(n_lat);
             a_vals.push(1.0);
         }
-        let a =
-            csc_from_triplets_0based(y.len(), n_lat_tot, &a_rows, &a_cols, &a_vals)
-                .unwrap();
+        let a = csc_from_triplets_0based(y.len(), n_lat_tot, &a_rows, &a_cols, &a_vals).unwrap();
 
         let build_prior = |theta: &[f64]| -> Result<CscMatrix, String> {
             let tau = theta[0].exp();

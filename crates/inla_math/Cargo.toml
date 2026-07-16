@@ -17,3 +17,6 @@ criterion = "0.5"
 [[bench]]
 name = "ar1_ldlt"
 harness = false
+
+[lints]
+workspace = true

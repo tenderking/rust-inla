@@ -93,12 +93,11 @@ impl SparseTriplet {
             .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut merged: Vec<(usize, usize, f64)> = Vec::with_capacity(self.entries.len());
         for (r, c, v) in self.entries {
-            if let Some(last) = merged.last_mut() {
-                if last.0 == r && last.1 == c {
+            if let Some(last) = merged.last_mut()
+                && last.0 == r && last.1 == c {
                     last.2 += v;
                     continue;
                 }
-            }
             merged.push((r, c, v));
         }
         self.entries = merged;

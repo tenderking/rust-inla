@@ -203,12 +203,7 @@ pub fn laplace_newton_step_a(
         }
         Some(a_mat) => {
             if a_mat.cols() != n {
-                return Err(format!(
-                    "A has {} cols but Q is {}×{}",
-                    a_mat.cols(),
-                    n,
-                    n
-                ));
+                return Err(format!("A has {} cols but Q is {}×{}", a_mat.cols(), n, n));
             }
             if a_mat.rows() != evals.len() {
                 return Err("eval vector length must match A.nrows (n_obs)".to_string());

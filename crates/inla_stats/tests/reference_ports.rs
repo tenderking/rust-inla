@@ -4,8 +4,8 @@
 use inla_stats::{
     BinomialObs, GaussianObs, Link, Obs, PoissonObs, ar1_precision_csc, arp_precision_csc,
     besag_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc, fgn_hurst_from_intern,
-    fgn_precision_csc, iid_precision_csc, run_inla_inference, rw1_precision_csc,
-    rw2_precision_csc, seasonal_precision_csc,
+    fgn_precision_csc, iid_precision_csc, run_inla_inference, rw1_precision_csc, rw2_precision_csc,
+    seasonal_precision_csc,
 };
 
 fn log_prior_flatish(theta: &[f64]) -> f64 {
@@ -18,7 +18,12 @@ fn assert_finite_result(result: &inla_stats::InferenceResult, n: usize, m: usize
     assert_eq!(result.latent_means.len(), n);
     assert_eq!(result.latent_variances.len(), n);
     assert!(result.latent_means.iter().all(|v| v.is_finite()));
-    assert!(result.latent_variances.iter().all(|&v| v > 0.0 && v.is_finite()));
+    assert!(
+        result
+            .latent_variances
+            .iter()
+            .all(|&v| v > 0.0 && v.is_finite())
+    );
     assert!(result.marginal_log_lik.is_finite());
 }
 
@@ -54,10 +59,17 @@ fn port_iid_gaussian_model_selection() {
     let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
         .expect("model selection");
     assert!(result.marginal_log_lik.is_finite());
-    assert!(result.marginal_log_lik_gaussian.is_finite() || result.marginal_log_lik_gaussian.is_nan());
+    assert!(
+        result.marginal_log_lik_gaussian.is_finite() || result.marginal_log_lik_gaussian.is_nan()
+    );
     assert!(result.dic.is_finite());
     assert_eq!(result.cpo.len(), n);
-    assert!(result.cpo.iter().all(|v| matches!(v, Some(c) if c.is_finite() && *c > 0.0)));
+    assert!(
+        result
+            .cpo
+            .iter()
+            .all(|v| matches!(v, Some(c) if c.is_finite() && *c > 0.0))
+    );
 }
 
 #[test]
@@ -104,9 +116,15 @@ fn port_fgn_gaussian() {
         let hurst = 1.0 / (1.0 + (-theta[1]).exp());
         fgn_precision_csc(n, hurst, tau)
     };
-    let result =
-        run_inla_inference(&[0.0, 0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
-            .expect("fgn");
+    let result = run_inla_inference(
+        &[0.0, 0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        "ccd",
+        1.0,
+    )
+    .expect("fgn");
     assert_finite_result(&result, n, 2);
     let est_h = 1.0 / (1.0 + (-result.mode[1]).exp());
     assert!(est_h > 0.0 && est_h < 1.0);
@@ -135,9 +153,15 @@ fn port_fgn_approx_order4_gaussian() {
         let hurst = fgn_hurst_from_intern(theta[1].clamp(-6.0, 6.0));
         fgn_approx_precision_csc(n, hurst, tau, 4, 1e8)
     };
-    let result =
-        run_inla_inference(&[1.0, 1.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
-            .expect("fgn approx");
+    let result = run_inla_inference(
+        &[1.0, 1.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        "ccd",
+        1.0,
+    )
+    .expect("fgn approx");
     assert_eq!(result.mode.len(), 2);
     assert!(result.mode.iter().all(|v| v.is_finite()));
     let h = fgn_hurst_from_intern(result.mode[1]);
@@ -159,10 +183,12 @@ fn port_rw1_gaussian() {
 #[test]
 fn port_rw2_gaussian() {
     let n = 15;
-    let y: Vec<f64> = (0..n).map(|i| {
-        let t = i as f64 / n as f64;
-        t * t
-    }).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let t = i as f64 / n as f64;
+            t * t
+        })
+        .collect();
     let obs = gaussian_obs(&y, 40.0);
     let build_prior = |theta: &[f64]| rw2_precision_csc(n, theta[0].exp());
     let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
@@ -196,7 +222,9 @@ fn port_besag_gaussian() {
         vec![4, 0],
     ];
     let n = adj.len();
-    let y: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 0.5 } else { -0.3 }).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { 0.5 } else { -0.3 })
+        .collect();
     let obs = gaussian_obs(&y, 10.0);
     let build_prior = |theta: &[f64]| besag_precision_csc(&adj, theta[0].exp());
     let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)

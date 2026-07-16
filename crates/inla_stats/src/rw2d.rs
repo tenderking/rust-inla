@@ -68,10 +68,7 @@ pub fn rw2d_precision_csc(
                                 1 => val = 2.0,
                                 _ => {}
                             },
-                            2 => match dy {
-                                0 => val = 1.0,
-                                _ => {}
-                            },
+                            2 if dy == 0 => val = 1.0,
                             _ => {}
                         }
                     } else if bvalue_zero {
@@ -90,17 +87,16 @@ pub fn rw2d_precision_csc(
                                 1 => val = 2.0,
                                 _ => {}
                             },
-                            2 => match dy {
-                                0 => val = 1.0,
-                                _ => {}
-                            },
+                            2 if dy == 0 => val = 1.0,
                             _ => {}
                         }
                     } else {
                         let dx = (i as isize - ii as isize).abs();
                         let dy = (j as isize - jj as isize).abs();
 
-                        if std::cmp::max(dx, dy) > 2 || (std::cmp::max(dx, dy) == 2 && std::cmp::min(dx, dy) >= 1) {
+                        if std::cmp::max(dx, dy) > 2
+                            || (std::cmp::max(dx, dy) == 2 && std::cmp::min(dx, dy) >= 1)
+                        {
                             continue;
                         }
 
@@ -117,8 +113,16 @@ pub fn rw2d_precision_csc(
                                 val = -8.0;
                             }
                         } else if (i == ii) && (j == jj) {
-                            let itmp = if i > 1 { map[std::cmp::max(2, i as isize + 5 - nrow as isize) as usize] } else { i };
-                            let jtmp = if j > 1 { map[std::cmp::max(2, j as isize + 5 - ncol as isize) as usize] } else { j };
+                            let itmp = if i > 1 {
+                                map[std::cmp::max(2, i as isize + 5 - nrow as isize) as usize]
+                            } else {
+                                i
+                            };
+                            let jtmp = if j > 1 {
+                                map[std::cmp::max(2, j as isize + 5 - ncol as isize) as usize]
+                            } else {
+                                j
+                            };
 
                             let iref = std::cmp::max(itmp, jtmp);
                             let jref = std::cmp::min(itmp, jtmp);
@@ -138,7 +142,8 @@ pub fn rw2d_precision_csc(
 
                             if (imin == 0 || imax == nrow - 1) && (jmin == 0 || jmax == ncol - 1) {
                                 val = -4.0;
-                            } else if imin == 0 || imax == nrow - 1 || jmin == 0 || jmax == ncol - 1 {
+                            } else if imin == 0 || imax == nrow - 1 || jmin == 0 || jmax == ncol - 1
+                            {
                                 val = -6.0;
                             } else {
                                 val = -8.0;

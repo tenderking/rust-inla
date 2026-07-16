@@ -103,7 +103,9 @@ pub fn at_diag_a(a: &CscMatrix, d: &[f64]) -> Result<CscMatrix, String> {
         if di == 0.0 || !di.is_finite() {
             continue;
         }
-        let row = a_csr.outer_view(i).ok_or_else(|| "CSR row view failed".to_string())?;
+        let row = a_csr
+            .outer_view(i)
+            .ok_or_else(|| "CSR row view failed".to_string())?;
         let entries: Vec<(usize, f64)> = row.iter().map(|(j, &v)| (j, v)).collect();
         for &(j, aj) in &entries {
             for &(k, ak) in &entries {
@@ -237,7 +239,9 @@ pub fn csc_from_triplets_0based(
         let r = rows[k];
         let c = cols[k];
         if r >= nrow || c >= ncol {
-            return Err(format!("triplet index ({r},{c}) out of bounds ({nrow}x{ncol})"));
+            return Err(format!(
+                "triplet index ({r},{c}) out of bounds ({nrow}x{ncol})"
+            ));
         }
         tri.add_triplet(r, c, vals[k]);
     }

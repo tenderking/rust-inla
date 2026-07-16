@@ -69,7 +69,7 @@ pub fn rw1_cyclic_precision_csc(n: usize, tau: f64) -> Result<CscMatrix, String>
             if idiff == 0 {
                 tri.add_triplet(i, j, 2.0 * tau);
             } else if idiff == 1 {
-                tri.add_triplet(i, j, -1.0 * tau);
+                tri.add_triplet(i, j, -tau);
             }
         }
     }
@@ -101,7 +101,12 @@ pub fn rw2_cyclic_precision_csc(n: usize, tau: f64) -> Result<CscMatrix, String>
     Ok(tri.to_csc())
 }
 
-pub fn seasonal_precision_csc(n: usize, s: usize, tau: f64, cyclic: bool) -> Result<CscMatrix, String> {
+pub fn seasonal_precision_csc(
+    n: usize,
+    s: usize,
+    tau: f64,
+    cyclic: bool,
+) -> Result<CscMatrix, String> {
     if s == 0 {
         return Err("seasonal period s must be >= 1".to_string());
     }
@@ -118,11 +123,7 @@ pub fn seasonal_precision_csc(n: usize, s: usize, tau: f64, cyclic: bool) -> Res
             let val = if cyclic {
                 let diff = (i as isize - j as isize).abs();
                 let idiff = std::cmp::min(diff, n as isize - diff) as usize;
-                if idiff >= s {
-                    0.0
-                } else {
-                    (s - idiff) as f64
-                }
+                if idiff >= s { 0.0 } else { (s - idiff) as f64 }
             } else {
                 let imin = std::cmp::min(i, j);
                 let imax = std::cmp::max(i, j);
@@ -247,7 +248,7 @@ fn invert_spd_cholesky(a: &[f64], n: usize) -> Result<Vec<f64>, String> {
                 s -= l[i * n + k] * l[j * n + k];
             }
             if i == j {
-                if !(s > 1e-15) {
+                if s <= 1e-15 {
                     return Err("FGN covariance is not positive definite".to_string());
                 }
                 l[i * n + j] = s.sqrt();

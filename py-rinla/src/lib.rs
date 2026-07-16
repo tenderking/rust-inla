@@ -1,15 +1,18 @@
+use inla_core::ar1_precision;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use pyo3::exceptions::PyValueError;
-use inla_core::ar1_precision;
 
 /// Computes a 1D AR1 precision matrix and returns sparse triplets (i, j, x)
 /// in 1-based format (compatible with R sparse matrices).
 #[pyfunction]
 #[pyo3(signature = (n, rho, tau=1.0))]
-fn ar1_precision_matrix(n: usize, rho: f64, tau: f64) -> PyResult<(Vec<usize>, Vec<usize>, Vec<f64>)> {
-    let q = ar1_precision(n, rho, tau)
-        .map_err(|e| PyValueError::new_err(e))?;
+fn ar1_precision_matrix(
+    n: usize,
+    rho: f64,
+    tau: f64,
+) -> PyResult<(Vec<usize>, Vec<usize>, Vec<f64>)> {
+    let q = ar1_precision(n, rho, tau).map_err(PyValueError::new_err)?;
     Ok((q.i, q.j, q.x))
 }
 
@@ -28,7 +31,7 @@ impl PyCscMatrix {
     #[pyo3(signature = (nrow, ncol, i, j, x))]
     fn new(nrow: usize, ncol: usize, i: Vec<usize>, j: Vec<usize>, x: Vec<f64>) -> PyResult<Self> {
         let matrix = inla_core::sparse::triplets_to_csc(nrow, ncol, &i, &j, &x)
-            .map_err(|e| PyValueError::new_err(e))?;
+            .map_err(PyValueError::new_err)?;
         Ok(PyCscMatrix { matrix })
     }
 
@@ -84,26 +87,23 @@ impl PyCscMatrix {
         let c_uint64 = ctypes.getattr("c_uint64")?;
         let c_uint64_ptr_t = ctypes.call_method1("POINTER", (c_uint64,))?;
         let cast_indptr = ctypes.call_method1("cast", (self.indptr_ptr(), &c_uint64_ptr_t))?;
-        let indptr_arr = np.getattr("ctypeslib")?.call_method1(
-            "as_array",
-            (cast_indptr, (self.indptr_len(),)),
-        )?;
+        let indptr_arr = np
+            .getattr("ctypeslib")?
+            .call_method1("as_array", (cast_indptr, (self.indptr_len(),)))?;
 
         // indices: cast raw pointer and create a numpy array view
         let cast_indices = ctypes.call_method1("cast", (self.indices_ptr(), &c_uint64_ptr_t))?;
-        let indices_arr = np.getattr("ctypeslib")?.call_method1(
-            "as_array",
-            (cast_indices, (self.indices_len(),)),
-        )?;
+        let indices_arr = np
+            .getattr("ctypeslib")?
+            .call_method1("as_array", (cast_indices, (self.indices_len(),)))?;
 
         // data: cast raw pointer and create a numpy array view
         let c_double = ctypes.getattr("c_double")?;
         let c_double_ptr_t = ctypes.call_method1("POINTER", (c_double,))?;
         let cast_data = ctypes.call_method1("cast", (self.data_ptr(), &c_double_ptr_t))?;
-        let data_arr = np.getattr("ctypeslib")?.call_method1(
-            "as_array",
-            (cast_data, (self.data_len(),)),
-        )?;
+        let data_arr = np
+            .getattr("ctypeslib")?
+            .call_method1("as_array", (cast_data, (self.data_len(),)))?;
 
         // Build the scipy.sparse.csc_matrix
         let shape = self.shape();
@@ -114,7 +114,7 @@ impl PyCscMatrix {
             ((data_arr, indices_arr, indptr_arr),),
             Some(&kwargs),
         )?;
-        
+
         // Custom attribute to keep the Rust wrapper and its memory alive
         let py_self = Bound::new(py, self.clone())?;
         csc_matrix.setattr("_base_matrix", py_self)?;
@@ -217,8 +217,8 @@ pub struct PyInferenceResult {
 #[pyfunction]
 #[pyo3(signature = (n, rho, tau=1.0))]
 fn ar1_precision_matrix_csc(n: usize, rho: f64, tau: f64) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::sparse::ar1_precision_csc(n, rho, tau)
-        .map_err(|e| PyValueError::new_err(e))?;
+    let csc =
+        inla_core::sparse::ar1_precision_csc(n, rho, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -227,7 +227,7 @@ fn ar1_precision_matrix_csc(n: usize, rho: f64, tau: f64) -> PyResult<PyCscMatri
 #[pyo3(signature = (n, tau=1.0))]
 fn rw1_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
     let csc = inla_core::latent_models::rw1_precision_csc(n, tau)
-        .map_err(|e| PyValueError::new_err(e))?;
+        .map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -236,7 +236,7 @@ fn rw1_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 #[pyo3(signature = (n, tau=1.0))]
 fn rw2_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
     let csc = inla_core::latent_models::rw2_precision_csc(n, tau)
-        .map_err(|e| PyValueError::new_err(e))?;
+        .map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -245,7 +245,7 @@ fn rw2_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 #[pyo3(signature = (n, tau=1.0))]
 fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
     let csc = inla_core::latent_models::iid_precision_csc(n, tau)
-        .map_err(|e| PyValueError::new_err(e))?;
+        .map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -288,7 +288,9 @@ fn run_inla_inference_py(
     let build_prior_closure = move |theta: &[f64]| -> Result<inla_core::sparse::CscMatrix, String> {
         Python::with_gil(|py| {
             let theta_py = theta.to_vec();
-            let res = build_prior.call1(py, (theta_py,)).map_err(|e| e.to_string())?;
+            let res = build_prior
+                .call1(py, (theta_py,))
+                .map_err(|e| e.to_string())?;
             let py_matrix: PyCscMatrix = res.extract(py).map_err(|e| e.to_string())?;
             Ok(py_matrix.matrix)
         })
@@ -306,23 +308,26 @@ fn run_inla_inference_py(
         })
     };
 
-    let mut opts = inla_core::MarginalOptions::default();
-    opts.n_points = n_points;
-    opts.latent_indices = latent_marginal_indices.unwrap_or_default();
-
+    let opts = inla_core::MarginalOptions {
+        n_points,
+        latent_indices: latent_marginal_indices.unwrap_or_default(),
+        ..Default::default()
+    };
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
-    let result = py.allow_threads(|| {
-        inla_core::run_inla_inference_a(
-            &initial_theta,
-            &build_prior_closure,
-            &log_prior_density_closure,
-            &rust_obs,
-            None,
-            strategy,
-            step_or_f0,
-            &opts,
-        )
-    }).map_err(|e| PyValueError::new_err(e))?;
+    let result = py
+        .allow_threads(|| {
+            inla_core::run_inla_inference_a(
+                &initial_theta,
+                &build_prior_closure,
+                &log_prior_density_closure,
+                &rust_obs,
+                None,
+                strategy,
+                step_or_f0,
+                &opts,
+            )
+        })
+        .map_err(PyValueError::new_err)?;
 
     // 5. Build and return the wrapped result
     Ok(PyInferenceResult {
@@ -356,34 +361,52 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
     if dict.is_none() {
         return Ok(inla_core::Obs::None);
     }
-    
+
     let family_item = dict.get_item("family")?;
     if family_item.is_none() {
         return Ok(inla_core::Obs::None);
     }
     let family: String = family_item.extract()?;
-    
+
     let link_str: Option<String> = match dict.get_item("link") {
-        Ok(item) => if item.is_none() { None } else { Some(item.extract()?) },
+        Ok(item) => {
+            if item.is_none() {
+                None
+            } else {
+                Some(item.extract()?)
+            }
+        }
         Err(_) => None,
     };
-    
+
     let link = match link_str.as_deref() {
         Some("identity") => inla_core::Link::Identity,
         Some("log") => inla_core::Link::Log,
         Some("logit") => inla_core::Link::Logit,
-        None | Some("default") | Some("") => {
-            match family.as_str() {
-                "gaussian" | "laplace" => inla_core::Link::Identity,
-                "poisson" | "nbinomial" | "negative_binomial" | "zero_inflated_poisson"
-                | "zeroinflatedpoisson0" | "zeroinflatedpoisson1" | "exponential"
-                | "exponential_survival" | "weibull" | "weibull_survival" => inla_core::Link::Log,
-                "binomial" | "zero_inflated_binomial" | "zeroinflatedbinomial0"
-                | "zeroinflatedbinomial1" => inla_core::Link::Logit,
-                _ => inla_core::Link::Identity,
-            }
+        None | Some("default") | Some("") => match family.as_str() {
+            "gaussian" | "laplace" => inla_core::Link::Identity,
+            "poisson"
+            | "nbinomial"
+            | "negative_binomial"
+            | "zero_inflated_poisson"
+            | "zeroinflatedpoisson0"
+            | "zeroinflatedpoisson1"
+            | "exponential"
+            | "exponential_survival"
+            | "weibull"
+            | "weibull_survival" => inla_core::Link::Log,
+            "binomial"
+            | "zero_inflated_binomial"
+            | "zeroinflatedbinomial0"
+            | "zeroinflatedbinomial1" => inla_core::Link::Logit,
+            _ => inla_core::Link::Identity,
+        },
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "unknown link function: {}",
+                other
+            )));
         }
-        Some(other) => return Err(PyValueError::new_err(format!("unknown link function: {}", other))),
     };
 
     match family.as_str() {
@@ -391,30 +414,55 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
         "gaussian" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let precision: f64 = dict.get_item("precision")?.extract()?;
-            Ok(inla_core::Obs::Gaussian(inla_core::GaussianObs { y, precision, link }))
+            Ok(inla_core::Obs::Gaussian(inla_core::GaussianObs {
+                y,
+                precision,
+                link,
+            }))
         }
         "poisson" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let exposure: f64 = dict.get_item("exposure")?.extract()?;
-            Ok(inla_core::Obs::Poisson(inla_core::PoissonObs { y, exposure, link }))
+            Ok(inla_core::Obs::Poisson(inla_core::PoissonObs {
+                y,
+                exposure,
+                link,
+            }))
         }
         "binomial" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let n: f64 = dict.get_item("n")?.extract()?;
-            Ok(inla_core::Obs::Binomial(inla_core::BinomialObs { y, n, link }))
+            Ok(inla_core::Obs::Binomial(inla_core::BinomialObs {
+                y,
+                n,
+                link,
+            }))
         }
         "negative_binomial" | "nbinomial" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let exposure: f64 = dict.get_item("exposure")?.extract()?;
             let size: f64 = dict.get_item("size")?.extract()?;
-            Ok(inla_core::Obs::NegativeBinomial(inla_core::NegativeBinomialObs { y, exposure, size, link }))
+            Ok(inla_core::Obs::NegativeBinomial(
+                inla_core::NegativeBinomialObs {
+                    y,
+                    exposure,
+                    size,
+                    link,
+                },
+            ))
         }
         "zero_inflated_poisson" | "zeroinflatedpoisson0" | "zeroinflatedpoisson1" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let exposure: f64 = dict.get_item("exposure")?.extract()?;
             let zero_prob: f64 = dict.get_item("zero_prob")?.extract()?;
             let inflation_str: Option<String> = match dict.get_item("inflation") {
-                Ok(item) => if item.is_none() { None } else { Some(item.extract()?) },
+                Ok(item) => {
+                    if item.is_none() {
+                        None
+                    } else {
+                        Some(item.extract()?)
+                    }
+                }
                 Err(_) => None,
             };
             let inflation = if family == "zeroinflatedpoisson1" {
@@ -425,14 +473,28 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
                     _ => inla_core::ZeroInflationType::Type0,
                 }
             };
-            Ok(inla_core::Obs::ZeroInflatedPoisson(inla_core::ZeroInflatedPoissonObs { y, exposure, zero_prob, link, inflation }))
+            Ok(inla_core::Obs::ZeroInflatedPoisson(
+                inla_core::ZeroInflatedPoissonObs {
+                    y,
+                    exposure,
+                    zero_prob,
+                    link,
+                    inflation,
+                },
+            ))
         }
         "zero_inflated_binomial" | "zeroinflatedbinomial0" | "zeroinflatedbinomial1" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let n: f64 = dict.get_item("n")?.extract()?;
             let zero_prob: f64 = dict.get_item("zero_prob")?.extract()?;
             let inflation_str: Option<String> = match dict.get_item("inflation") {
-                Ok(item) => if item.is_none() { None } else { Some(item.extract()?) },
+                Ok(item) => {
+                    if item.is_none() {
+                        None
+                    } else {
+                        Some(item.extract()?)
+                    }
+                }
                 Err(_) => None,
             };
             let inflation = if family == "zeroinflatedbinomial1" {
@@ -443,26 +505,51 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
                     _ => inla_core::ZeroInflationType::Type0,
                 }
             };
-            Ok(inla_core::Obs::ZeroInflatedBinomial(inla_core::ZeroInflatedBinomialObs { y, n, zero_prob, link, inflation }))
+            Ok(inla_core::Obs::ZeroInflatedBinomial(
+                inla_core::ZeroInflatedBinomialObs {
+                    y,
+                    n,
+                    zero_prob,
+                    link,
+                    inflation,
+                },
+            ))
         }
         "laplace" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let alpha: f64 = dict.get_item("alpha")?.extract()?;
             let gamma: f64 = dict.get_item("gamma")?.extract()?;
-            Ok(inla_core::Obs::Laplace(inla_core::LaplaceObs { y, alpha, gamma, link }))
+            Ok(inla_core::Obs::Laplace(inla_core::LaplaceObs {
+                y,
+                alpha,
+                gamma,
+                link,
+            }))
         }
         "exponential_survival" | "exponential" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let event: f64 = dict.get_item("event")?.extract()?;
-            Ok(inla_core::Obs::ExponentialSurvival(inla_core::ExponentialSurvivalObs { y, event, link }))
+            Ok(inla_core::Obs::ExponentialSurvival(
+                inla_core::ExponentialSurvivalObs { y, event, link },
+            ))
         }
         "weibull_survival" | "weibull" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let event: f64 = dict.get_item("event")?.extract()?;
             let shape: f64 = dict.get_item("shape")?.extract()?;
-            Ok(inla_core::Obs::WeibullSurvival(inla_core::WeibullSurvivalObs { y, event, shape, link }))
+            Ok(inla_core::Obs::WeibullSurvival(
+                inla_core::WeibullSurvivalObs {
+                    y,
+                    event,
+                    shape,
+                    link,
+                },
+            ))
         }
-        _ => Err(PyValueError::new_err(format!("unknown observation family: {}", family))),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown observation family: {}",
+            family
+        ))),
     }
 }
 
@@ -470,8 +557,7 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
 #[pyfunction]
 #[pyo3(signature = (n, hurst, tau=1.0))]
 fn fgn_precision_matrix(n: usize, hurst: f64, tau: f64) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::fgn_precision_csc(n, hurst, tau)
-        .map_err(PyValueError::new_err)?;
+    let csc = inla_core::fgn_precision_csc(n, hurst, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 

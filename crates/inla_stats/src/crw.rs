@@ -40,11 +40,7 @@ pub fn crw1_precision_csc(positions: &[f64], tau: f64) -> Result<CscMatrix, Stri
     Ok(tri.to_csc())
 }
 
-pub fn crw2_precision_csc(
-    positions: &[f64],
-    tau: f64,
-    layout: &str,
-) -> Result<CscMatrix, String> {
+pub fn crw2_precision_csc(positions: &[f64], tau: f64, layout: &str) -> Result<CscMatrix, String> {
     let n = positions.len();
     if n < 3 {
         return Err("crw2 requires n >= 3".to_string());
@@ -75,13 +71,25 @@ pub fn crw2_precision_csc(
 
     if layout == "simple" {
         let get_idelta = |k: isize| {
-            if k < 0 || k >= (n - 1) as isize { 0.0 } else { idelta[k as usize] }
+            if k < 0 || k >= (n - 1) as isize {
+                0.0
+            } else {
+                idelta[k as usize]
+            }
         };
         let get_idelta2 = |k: isize| {
-            if k < 0 || k >= (n - 1) as isize { 0.0 } else { idelta2[k as usize] }
+            if k < 0 || k >= (n - 1) as isize {
+                0.0
+            } else {
+                idelta2[k as usize]
+            }
         };
         let get_isdelta = |k: isize| {
-            if k < 0 || k >= (n - 2) as isize { 0.0 } else { isdelta[k as usize] }
+            if k < 0 || k >= (n - 2) as isize {
+                0.0
+            } else {
+                isdelta[k as usize]
+            }
         };
         let get_sidelta = |k: isize| {
             if k == -1 {
@@ -105,9 +113,10 @@ pub fn crw2_precision_csc(
                 let mut val = 0.0;
                 if idiff == 0 {
                     let idx = imax as isize;
-                    val = 2.0 * (get_idelta2(idx - 1) * get_isdelta(idx - 2)
-                        + get_idelta(idx - 1) * get_idelta(idx) * get_sidelta(idx - 1)
-                        + get_idelta2(idx) * get_isdelta(idx));
+                    val = 2.0
+                        * (get_idelta2(idx - 1) * get_isdelta(idx - 2)
+                            + get_idelta(idx - 1) * get_idelta(idx) * get_sidelta(idx - 1)
+                            + get_idelta2(idx) * get_isdelta(idx));
                 } else if idiff == 1 {
                     let idx = imax as isize;
                     val = -2.0 * get_idelta2(idx - 1) * (get_idelta(idx - 2) + get_idelta(idx));
@@ -130,12 +139,30 @@ pub fn crw2_precision_csc(
             for nnode in 0..dim {
                 let (node_i, nnode_i, node_tp, nnode_tp) = match layout {
                     "pairs" => {
-                        let (n1, n2) = if node < nnode { (node, nnode) } else { (nnode, node) };
-                        (n1 / 2, n2 / 2, if n1 % 2 == 0 { 0 } else { 1 }, if n2 % 2 == 0 { 0 } else { 1 })
+                        let (n1, n2) = if node < nnode {
+                            (node, nnode)
+                        } else {
+                            (nnode, node)
+                        };
+                        (
+                            n1 / 2,
+                            n2 / 2,
+                            if n1 % 2 == 0 { 0 } else { 1 },
+                            if n2 % 2 == 0 { 0 } else { 1 },
+                        )
                     }
                     "block" => {
-                        let (n1, n2) = if node % n < nnode % n { (node, nnode) } else { (nnode, node) };
-                        (n1 % n, n2 % n, if n1 < n { 0 } else { 1 }, if n2 < n { 0 } else { 1 })
+                        let (n1, n2) = if node % n < nnode % n {
+                            (node, nnode)
+                        } else {
+                            (nnode, node)
+                        };
+                        (
+                            n1 % n,
+                            n2 % n,
+                            if n1 < n { 0 } else { 1 },
+                            if n2 < n { 0 } else { 1 },
+                        )
                     }
                     _ => unreachable!(),
                 };
@@ -267,7 +294,7 @@ mod tests {
         let pos = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
         let q_crw = crw2_precision_csc(&pos, 1.0, "simple").unwrap();
         let q_rw = crate::latent_models::rw2_precision_csc(6, 1.0).unwrap();
-        
+
         let d_crw = dense_from_csc(&q_crw);
         let d_rw = dense_from_csc(&q_rw);
         for i in 0..6 {
@@ -282,10 +309,10 @@ mod tests {
         let pos = [0.0, 1.0, 2.0, 3.0];
         let q_pairs = crw2_precision_csc(&pos, 1.0, "pairs").unwrap();
         let q_block = crw2_precision_csc(&pos, 1.0, "block").unwrap();
-        
+
         assert_eq!(q_pairs.rows(), 8);
         assert_eq!(q_block.rows(), 8);
-        
+
         // Assert symmetry
         let d_pairs = dense_from_csc(&q_pairs);
         let d_block = dense_from_csc(&q_block);
