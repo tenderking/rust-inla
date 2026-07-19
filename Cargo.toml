@@ -5,7 +5,7 @@ members = [
     "crates/inla_stats",
     "crates/inla_core",
     "crates/inla_sys",
-    "py-rinla",
+    "py-inla",
     "r-inla",
 ]
 resolver = "2"

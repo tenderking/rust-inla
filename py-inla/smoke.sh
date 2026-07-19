@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Find workspace root and py-rinla directory
+# Find workspace root and py-inla directory
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 ROOT_DIR="$( cd "$DIR/.." >/dev/null 2>&1 && pwd )"
 VENV_DIR="$ROOT_DIR/.venv"
@@ -19,10 +19,10 @@ source "$VENV_DIR/bin/activate"
 
 # Install required dependencies using uv pip
 echo "Installing dependencies using uv..."
-uv pip install numpy scipy pytest maturin
+uv pip install numpy scipy pytest maturin pandas
 
 # Build and install the Python bindings in develop mode
-echo "Running maturin develop in py-rinla..."
+echo "Running maturin develop in py-inla..."
 cd "$DIR"
 maturin develop
 

@@ -17,4 +17,4 @@ smoke-r:
 	cd r-inla && ./smoke.sh
 
 smoke-py:
-	cd py-rinla && ./smoke.sh
+	cd py-inla && ./smoke.sh

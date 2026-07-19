@@ -13,7 +13,7 @@ The repository is a Cargo workspace mirroring the classic R-INLA split (fmesher 
 | `crates/inla_stats` | Likelihoods, latent GMRFs, INLA inference, DIC/CPO/PIT |
 | `crates/inla_core` | Thin facade re-exporting the three crates (stable API for bindings) |
 | `crates/inla_sys` | Optional legacy C FFI bindings to `gmrflib` via `bindgen` |
-| `py-rinla` | Python front-end via `PyO3` / `Maturin` |
+| `py-inla` | Python front-end via `PyO3` / `Maturin` |
 | `r-inla` | R front-end via `extendr` |
 
 Downstream crates should prefer `inla_core::…` for a stable surface, or depend on `inla_math` / `inla_fmesher` / `inla_stats` directly when iterating on one layer.
@@ -43,13 +43,38 @@ cargo check --workspace
 cargo test --workspace
 ```
 
-### Python (`py-rinla`)
+### Python (`py-inla`)
 
 ```bash
-cd py-rinla
+cd py-inla
 pip install maturin
 maturin develop --release
 ```
+
+High-level R-parity API — one frontend:
+
+```python
+import inla
+
+# `~` or `<-` both work as the response separator
+result = inla(
+    formula="successes <- covariate_x + f(spatial_idx, model='besag')",
+    family="cbinomial",  # alias of binomial
+    data={..., "adj_matrix": adj},  # DataFrame.to_dict(orient="series") works
+    Ntrials=np.column_stack([y, n]),  # cbind(k, n) parity
+)
+print(result.latent_means[0])  # intercept (fixed effects first)
+
+# Custom latent model (R inla.rgeneric.define)
+model = inla.generic.define(
+    n=20,
+    Q=lambda theta: ...,  # precision matrix
+    n_theta=1,
+)
+result = inla("y ~ -1 + f(idx, model='rgeneric')", data=..., rgeneric=model)
+```
+
+Matrix constructors (``ar1_precision_matrix_csc``, …) remain for simulation / custom ``Q``.
 
 ### R (`r-inla`)
 

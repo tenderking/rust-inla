@@ -190,7 +190,6 @@ pub fn eval_likelihood_poisson(eta: f64, o: PoissonObs) -> Result<Eval1D, String
     }
     let mu = o.exposure * lambda;
     let dmu = o.exposure * dl;
-    let d2mu = o.exposure * d2l;
     let logp = if mu > 0.0 {
         o.y * mu.ln() - mu - log_factorial(o.y)?
     } else if o.y == 0.0 {
@@ -203,10 +202,11 @@ pub fn eval_likelihood_poisson(eta: f64, o: PoissonObs) -> Result<Eval1D, String
     } else {
         -dmu
     };
+    // Fisher scoring (expected Hessian): more stable than observed for Newton.
     let hess = if mu > 0.0 {
-        -(o.y / (mu * mu)) * dmu * dmu + (o.y / mu - 1.0) * d2mu
+        -(dmu * dmu) / mu
     } else {
-        -d2mu
+        -(o.exposure * d2l).abs() // fallback near mu=0
     };
     Ok(Eval1D { logp, grad, hess })
 }
@@ -218,7 +218,7 @@ pub fn eval_likelihood_binomial(eta: f64, o: BinomialObs) -> Result<Eval1D, Stri
     if !eta.is_finite() {
         return Err("binomial eta must be finite".to_string());
     }
-    let (p, dp, d2p) = link_forward(eta, o.link)?;
+    let (p, dp, _d2p) = link_forward(eta, o.link)?;
     if !(0.0..=1.0).contains(&p) {
         return Err("binomial probability out of [0,1]".to_string());
     }
@@ -241,12 +241,17 @@ pub fn eval_likelihood_binomial(eta: f64, o: BinomialObs) -> Result<Eval1D, Stri
         log_choose + y * p.ln() + (n - y) * (1.0 - p).ln()
     };
 
-    let a = y / p - (n - y) / (1.0 - p);
-    let b = -y / (p * p) - (n - y) / ((1.0 - p) * (1.0 - p));
+    let a = if p > 0.0 && p < 1.0 {
+        y / p - (n - y) / (1.0 - p)
+    } else {
+        0.0
+    };
+    // Fisher scoring: E[hess] = -n * p * (1-p) = -n * dp for logit.
+    let hess = -n * dp;
     Ok(Eval1D {
         logp,
         grad: a * dp,
-        hess: b * dp * dp + a * d2p,
+        hess,
     })
 }
 
@@ -565,6 +570,34 @@ pub fn find_latent_mode(
     find_latent_mode_a(q_prior, obs, None, max_iter, tol)
 }
 
+fn latent_objective(
+    q_prior: &CscMatrix,
+    obs: &[Obs],
+    a: Option<&CscMatrix>,
+    x: &[f64],
+) -> Result<f64, String> {
+    let eta = match a {
+        None => x.to_vec(),
+        Some(a_mat) => matvec_csc(a_mat, x)?,
+    };
+    let mut log_lik = 0.0;
+    for i in 0..obs.len() {
+        let e = eval_likelihood(eta[i], &obs[i])?;
+        if !e.logp.is_finite() {
+            return Err("non-finite log-likelihood".to_string());
+        }
+        log_lik += e.logp;
+    }
+    let mut q_x = vec![0.0; x.len()];
+    for (col, colvec) in q_prior.outer_iterator().enumerate() {
+        for (row, value) in colvec.iter() {
+            q_x[row] += value * x[col];
+        }
+    }
+    let quad = q_x.iter().zip(x).map(|(a, b)| a * b).sum::<f64>();
+    Ok(log_lik - 0.5 * quad)
+}
+
 /// Mode of π(x | θ, y) with optional projector `A` (`η = A x`).
 pub fn find_latent_mode_a(
     q_prior: &CscMatrix,
@@ -606,17 +639,42 @@ pub fn find_latent_mode_a(
             evals.push(eval_likelihood(eta[i], &obs[i])?);
         }
 
-        let (step, factor) = laplace_newton_step_a(q_prior, &evals, a)?;
-        let mut max_diff = 0.0;
-        for i in 0..n {
-            if !step[i].is_finite() {
-                return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
-            }
-            x[i] += step[i];
-            max_diff = f64::max(max_diff, step[i].abs());
+        let (step, factor) = laplace_newton_step_a(q_prior, &evals, a, &x)?;
+        if step.iter().any(|s| !s.is_finite()) {
+            return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
         }
 
-        if max_diff < tol {
+        // Cap large steps (GLM Newton can overshoot from x=0 with weak curvature).
+        let max_step = step.iter().fold(0.0_f64, |m, s| m.max(s.abs()));
+        let mut alpha = if max_step > 10.0 {
+            10.0 / max_step
+        } else {
+            1.0
+        };
+
+        // Backtrack only when the trial point yields a non-finite objective.
+        let mut x_trial = x.clone();
+        for _ in 0..12 {
+            for i in 0..n {
+                x_trial[i] = x[i] + alpha * step[i];
+            }
+            if latent_objective(q_prior, obs, a, &x_trial).is_ok() {
+                break;
+            }
+            alpha *= 0.5;
+            if alpha < 1e-8 {
+                return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
+            }
+        }
+
+        let mut max_diff = 0.0;
+        for i in 0..n {
+            let dx = x_trial[i] - x[i];
+            max_diff = f64::max(max_diff, dx.abs());
+            x[i] = x_trial[i];
+        }
+
+        if max_diff < tol || max_step < tol {
             ldlt = Some(factor);
             break;
         }
@@ -627,9 +685,7 @@ pub fn find_latent_mode_a(
     }
 
     let factor = ldlt.ok_or_else(|| "Failed to factorize posterior precision".to_string())?;
-
-    let mut a_prior = csc_to_dense(q_prior)?;
-    for i in 0..n {
+    let mut a_prior = csc_to_dense(q_prior)?;    for i in 0..n {
         a_prior[i * n + i] += 1e-12;
     }
     let factor_prior = ldlt_factorize_dense(&a_prior, n)?;
@@ -794,7 +850,22 @@ pub fn run_inla_inference_a(
             }
 
             let q_prior = build_prior(&theta)?;
-            let (x_star, ldlt, marginal_log_lik) = find_latent_mode_a(&q_prior, obs, a, 50, 1e-5)?;
+            let (x_star, ldlt, marginal_log_lik) =
+                match find_latent_mode_a(&q_prior, obs, a, 200, 1e-5) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // Drop this integration node (weight → 0 via -∞ log-posterior).
+                        let n_lat = q_prior.rows();
+                        return Ok((
+                            theta,
+                            vec![0.0; n_lat],
+                            vec![1.0; n_lat],
+                            vec![0.0; n_obs],
+                            vec![1.0; n_obs],
+                            f64::NEG_INFINITY,
+                        ));
+                    }
+                };
 
             let variances = ldlt_diagonal_inverse(&ldlt)?;
             let eta = match a {
@@ -813,6 +884,9 @@ pub fn run_inla_inference_a(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
+    if !results.iter().any(|r| r.5.is_finite()) {
+        return Err("Newton-Raphson did not converge at any integration node".to_string());
+    }
     let mut theta_nodes = Vec::with_capacity(results.len());
     let mut cond_means = Vec::with_capacity(results.len());
     let mut cond_vars = Vec::with_capacity(results.len());
@@ -1413,5 +1487,52 @@ mod tests {
         let pred_r0: f64 = result.predictor_means[0..3].iter().sum::<f64>() / 3.0;
         let pred_r1: f64 = result.predictor_means[3..6].iter().sum::<f64>() / 3.0;
         assert!(pred_r1 > pred_r0);
+    }
+
+    #[test]
+    fn binomial_identity_mode_converges() {
+        use inla_math::design::identity_csc;
+        let n = 20usize;
+        let q = identity_csc(n, 1.0).unwrap();
+        let mut obs = Vec::new();
+        for i in 0..n {
+            let y = if i % 2 == 0 { 4.0 } else { 6.0 };
+            obs.push(Obs::Binomial(BinomialObs {
+                y,
+                n: 10.0,
+                link: Link::Logit,
+            }));
+        }
+        let (x, _f, mlik) = find_latent_mode(&q, &obs, 100, 1e-6).expect("mode");
+        assert!(mlik.is_finite(), "mlik={mlik}");
+        assert!(x.iter().all(|v| v.is_finite()));
+        let mean: f64 = x.iter().sum::<f64>() / n as f64;
+        assert!(mean.abs() < 1.0, "mean eta={mean}");
+    }
+
+    #[test]
+    fn binomial_mode_across_prior_strengths() {
+        use inla_math::design::identity_csc;
+        let n = 54usize;
+        let ys = [
+            3., 5., 4., 2., 5., 6., 3., 4., 5., 3., 4., 6., 2., 5., 4., 3., 5., 4., 6., 3., 4.,
+            5., 3., 4., 5., 2., 6., 4., 3., 5., 4., 3., 5., 4., 6., 3., 4., 5., 3., 4., 5., 2.,
+            6., 4., 3., 5., 4., 3., 5., 4., 6., 3., 4., 5.,
+        ];
+        let mut obs = Vec::new();
+        for y in ys {
+            obs.push(Obs::Binomial(BinomialObs {
+                y,
+                n: 10.0,
+                link: Link::Logit,
+            }));
+        }
+        for tau in [1e-4, 1e-2, 1.0, 1e2, 1e4] {
+            let q = identity_csc(n, tau).unwrap();
+            find_latent_mode(&q, &obs, 100, 1e-5).unwrap_or_else(|e| panic!("tau={tau}: {e}"));
+        }
+        let q = identity_csc(n, 1.0).unwrap();
+        let a = identity_csc(n, 1.0).unwrap();
+        find_latent_mode_a(&q, &obs, Some(&a), 100, 1e-5).expect("A=I");
     }
 }

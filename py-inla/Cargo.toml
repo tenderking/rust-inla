@@ -1,10 +1,10 @@
 [package]
-name = "py-rinla"
+name = "py-inla"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "rinla"
+name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]

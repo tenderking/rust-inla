@@ -6,7 +6,7 @@
 //! | [`inla_math`] | Sparse LDLT, design matrices, CCD/grid, Nelder–Mead |
 //! | [`inla_stats`] | Likelihoods, latent models, INLA inference, DIC/CPO |
 //!
-//! Downstream code (`r-inla`, `py-rinla`) can keep `use inla_core::...`.
+//! Downstream code (`r-inla`, `py-inla`) can keep `use inla_core::...`.
 //! Prefer depending on the leaf crates directly when working inside one layer;
 //! this facade exists so existing `inla_core::module::…` paths keep compiling.
 //!

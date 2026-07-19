@@ -161,31 +161,38 @@ pub fn ldlt_diagonal_inverse(f: &LdltFactor) -> Result<Vec<f64>, String> {
     Ok(diag)
 }
 
-/// One Newton step for the latent mode: solve (Q + (−hess)) δ = grad.
+/// One Newton step for the latent mode: solve `(Q − H) δ = g − Qx`.
 ///
 /// Returns `(step, posterior_factor)` so the caller can reuse the factor when
-/// the step has converged (Gaussian case: exact after one iteration).
+/// the step has converged (Gaussian case: exact after one iteration from `x=0`).
 pub fn laplace_newton_step(
     q_prior: &CscMatrix,
     evals: &[Eval1D],
+    x: &[f64],
 ) -> Result<(Vec<f64>, LdltFactor), String> {
-    laplace_newton_step_a(q_prior, evals, None)
+    laplace_newton_step_a(q_prior, evals, None, x)
 }
 
 /// Newton step with optional observation projector `A` (`n_obs × n_latent`).
 ///
 /// When `A` is `None`, observations map 1:1 onto the latent field.
 /// Otherwise η = A x, and the system is
-/// `(Q − Aᵀ H A) δ = Aᵀ g` with `H = diag(hess)`, `g = grad` w.r.t. η.
+/// `(Q − Aᵀ H A) δ = Aᵀ g − Q x` with `H = diag(hess)`, `g = grad` w.r.t. η.
 pub fn laplace_newton_step_a(
     q_prior: &CscMatrix,
     evals: &[Eval1D],
     a: Option<&CscMatrix>,
+    x: &[f64],
 ) -> Result<(Vec<f64>, LdltFactor), String> {
     if q_prior.rows() != q_prior.cols() {
         return Err("prior precision must be square".to_string());
     }
     let n = q_prior.rows();
+    if x.len() != n {
+        return Err("latent vector length must match precision dimension".to_string());
+    }
+
+    let qx = crate::design::matvec_csc(q_prior, x)?;
 
     match a {
         None => {
@@ -197,9 +204,13 @@ pub fn laplace_newton_step_a(
                 dens[i * n + i] += -evals[i].hess;
             }
             let factor = ldlt_factorize_dense(&dens, n)?;
-            let mut grad: Vec<f64> = evals.iter().map(|e| e.grad).collect();
-            ldlt_solve_in_place(&factor, &mut grad)?;
-            Ok((grad, factor))
+            let mut rhs: Vec<f64> = evals
+                .iter()
+                .enumerate()
+                .map(|(i, e)| e.grad - qx[i])
+                .collect();
+            ldlt_solve_in_place(&factor, &mut rhs)?;
+            Ok((rhs, factor))
         }
         Some(a_mat) => {
             if a_mat.cols() != n {
@@ -214,9 +225,12 @@ pub fn laplace_newton_step_a(
             let dens = csc_to_dense(&q_post)?;
             let factor = ldlt_factorize_dense(&dens, n)?;
             let g_eta: Vec<f64> = evals.iter().map(|e| e.grad).collect();
-            let mut grad_x = crate::design::matvec_transpose_csc(a_mat, &g_eta)?;
-            ldlt_solve_in_place(&factor, &mut grad_x)?;
-            Ok((grad_x, factor))
+            let mut rhs = crate::design::matvec_transpose_csc(a_mat, &g_eta)?;
+            for i in 0..n {
+                rhs[i] -= qx[i];
+            }
+            ldlt_solve_in_place(&factor, &mut rhs)?;
+            Ok((rhs, factor))
         }
     }
 }
@@ -247,7 +261,7 @@ mod tests {
             };
             4
         ];
-        let (step, factor) = laplace_newton_step(&q, &evals).expect("step");
+        let (step, factor) = laplace_newton_step(&q, &evals, &[0.0; 4]).expect("step");
         assert_eq!(step.len(), 4);
         assert_eq!(factor.n, 4);
         assert!(step.iter().all(|v| v.is_finite()));

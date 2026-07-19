@@ -45,7 +45,7 @@ fn bench_laplace_ldlt(c: &mut Criterion) {
             n
         ];
         g.bench_with_input(BenchmarkId::new("pure_rust_step", n), &n, |b, _| {
-            b.iter(|| laplace_newton_step(&q, &evals).expect("step"))
+            b.iter(|| laplace_newton_step(&q, &evals, &vec![0.0; n]).expect("step"))
         });
     }
     g.finish();

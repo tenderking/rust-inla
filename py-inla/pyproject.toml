@@ -3,10 +3,16 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "rinla"
+name = "inla"
 requires-python = ">=3.8"
 version = "0.1.0"
 description = "Fast approximate Bayesian inference using INLA, written in Rust"
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pandas"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "inla._native"

@@ -35,6 +35,12 @@ impl PyCscMatrix {
         Ok(PyCscMatrix { matrix })
     }
 
+    /// Build from a `scipy.sparse` CSC/CSR/COO matrix (copied into Rust CSC).
+    #[staticmethod]
+    fn from_scipy(mat: &Bound<'_, PyAny>) -> PyResult<Self> {
+        csc_from_python(mat).map(|matrix| PyCscMatrix { matrix })
+    }
+
     /// The (rows, cols) dimensions of the matrix.
     #[getter]
     fn shape(&self) -> (usize, usize) {
@@ -121,6 +127,37 @@ impl PyCscMatrix {
 
         Ok(csc_matrix)
     }
+}
+
+/// Accept `PyCscMatrix` or any SciPy sparse matrix convertible to CSC.
+fn csc_from_python(obj: &Bound<'_, PyAny>) -> PyResult<inla_core::sparse::CscMatrix> {
+    if let Ok(py_mat) = obj.extract::<PyRef<'_, PyCscMatrix>>() {
+        return Ok(py_mat.matrix.clone());
+    }
+    let scipy = obj.py().import("scipy.sparse")?;
+    let csc = if obj.hasattr("tocsc")? {
+        obj.call_method0("tocsc")?
+    } else {
+        scipy.call_method1("csc_matrix", (obj,))?
+    };
+    let coo = csc.call_method0("tocoo")?;
+    let nrow: usize = csc.getattr("shape")?.get_item(0)?.extract()?;
+    let ncol: usize = csc.getattr("shape")?.get_item(1)?.extract()?;
+    let rows: Vec<usize> = coo.getattr("row")?.extract()?;
+    let cols: Vec<usize> = coo.getattr("col")?.extract()?;
+    let data: Vec<f64> = coo.getattr("data")?.extract()?;
+    if rows.len() != cols.len() || rows.len() != data.len() {
+        return Err(PyValueError::new_err(
+            "scipy sparse row/col/data length mismatch",
+        ));
+    }
+    let trips: Vec<(usize, usize, f64)> = rows
+        .into_iter()
+        .zip(cols)
+        .zip(data)
+        .map(|((r, c), v)| (r, c, v))
+        .collect();
+    Ok(inla_core::sparse_from_triplets(nrow, ncol, &trips))
 }
 
 /// A 1D density grid `(x, y)` (classic INLA marginal shape).
@@ -266,7 +303,7 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 /// step_or_f0 : float, optional
 ///     Integration step size or f0 design parameter (default 1.0).
 #[pyfunction(name = "run_inla_inference")]
-#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None))]
+#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, a=None))]
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
@@ -277,12 +314,18 @@ fn run_inla_inference_py(
     step_or_f0: f64,
     n_points: usize,
     latent_marginal_indices: Option<Vec<usize>>,
+    a: Option<Bound<'_, PyAny>>,
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
     for item in obs {
         rust_obs.push(parse_obs(&item)?);
     }
+
+    let a_mat = match a {
+        Some(obj) => Some(csc_from_python(&obj)?),
+        None => None,
+    };
 
     // 2. Closure for build_prior calling back to Python
     let build_prior_closure = move |theta: &[f64]| -> Result<inla_core::sparse::CscMatrix, String> {
@@ -291,8 +334,8 @@ fn run_inla_inference_py(
             let res = build_prior
                 .call1(py, (theta_py,))
                 .map_err(|e| e.to_string())?;
-            let py_matrix: PyCscMatrix = res.extract(py).map_err(|e| e.to_string())?;
-            Ok(py_matrix.matrix)
+            let bound = res.bind(py);
+            csc_from_python(bound).map_err(|e| e.to_string())
         })
     };
 
@@ -321,7 +364,7 @@ fn run_inla_inference_py(
                 &build_prior_closure,
                 &log_prior_density_closure,
                 &rust_obs,
-                None,
+                a_mat.as_ref(),
                 strategy,
                 step_or_f0,
                 &opts,
@@ -357,6 +400,12 @@ fn run_inla_inference_py(
 }
 
 /// Helper function to parse python dicts representing observations.
+fn dict_get_f64(dict: &Bound<'_, PyAny>, key: &str) -> PyResult<f64> {
+    dict.get_item(key)?
+        .extract()
+        .map_err(|_| PyValueError::new_err(format!("missing or invalid observation field '{key}'")))
+}
+
 fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
     if dict.is_none() {
         return Ok(inla_core::Obs::None);
@@ -422,7 +471,15 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
         }
         "poisson" => {
             let y: f64 = dict.get_item("y")?.extract()?;
-            let exposure: f64 = dict.get_item("exposure")?.extract()?;
+            let exposure: f64 = if let Ok(e) = dict.get_item("exposure") {
+                if e.is_none() {
+                    dict_get_f64(dict, "E")?
+                } else {
+                    e.extract()?
+                }
+            } else {
+                dict_get_f64(dict, "E")?
+            };
             Ok(inla_core::Obs::Poisson(inla_core::PoissonObs {
                 y,
                 exposure,
@@ -553,6 +610,16 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
     }
 }
 
+/// Build a Besag/ICAR precision matrix from an adjacency list (0-based neighbors).
+///
+/// `adj` is a list of length `n`; `adj[i]` lists neighbors of node `i`.
+#[pyfunction]
+#[pyo3(signature = (adj, tau=1.0))]
+fn besag_precision_matrix(adj: Vec<Vec<usize>>, tau: f64) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::besag_precision_csc(&adj, tau).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
 /// Build an FGN (exact dense) precision matrix.
 #[pyfunction]
 #[pyo3(signature = (n, hurst, tau=1.0))]
@@ -602,9 +669,9 @@ fn fgn_approx_latent_len(n_obs: usize, order: usize) -> usize {
     inla_core::fgn_approx_latent_len(n_obs, order)
 }
 
-/// The initialization function for the Python module.
+/// The initialization function for the Python extension module `inla._native`.
 #[pymodule]
-fn rinla(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCscMatrix>()?;
     m.add_class::<PyMarginal1D>()?;
     m.add_class::<PyInferenceResult>()?;
@@ -613,6 +680,7 @@ fn rinla(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rw1_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(rw2_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(iid_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(besag_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
