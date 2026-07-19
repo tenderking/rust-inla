@@ -8,7 +8,7 @@ fn map_r_error(e: Error) -> Error {
 }
 
 #[extendr]
-fn rinla_read_mesh(path: &str) -> std::result::Result<List, Error> {
+fn inla_rs_read_mesh(path: &str) -> std::result::Result<List, Error> {
     let summary = read_mesh_summary(path).map_err(Error::Other)?;
     Ok(list!(
         n_vertices = summary.n_vertices as i32,
@@ -20,7 +20,7 @@ fn rinla_read_mesh(path: &str) -> std::result::Result<List, Error> {
 }
 
 #[extendr]
-fn rinla_ar1_precision(n: i32, rho: f64, tau: f64) -> std::result::Result<List, Error> {
+fn inla_rs_ar1_precision(n: i32, rho: f64, tau: f64) -> std::result::Result<List, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let precision = ar1_precision(n_usize, rho, tau).map_err(Error::Other)?;
@@ -35,7 +35,7 @@ fn rinla_ar1_precision(n: i32, rho: f64, tau: f64) -> std::result::Result<List, 
 }
 
 #[extendr]
-fn rinla_ar1_precision_csc_dgcmatrix(
+fn inla_rs_ar1_precision_csc_dgcmatrix(
     n: i32,
     rho: f64,
     tau: f64,
@@ -66,7 +66,7 @@ fn csc_to_dgcmatrix(csc: &inla_core::sparse::CscMatrix) -> std::result::Result<R
 }
 
 #[extendr]
-fn rinla_rw1_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_rw1_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::rw1_precision_csc(n_usize, tau).map_err(Error::Other)?;
@@ -74,7 +74,7 @@ fn rinla_rw1_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error>
 }
 
 #[extendr]
-fn rinla_rw2_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_rw2_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::rw2_precision_csc(n_usize, tau).map_err(Error::Other)?;
@@ -82,7 +82,7 @@ fn rinla_rw2_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error>
 }
 
 #[extendr]
-fn rinla_rw1_cyclic_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_rw1_cyclic_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::rw1_cyclic_precision_csc(n_usize, tau).map_err(Error::Other)?;
@@ -90,7 +90,7 @@ fn rinla_rw1_cyclic_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj,
 }
 
 #[extendr]
-fn rinla_rw2_cyclic_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_rw2_cyclic_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::rw2_cyclic_precision_csc(n_usize, tau).map_err(Error::Other)?;
@@ -98,7 +98,7 @@ fn rinla_rw2_cyclic_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj,
 }
 
 #[extendr]
-fn rinla_seasonal_precision_csc(
+fn inla_rs_seasonal_precision_csc(
     n: i32,
     s: i32,
     tau: f64,
@@ -114,7 +114,7 @@ fn rinla_seasonal_precision_csc(
 }
 
 #[extendr]
-fn rinla_two_diid_precision_csc(
+fn inla_rs_two_diid_precision_csc(
     n_pairs: i32,
     rho: f64,
     tau: f64,
@@ -126,7 +126,7 @@ fn rinla_two_diid_precision_csc(
 }
 
 #[extendr]
-fn rinla_iid_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_iid_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::iid_precision_csc(n_usize, tau).map_err(Error::Other)?;
@@ -134,7 +134,7 @@ fn rinla_iid_precision_csc(n: i32, tau: f64) -> std::result::Result<Robj, Error>
 }
 
 #[extendr]
-fn rinla_arp_precision_csc(n: i32, pacf: Vec<f64>, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_arp_precision_csc(n: i32, pacf: Vec<f64>, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::arp_precision_csc(n_usize, &pacf, tau).map_err(Error::Other)?;
@@ -142,7 +142,7 @@ fn rinla_arp_precision_csc(n: i32, pacf: Vec<f64>, tau: f64) -> std::result::Res
 }
 
 #[extendr]
-fn rinla_matern2d_precision_csc(
+fn inla_rs_matern2d_precision_csc(
     nrow: i32,
     ncol: i32,
     nu: i32,
@@ -162,7 +162,7 @@ fn rinla_matern2d_precision_csc(
 }
 
 #[extendr]
-fn rinla_besag_precision_csc(adj_list: List, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_besag_precision_csc(adj_list: List, tau: f64) -> std::result::Result<Robj, Error> {
     let mut adj = Vec::with_capacity(adj_list.len());
     for item in adj_list.values() {
         let nbs: Vec<usize> = item
@@ -178,7 +178,7 @@ fn rinla_besag_precision_csc(adj_list: List, tau: f64) -> std::result::Result<Ro
 }
 
 #[extendr]
-fn rinla_bym_precision_csc(
+fn inla_rs_bym_precision_csc(
     adj_list: List,
     tau_spatial: f64,
     tau_iid: f64,
@@ -198,7 +198,7 @@ fn rinla_bym_precision_csc(
 }
 
 #[extendr]
-fn rinla_spde_precision_mesh_csc(
+fn inla_rs_spde_precision_mesh_csc(
     vertices_mat: Robj,
     triangles_mat: Robj,
     kappa: f64,
@@ -258,13 +258,13 @@ fn rinla_spde_precision_mesh_csc(
 }
 
 #[extendr]
-fn rinla_crw1_precision_csc(positions: Vec<f64>, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_crw1_precision_csc(positions: Vec<f64>, tau: f64) -> std::result::Result<Robj, Error> {
     let csc = inla_core::crw1_precision_csc(&positions, tau).map_err(Error::Other)?;
     csc_to_dgcmatrix(&csc)
 }
 
 #[extendr]
-fn rinla_crw2_precision_csc(
+fn inla_rs_crw2_precision_csc(
     positions: Vec<f64>,
     tau: f64,
     layout: &str,
@@ -274,7 +274,7 @@ fn rinla_crw2_precision_csc(
 }
 
 #[extendr]
-fn rinla_fgn_precision_csc(n: i32, hurst: f64, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_fgn_precision_csc(n: i32, hurst: f64, tau: f64) -> std::result::Result<Robj, Error> {
     let n_usize =
         usize::try_from(n).map_err(|_| Error::Other("n must be non-negative".to_string()))?;
     let csc = inla_core::fgn_precision_csc(n_usize, hurst, tau).map_err(Error::Other)?;
@@ -282,7 +282,7 @@ fn rinla_fgn_precision_csc(n: i32, hurst: f64, tau: f64) -> std::result::Result<
 }
 
 #[extendr]
-fn rinla_fgn_approx_precision_csc(
+fn inla_rs_fgn_approx_precision_csc(
     n: i32,
     hurst: f64,
     tau: f64,
@@ -466,7 +466,7 @@ fn build_observations(
 }
 
 #[extendr]
-fn rinla_run_inla_inference(
+fn inla_rs_run_inla_inference(
     initial_theta: Vec<f64>,
     model_type: &str,
     y_obs: Vec<f64>,
@@ -486,6 +486,7 @@ fn rinla_run_inla_inference(
     gamma: f64,
     shape: f64,
     adj_list: List,
+    deterministic: bool,
 ) -> std::result::Result<List, Error> {
     let n = y_obs.len();
     let model_type_str = model_type.to_lowercase();
@@ -624,13 +625,24 @@ fn rinla_run_inla_inference(
         lprior
     };
 
-    let result = inla_core::run_inla_inference(
+    let constr = match inla_core::model_rank_deficiency(&model_type_str) {
+        0 => None,
+        k => Some(
+            inla_core::sum_to_zero_constraint(n_latent, k).map_err(Error::Other)?,
+        ),
+    };
+
+    let result = inla_core::run_inla_inference_a(
         &initial_theta,
         &build_prior,
         &log_prior_density,
         &obs,
+        None,
+        constr.as_ref(),
         strategy,
         step_or_f0,
+        &inla_core::MarginalOptions::default(),
+        deterministic,
     )
     .map_err(Error::Other)?;
 
@@ -709,7 +721,7 @@ fn marginals_to_r_list(ms: &[inla_core::Marginal1D]) -> std::result::Result<List
 /// `effect_types`: "iid"|"ar1"|"rw2"|"besag"|"fixed"|"fgn"
 /// `adj_lists`: list of the same length as effects; non-besag entries may be `list()`.
 #[extendr]
-fn rinla_run_inla_structured(
+fn inla_rs_run_inla_structured(
     initial_theta: Vec<f64>,
     y_obs: Vec<f64>,
     obs_precision: f64,
@@ -738,6 +750,7 @@ fn rinla_run_inla_structured(
     alpha: f64,
     gamma: f64,
     shape: f64,
+    deterministic: bool,
 ) -> std::result::Result<List, Error> {
     let n_obs = y_obs.len();
     let a_nrow_u = usize::try_from(a_nrow).map_err(|_| Error::Other("a_nrow".into()))?;
@@ -830,6 +843,26 @@ fn rinla_run_inla_structured(
             "sum(effect_ns)={n_lat_expected} != A.ncols={a_ncol_u}"
         )));
     }
+
+    // Hard sum-to-zero on intrinsic random fields (before moving effect_* into build_prior).
+    let constr_opt = {
+        let mut stacked: Option<inla_core::ConstraintSpec> = None;
+        let mut offset = 0usize;
+        for (ei, typ) in effect_types.iter().enumerate() {
+            let n_e = effect_ns_u[ei];
+            let k = inla_core::model_rank_deficiency(typ);
+            if k > 0 {
+                let block = inla_core::sum_to_zero_constraint(n_e, k).map_err(Error::Other)?;
+                let embedded = block.embed(a_ncol_u, offset).map_err(Error::Other)?;
+                stacked = Some(match stacked {
+                    None => embedded,
+                    Some(prev) => prev.vstack(&embedded).map_err(Error::Other)?,
+                });
+            }
+            offset += n_e;
+        }
+        stacked
+    };
 
     let build_prior = move |theta: &[f64]| -> std::result::Result<inla_core::CscMatrix, String> {
         let mut blocks = Vec::with_capacity(effect_types_owned.len());
@@ -952,9 +985,11 @@ fn rinla_run_inla_structured(
         &log_prior_density,
         &obs,
         Some(&a),
+        constr_opt.as_ref(),
         strategy,
         step_or_f0,
         &inla_core::MarginalOptions::default(),
+        deterministic,
     )
     .map_err(Error::Other)?;
 
@@ -979,7 +1014,7 @@ fn rinla_run_inla_structured(
 }
 
 #[extendr]
-fn rinla_scale_model_csc(adj_list: List, tau: f64) -> std::result::Result<Robj, Error> {
+fn inla_rs_scale_model_csc(adj_list: List, tau: f64) -> std::result::Result<Robj, Error> {
     let adj = parse_adj_list_1based(&adj_list)?;
     let q = inla_core::besag_precision_csc(&adj, tau).map_err(Error::Other)?;
     let qs = inla_core::scale_model_csc(&q).map_err(Error::Other)?;
@@ -987,27 +1022,27 @@ fn rinla_scale_model_csc(adj_list: List, tau: f64) -> std::result::Result<Robj, 
 }
 
 extendr_module! {
-    mod rinla_core;
-    fn rinla_read_mesh;
-    fn rinla_ar1_precision;
-    fn rinla_ar1_precision_csc_dgcmatrix;
-    fn rinla_rw1_precision_csc;
-    fn rinla_rw2_precision_csc;
-    fn rinla_rw1_cyclic_precision_csc;
-    fn rinla_rw2_cyclic_precision_csc;
-    fn rinla_seasonal_precision_csc;
-    fn rinla_two_diid_precision_csc;
-    fn rinla_iid_precision_csc;
-    fn rinla_arp_precision_csc;
-    fn rinla_matern2d_precision_csc;
-    fn rinla_besag_precision_csc;
-    fn rinla_bym_precision_csc;
-    fn rinla_spde_precision_mesh_csc;
-    fn rinla_crw1_precision_csc;
-    fn rinla_crw2_precision_csc;
-    fn rinla_fgn_precision_csc;
-    fn rinla_fgn_approx_precision_csc;
-    fn rinla_run_inla_inference;
-    fn rinla_run_inla_structured;
-    fn rinla_scale_model_csc;
+    mod inla_rs;
+    fn inla_rs_read_mesh;
+    fn inla_rs_ar1_precision;
+    fn inla_rs_ar1_precision_csc_dgcmatrix;
+    fn inla_rs_rw1_precision_csc;
+    fn inla_rs_rw2_precision_csc;
+    fn inla_rs_rw1_cyclic_precision_csc;
+    fn inla_rs_rw2_cyclic_precision_csc;
+    fn inla_rs_seasonal_precision_csc;
+    fn inla_rs_two_diid_precision_csc;
+    fn inla_rs_iid_precision_csc;
+    fn inla_rs_arp_precision_csc;
+    fn inla_rs_matern2d_precision_csc;
+    fn inla_rs_besag_precision_csc;
+    fn inla_rs_bym_precision_csc;
+    fn inla_rs_spde_precision_mesh_csc;
+    fn inla_rs_crw1_precision_csc;
+    fn inla_rs_crw2_precision_csc;
+    fn inla_rs_fgn_precision_csc;
+    fn inla_rs_fgn_approx_precision_csc;
+    fn inla_rs_run_inla_inference;
+    fn inla_rs_run_inla_structured;
+    fn inla_rs_scale_model_csc;
 }

@@ -62,6 +62,26 @@ def test_inla_binomial_besag_formula():
     intercept_mean = float(result.latent_means[0])
     assert np.isfinite(intercept_mean)
     assert np.isclose(intercept_mean, float(result.summary_fixed["mean"][0]))
+    # Hard sum-to-zero on Besag block (after intercept + covariate).
+    spatial = np.asarray(result.summary_random["spatial_idx"]["mean"], dtype=float)
+    assert abs(spatial.sum()) < 1e-3
+
+
+def test_control_compute_latent_marginals():
+    rng = np.random.default_rng(1)
+    n = 12
+    y = rng.normal(0, 1, n)
+    data = {"y": y, "idx": np.arange(n)}
+    fit = inla(
+        "y ~ f(idx, model='rw1')",
+        data=data,
+        deterministic=True,
+        control_compute={"return_marginals_latent": [0, 1]},
+    )
+    assert len(fit.marginals_latent) == 2
+    assert list(fit.marginals_latent_indices) == [0, 1]
+    rw = np.asarray(fit.summary_random["idx"]["mean"], dtype=float)
+    assert abs(rw.sum()) < 1e-3
 
 
 def test_inla_generic_define_iid():

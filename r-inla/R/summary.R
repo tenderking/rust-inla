@@ -1,10 +1,10 @@
-#' Print a concise summary of a `"rinla"` fit (classic INLA-style tables).
+#' Print a concise summary of a `"inla_rs"` fit (classic INLA-style tables).
 #'
-#' @param object A `"rinla"` result from [rinla_core_inla].
+#' @param object A `"inla_rs"` result from [inla_rs].
 #' @param digits Significant digits for printing.
 #' @param ... Unused.
 #' @export
-summary.rinla <- function(object, digits = 3L, ...) {
+summary.inla_rs <- function(object, digits = 3L, ...) {
   structure(
     list(
       call = object$call,
@@ -33,14 +33,14 @@ summary.rinla <- function(object, digits = 3L, ...) {
       ),
       digits = digits
     ),
-    class = "summary.rinla"
+    class = "summary.inla_rs"
   )
 }
 
 #' @export
-print.summary.rinla <- function(x, ...) {
+print.summary.inla_rs <- function(x, ...) {
   dig <- if (!is.null(x$digits)) x$digits else 3L
-  cat("Call:\n rinla_core_inla(...)\n\n")
+  cat("Call:\n inla_rs(...)\n\n")
   if (!is.null(x$fixed)) {
     cat("Fixed effects:\n")
     print(round(x$fixed, dig))
@@ -72,7 +72,7 @@ print.summary.rinla <- function(x, ...) {
 }
 
 #' @export
-print.rinla <- function(x, ...) {
+print.inla_rs <- function(x, ...) {
   print(summary(x, ...))
   invisible(x)
 }

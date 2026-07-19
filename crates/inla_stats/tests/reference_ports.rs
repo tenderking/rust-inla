@@ -2,10 +2,11 @@
 //! These call `inla_stats::run_inla_inference`, not classic R-INLA.
 
 use inla_stats::{
-    BinomialObs, GaussianObs, Link, Obs, PoissonObs, ar1_precision_csc, arp_precision_csc,
-    besag_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc, fgn_hurst_from_intern,
-    fgn_precision_csc, iid_precision_csc, run_inla_inference, rw1_precision_csc, rw2_precision_csc,
-    seasonal_precision_csc,
+    BinomialObs, GaussianObs, Link, MarginalOptions, Obs, PoissonObs, ar1_precision_csc,
+    arp_precision_csc, besag_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc,
+    fgn_hurst_from_intern, fgn_precision_csc, iid_precision_csc, run_inla_inference,
+    run_inla_inference_a, rw1_precision_csc, rw2_precision_csc, seasonal_precision_csc,
+    sum_to_zero_constraint,
 };
 
 fn log_prior_flatish(theta: &[f64]) -> f64 {
@@ -175,9 +176,23 @@ fn port_rw1_gaussian() {
     let y: Vec<f64> = (0..n).map(|i| (i as f64) * 0.1).collect();
     let obs = gaussian_obs(&y, 40.0);
     let build_prior = |theta: &[f64]| rw1_precision_csc(n, theta[0].exp());
-    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
-        .expect("rw1");
+    let constr = sum_to_zero_constraint(n, 1).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("rw1");
     assert_finite_result(&result, n, 1);
+    let s: f64 = result.latent_means.iter().sum();
+    assert!(s.abs() < 1e-4, "rw1 sum-to-zero violated: {s}");
 }
 
 #[test]
@@ -191,9 +206,31 @@ fn port_rw2_gaussian() {
         .collect();
     let obs = gaussian_obs(&y, 40.0);
     let build_prior = |theta: &[f64]| rw2_precision_csc(n, theta[0].exp());
-    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
-        .expect("rw2");
+    let constr = sum_to_zero_constraint(n, 2).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("rw2");
     assert_finite_result(&result, n, 1);
+    let s: f64 = result.latent_means.iter().sum();
+    assert!(s.abs() < 1e-4, "rw2 sum violated: {s}");
+    let mean = (n - 1) as f64 / 2.0;
+    let lin: f64 = result
+        .latent_means
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i as f64 - mean) * v)
+        .sum();
+    assert!(lin.abs() < 1e-3, "rw2 linear constraint violated: {lin}");
 }
 
 #[test]
@@ -227,9 +264,23 @@ fn port_besag_gaussian() {
         .collect();
     let obs = gaussian_obs(&y, 10.0);
     let build_prior = |theta: &[f64]| besag_precision_csc(&adj, theta[0].exp());
-    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
-        .expect("besag");
+    let constr = sum_to_zero_constraint(n, 1).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("besag");
     assert_finite_result(&result, n, 1);
+    let s: f64 = result.latent_means.iter().sum();
+    assert!(s.abs() < 1e-4, "besag sum-to-zero violated: {s}");
 }
 
 #[test]

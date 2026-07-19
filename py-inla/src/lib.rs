@@ -248,6 +248,12 @@ pub struct PyInferenceResult {
     /// Indices corresponding to `marginals_latent`.
     #[pyo3(get)]
     pub marginals_latent_indices: Vec<usize>,
+    /// Opt-in predictor mixture marginals (may be empty).
+    #[pyo3(get)]
+    pub marginals_predictor: Vec<PyMarginal1D>,
+    /// Indices corresponding to `marginals_predictor`.
+    #[pyo3(get)]
+    pub marginals_predictor_indices: Vec<usize>,
 }
 
 /// Build an AR1 precision matrix.
@@ -303,7 +309,7 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 /// step_or_f0 : float, optional
 ///     Integration step size or f0 design parameter (default 1.0).
 #[pyfunction(name = "run_inla_inference")]
-#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, a=None))]
+#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false))]
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
@@ -314,7 +320,11 @@ fn run_inla_inference_py(
     step_or_f0: f64,
     n_points: usize,
     latent_marginal_indices: Option<Vec<usize>>,
+    predictor_marginal_indices: Option<Vec<usize>>,
     a: Option<Bound<'_, PyAny>>,
+    constraints_a: Option<Vec<f64>>,
+    constraints_e: Option<Vec<f64>>,
+    deterministic: bool,
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
@@ -325,6 +335,35 @@ fn run_inla_inference_py(
     let a_mat = match a {
         Some(obj) => Some(csc_from_python(&obj)?),
         None => None,
+    };
+
+    let constr_spec = match (constraints_a, constraints_e) {
+        (None, None) => None,
+        (Some(a_vec), Some(e_vec)) => {
+            let k = e_vec.len();
+            if k == 0 {
+                return Err(PyValueError::new_err("constraints_e must be non-empty"));
+            }
+            if a_vec.len() % k != 0 {
+                return Err(PyValueError::new_err(
+                    "constraints_a length must be divisible by len(constraints_e)",
+                ));
+            }
+            let n = a_vec.len() / k;
+            let spec = inla_core::ConstraintSpec {
+                n,
+                k,
+                a: a_vec,
+                e: e_vec,
+            };
+            spec.validate().map_err(PyValueError::new_err)?;
+            Some(spec)
+        }
+        _ => {
+            return Err(PyValueError::new_err(
+                "constraints_a and constraints_e must both be provided or both omitted",
+            ));
+        }
     };
 
     // 2. Closure for build_prior calling back to Python
@@ -354,6 +393,7 @@ fn run_inla_inference_py(
     let opts = inla_core::MarginalOptions {
         n_points,
         latent_indices: latent_marginal_indices.unwrap_or_default(),
+        predictor_indices: predictor_marginal_indices.unwrap_or_default(),
         ..Default::default()
     };
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
@@ -365,9 +405,11 @@ fn run_inla_inference_py(
                 &log_prior_density_closure,
                 &rust_obs,
                 a_mat.as_ref(),
+                constr_spec.as_ref(),
                 strategy,
                 step_or_f0,
                 &opts,
+                deterministic,
             )
         })
         .map_err(PyValueError::new_err)?;
@@ -396,6 +438,12 @@ fn run_inla_inference_py(
             .collect(),
         marginals_latent: result.marginals_latent.iter().map(to_py_marginal).collect(),
         marginals_latent_indices: result.marginals_latent_indices,
+        marginals_predictor: result
+            .marginals_predictor
+            .iter()
+            .map(to_py_marginal)
+            .collect(),
+        marginals_predictor_indices: result.marginals_predictor_indices,
     })
 }
 

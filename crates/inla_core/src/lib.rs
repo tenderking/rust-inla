@@ -110,10 +110,11 @@ pub mod mesh {
 
 // --- Stats flat re-exports (previous inla_core public API) ---
 pub use inla_stats::{
-    Ar1Precision, BinomialObs, CpoResult, DicResult, ExponentialSurvivalObs, GammaPrior,
-    GaussianObs, GaussianPrior, InferenceResult, LaplaceObs, Link, Marginal1D, MarginalOptions,
-    ModelConfig, NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
-    ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision, ar1_precision_csc, arp_precision_csc,
+    Ar1Precision, BinomialObs, ConstraintSpec, CpoResult, DicResult, ExponentialSurvivalObs,
+    GammaPrior, GaussianObs, GaussianPrior, HARD_CONSTRAINT_KAPPA, InferenceResult, LaplaceObs,
+    Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs, Obs, PoissonObs,
+    WeibullSurvivalObs, ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType,
+    ar1_precision, ar1_precision_csc, arp_precision_csc, augment_precision_csc,
     besag_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic, compute_hessian,
     compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
     eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
@@ -124,10 +125,11 @@ pub use inla_stats::{
     fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern, fgn_intern_from_hurst,
     fgn_precision_csc, find_latent_mode, find_latent_mode_a, gaussian_mixture_marginal,
     hyperpar_marginals, iid_precision_csc, marginal_cdf, marginal_quantiles,
-    marginal_summary_quantiles, matern2d_precision_csc, nelder_mead, read_graph_file,
-    run_inla_inference, run_inla_inference_a, rw1_cyclic_precision_csc, rw1_precision_csc,
-    rw2_cyclic_precision_csc, rw2_precision_csc, rw2d_precision_csc, seasonal_precision_csc,
-    spde_precision_csc, two_diid_precision_csc,
+    marginal_summary_quantiles, matern2d_precision_csc, model_rank_deficiency, nelder_mead,
+    project_constraints, read_graph_file, run_inla_inference, run_inla_inference_a,
+    rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
+    rw2d_precision_csc, seasonal_precision_csc, spde_precision_csc, sum_to_zero_constraint,
+    two_diid_precision_csc,
 };
 
 pub mod marginals {

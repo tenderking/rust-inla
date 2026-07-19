@@ -2,13 +2,13 @@
 
 ROOT_RINLA <- "/home/george/workspace/tenderking/rust-inla/r-inla"
 MASTERS <- "/mnt/c/Users/g_m/projects/masters"
-LIB <- "/home/george/workspace/tenderking/rust-inla/target/release/librinla.so"
+LIB <- "/home/george/workspace/tenderking/rust-inla/target/release/libinla_rs.so"
 
 cat("=== masters probe (A-matrix era) ===\n")
-source(file.path(ROOT_RINLA, "R/rinla_core.R"))
+source(file.path(ROOT_RINLA, "R/inla_rs.R"))
 source(file.path(ROOT_RINLA, "R/summary.R"))
 source(file.path(ROOT_RINLA, "R/plot.R"))
-.rinla_core_dynload(LIB)
+.inla_rs_dynload(LIB)
 
 house <- read.csv(file.path(MASTERS, "output/house_data.csv"), stringsAsFactors = FALSE)
 house$boligtype_id <- as.integer(as.character(house$boligtype_id))
@@ -50,11 +50,11 @@ oslo$year_c <- as.numeric(scale(oslo$year, scale = FALSE))
 nye <- house[house$boligtype_id == 1, ]
 nye$y <- as.numeric(scale(nye$ave_kvm_pris_norm))
 nye$year_c <- as.numeric(scale(nye$year, scale = FALSE))
-nye$year_g <- rinla_group(nye$year, n = 10L)
+nye$year_g <- inla_rs_group(nye$year, n = 10L)
 
 cat("\n--- Fixed effects: Oslo new ~ year ---\n")
 res_fe <- tryCatch(
-  rinla_core_inla(
+  inla_rs(
     y ~ year_c + f(idx, model = "iid"),
     data = oslo,
     control.family = list(hyper = list(prec = list(initial = log(10), fixed = TRUE))),
@@ -74,7 +74,7 @@ if (inherits(res_fe, "error")) {
 
 cat("\n--- Unaggregated Besag (A-matrix, many obs/region) ---\n")
 res_besag0 <- tryCatch(
-  rinla_core_inla(
+  inla_rs(
     y ~ -1 + f(region_id, model = "besag", graph = adj_mat),
     data = nye,
     control.family = list(hyper = list(prec = list(initial = log(10), fixed = TRUE))),
@@ -92,7 +92,7 @@ if (inherits(res_besag0, "error")) {
 
 cat("\n--- Besag + year (scale.model, no intercept) ---\n")
 res_besag <- tryCatch(
-  rinla_core_inla(
+  inla_rs(
     # Intrinsic Besag has a constant null space — drop intercept (-1).
     y ~ -1 + year_c + f(region_id, model = "besag", graph = adj_mat, scale.model = TRUE),
     data = nye,
@@ -111,9 +111,9 @@ if (inherits(res_besag, "error")) {
                  res_besag$mode[1], res_besag$marginal_log_lik, max(abs(u))))
 }
 
-cat("\n--- rinla_group(year) + RW2 ---\n")
+cat("\n--- inla_rs_group(year) + RW2 ---\n")
 res_grp <- tryCatch(
-  rinla_core_inla(
+  inla_rs(
     y ~ -1 + f(year_g, model = "rw2"),
     data = nye,
     control.family = list(hyper = list(prec = list(initial = log(10), fixed = TRUE))),
@@ -122,15 +122,15 @@ res_grp <- tryCatch(
   error = function(e) e
 )
 if (inherits(res_grp, "error")) {
-  report(FALSE, "rinla_group + rw2", conditionMessage(res_grp))
+  report(FALSE, "inla_rs_group + rw2", conditionMessage(res_grp))
 } else {
-  report(TRUE, "rinla_group + rw2",
+  report(TRUE, "inla_rs_group + rw2",
          sprintf("n_lat=%d mlik=%.2f", length(res_grp$latent_means), res_grp$marginal_log_lik))
 }
 
 cat("\n--- Multi-f: besag + iid(year_g) ---\n")
 res_multi <- tryCatch(
-  rinla_core_inla(
+  inla_rs(
     # RW2 is also improper; pair Besag with a proper IID year effect for the PoC.
     y ~ -1 + f(region_id, model = "besag", graph = adj_mat) +
       f(year_g, model = "iid"),

@@ -1,11 +1,16 @@
 //! Sparse engine: CSC matrices, LDLT, integration designs, and generic hyper-optimization.
 
+pub mod constraints;
 pub mod design;
 pub mod hyper_opt;
 pub mod integration;
 pub mod ldlt;
 pub mod sparse;
 
+pub use constraints::{
+    ConstraintSpec, HARD_CONSTRAINT_KAPPA, augment_precision_csc, model_rank_deficiency,
+    project_constraints, sum_to_zero_constraint,
+};
 pub use design::{
     add_csc, at_diag_a, block_diag_csc, csc_from_triplets_0based, identity_csc, matvec_csc,
     matvec_transpose_csc, predictor_variances_diag, scale_csc, scale_model_csc,

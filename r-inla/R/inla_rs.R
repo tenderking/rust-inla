@@ -1,111 +1,111 @@
 # Minimal direct R -> Rust bridge for the PoC dynamic library.
 
-.rinla_core_dynload <- function(path) {
+.inla_rs_dynload <- function(path) {
   if (!file.exists(path)) {
     stop("Library not found: ", path, call. = FALSE)
   }
   dyn.load(path)
 }
 
-rinla_core_read_mesh <- function(path) {
-  .Call("wrap__rinla_read_mesh", as.character(path))
+inla_rs_read_mesh <- function(path) {
+  .Call("wrap__inla_rs_read_mesh", as.character(path))
 }
 
-rinla_core_ar1_precision <- function(n, rho, tau = 1) {
+inla_rs_ar1_precision <- function(n, rho, tau = 1) {
   .Call(
-    "wrap__rinla_ar1_precision",
+    "wrap__inla_rs_ar1_precision",
     as.integer(n),
     as.numeric(rho),
     as.numeric(tau)
   )
 }
 
-rinla_core_ar1_precision_csc <- function(n, rho, tau = 1) {
+inla_rs_ar1_precision_csc <- function(n, rho, tau = 1) {
   if (!requireNamespace("Matrix", quietly = TRUE)) {
     stop("Package 'Matrix' is required", call. = FALSE)
   }
   .Call(
-    "wrap__rinla_ar1_precision_csc_dgcmatrix",
+    "wrap__inla_rs_ar1_precision_csc_dgcmatrix",
     as.integer(n),
     as.numeric(rho),
     as.numeric(tau)
   )
 }
 
-rinla_core_rw1_precision_csc <- function(n, tau = 1) {
-  .Call("wrap__rinla_rw1_precision_csc", as.integer(n), as.numeric(tau))
+inla_rs_rw1_precision_csc <- function(n, tau = 1) {
+  .Call("wrap__inla_rs_rw1_precision_csc", as.integer(n), as.numeric(tau))
 }
 
-rinla_core_rw2_precision_csc <- function(n, tau = 1) {
-  .Call("wrap__rinla_rw2_precision_csc", as.integer(n), as.numeric(tau))
+inla_rs_rw2_precision_csc <- function(n, tau = 1) {
+  .Call("wrap__inla_rs_rw2_precision_csc", as.integer(n), as.numeric(tau))
 }
 
-rinla_core_rw1_cyclic_precision_csc <- function(n, tau = 1) {
-  .Call("wrap__rinla_rw1_cyclic_precision_csc", as.integer(n), as.numeric(tau))
+inla_rs_rw1_cyclic_precision_csc <- function(n, tau = 1) {
+  .Call("wrap__inla_rs_rw1_cyclic_precision_csc", as.integer(n), as.numeric(tau))
 }
 
-rinla_core_rw2_cyclic_precision_csc <- function(n, tau = 1) {
-  .Call("wrap__rinla_rw2_cyclic_precision_csc", as.integer(n), as.numeric(tau))
+inla_rs_rw2_cyclic_precision_csc <- function(n, tau = 1) {
+  .Call("wrap__inla_rs_rw2_cyclic_precision_csc", as.integer(n), as.numeric(tau))
 }
 
-rinla_core_seasonal_precision_csc <- function(n, s, tau = 1, cyclic = TRUE) {
-  .Call("wrap__rinla_seasonal_precision_csc", as.integer(n), as.integer(s), as.numeric(tau), as.logical(cyclic))
+inla_rs_seasonal_precision_csc <- function(n, s, tau = 1, cyclic = TRUE) {
+  .Call("wrap__inla_rs_seasonal_precision_csc", as.integer(n), as.integer(s), as.numeric(tau), as.logical(cyclic))
 }
 
-rinla_core_two_diid_precision_csc <- function(n_pairs, rho, tau = 1) {
-  .Call("wrap__rinla_two_diid_precision_csc", as.integer(n_pairs), as.numeric(rho), as.numeric(tau))
+inla_rs_two_diid_precision_csc <- function(n_pairs, rho, tau = 1) {
+  .Call("wrap__inla_rs_two_diid_precision_csc", as.integer(n_pairs), as.numeric(rho), as.numeric(tau))
 }
 
-rinla_core_iid_precision_csc <- function(n, tau = 1) {
-  .Call("wrap__rinla_iid_precision_csc", as.integer(n), as.numeric(tau))
+inla_rs_iid_precision_csc <- function(n, tau = 1) {
+  .Call("wrap__inla_rs_iid_precision_csc", as.integer(n), as.numeric(tau))
 }
 
-rinla_core_arp_precision_csc <- function(n, pacf, tau = 1) {
-  .Call("wrap__rinla_arp_precision_csc", as.integer(n), as.numeric(pacf), as.numeric(tau))
+inla_rs_arp_precision_csc <- function(n, pacf, tau = 1) {
+  .Call("wrap__inla_rs_arp_precision_csc", as.integer(n), as.numeric(pacf), as.numeric(tau))
 }
 
-rinla_core_matern2d_precision_csc <- function(nrow, ncol, nu, range, prec = 1, cyclic = FALSE) {
-  .Call("wrap__rinla_matern2d_precision_csc", as.integer(nrow), as.integer(ncol), as.integer(nu), as.numeric(range), as.numeric(prec), as.logical(cyclic))
+inla_rs_matern2d_precision_csc <- function(nrow, ncol, nu, range, prec = 1, cyclic = FALSE) {
+  .Call("wrap__inla_rs_matern2d_precision_csc", as.integer(nrow), as.integer(ncol), as.integer(nu), as.numeric(range), as.numeric(prec), as.logical(cyclic))
 }
 
-rinla_core_besag_precision_csc <- function(adj_list, tau = 1) {
-  .Call("wrap__rinla_besag_precision_csc", adj_list, as.numeric(tau))
+inla_rs_besag_precision_csc <- function(adj_list, tau = 1) {
+  .Call("wrap__inla_rs_besag_precision_csc", adj_list, as.numeric(tau))
 }
 
-rinla_core_bym_precision_csc <- function(adj_list, tau_spatial = 1, tau_iid = 1) {
-  .Call("wrap__rinla_bym_precision_csc", adj_list, as.numeric(tau_spatial), as.numeric(tau_iid))
+inla_rs_bym_precision_csc <- function(adj_list, tau_spatial = 1, tau_iid = 1) {
+  .Call("wrap__inla_rs_bym_precision_csc", adj_list, as.numeric(tau_spatial), as.numeric(tau_iid))
 }
 
-rinla_core_spde_precision_mesh_csc <- function(vertices_mat, triangles_mat, kappa, tau = 1) {
-  .Call("wrap__rinla_spde_precision_mesh_csc", as.matrix(vertices_mat), as.matrix(triangles_mat), as.numeric(kappa), as.numeric(tau))
+inla_rs_spde_precision_mesh_csc <- function(vertices_mat, triangles_mat, kappa, tau = 1) {
+  .Call("wrap__inla_rs_spde_precision_mesh_csc", as.matrix(vertices_mat), as.matrix(triangles_mat), as.numeric(kappa), as.numeric(tau))
 }
 
-rinla_core_crw1_precision_csc <- function(positions, tau = 1) {
-  .Call("wrap__rinla_crw1_precision_csc", as.numeric(positions), as.numeric(tau))
+inla_rs_crw1_precision_csc <- function(positions, tau = 1) {
+  .Call("wrap__inla_rs_crw1_precision_csc", as.numeric(positions), as.numeric(tau))
 }
 
-rinla_core_crw2_precision_csc <- function(positions, tau = 1, layout = "simple") {
-  .Call("wrap__rinla_crw2_precision_csc", as.numeric(positions), as.numeric(tau), as.character(layout))
+inla_rs_crw2_precision_csc <- function(positions, tau = 1, layout = "simple") {
+  .Call("wrap__inla_rs_crw2_precision_csc", as.numeric(positions), as.numeric(tau), as.character(layout))
 }
 
-rinla_core_fgn_precision_csc <- function(n, hurst, tau = 1) {
+inla_rs_fgn_precision_csc <- function(n, hurst, tau = 1) {
   if (!requireNamespace("Matrix", quietly = TRUE)) {
     stop("Package 'Matrix' is required", call. = FALSE)
   }
   .Call(
-    "wrap__rinla_fgn_precision_csc",
+    "wrap__inla_rs_fgn_precision_csc",
     as.integer(n),
     as.numeric(hurst),
     as.numeric(tau)
   )
 }
 
-rinla_core_fgn_approx_precision_csc <- function(n, hurst, tau = 1, order = 4L, prec_eps = 1e8) {
+inla_rs_fgn_approx_precision_csc <- function(n, hurst, tau = 1, order = 4L, prec_eps = 1e8) {
   if (!requireNamespace("Matrix", quietly = TRUE)) {
     stop("Package 'Matrix' is required", call. = FALSE)
   }
   .Call(
-    "wrap__rinla_fgn_approx_precision_csc",
+    "wrap__inla_rs_fgn_approx_precision_csc",
     as.integer(n),
     as.numeric(hurst),
     as.numeric(tau),
@@ -114,7 +114,7 @@ rinla_core_fgn_approx_precision_csc <- function(n, hurst, tau = 1, order = 4L, p
   )
 }
 
-rinla_core_run_inla_inference <- function(
+inla_rs_run_inla_inference <- function(
     initial_theta,
     model_type,
     y_obs,
@@ -133,9 +133,10 @@ rinla_core_run_inla_inference <- function(
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
-    adj_list = list()) {
+    adj_list = list(),
+    deterministic = FALSE) {
   .Call(
-    "wrap__rinla_run_inla_inference",
+    "wrap__inla_rs_run_inla_inference",
     as.numeric(initial_theta),
     as.character(model_type),
     as.numeric(y_obs),
@@ -154,11 +155,12 @@ rinla_core_run_inla_inference <- function(
     as.numeric(alpha),
     as.numeric(gamma),
     as.numeric(shape),
-    adj_list
+    adj_list,
+    as.logical(deterministic)
   )
 }
 
-rinla_core_run_inla_structured <- function(
+inla_rs_run_inla_structured <- function(
     initial_theta,
     y_obs,
     obs_precision = 1.0,
@@ -186,9 +188,10 @@ rinla_core_run_inla_structured <- function(
     inflation = "type0",
     alpha = 0.5,
     gamma = 1.0,
-    shape = 1.0) {
+    shape = 1.0,
+    deterministic = FALSE) {
   .Call(
-    "wrap__rinla_run_inla_structured",
+    "wrap__inla_rs_run_inla_structured",
     as.numeric(initial_theta),
     as.numeric(y_obs),
     as.numeric(obs_precision),
@@ -216,23 +219,24 @@ rinla_core_run_inla_structured <- function(
     as.character(inflation),
     as.numeric(alpha),
     as.numeric(gamma),
-    as.numeric(shape)
+    as.numeric(shape),
+    as.logical(deterministic)
   )
 }
 
-rinla_core_scale_model_csc <- function(adj_list, tau = 1) {
-  .Call("wrap__rinla_scale_model_csc", adj_list, as.numeric(tau))
+inla_rs_scale_model_csc <- function(adj_list, tau = 1) {
+  .Call("wrap__inla_rs_scale_model_csc", adj_list, as.numeric(tau))
 }
 
 #' Bin a continuous covariate into `n` groups (R-INLA `inla.group` style).
 #'
 #' Returns integer group indices in `1..n` (or `1..n_unique` when `n` is NULL).
-rinla_group <- function(x, n = NULL, method = c("quantile", "cut")) {
+inla_rs_group <- function(x, n = NULL, method = c("quantile", "cut")) {
   method <- match.arg(method)
   x <- as.numeric(x)
   ok <- is.finite(x)
   if (!any(ok)) {
-    stop("rinla_group: no finite values", call. = FALSE)
+    stop("inla_rs_group: no finite values", call. = FALSE)
   }
   if (is.null(n)) {
     ux <- sort(unique(x[ok]))
@@ -241,7 +245,7 @@ rinla_group <- function(x, n = NULL, method = c("quantile", "cut")) {
   }
   n <- as.integer(n)[1]
   if (n < 2L) {
-    stop("rinla_group: n must be >= 2", call. = FALSE)
+    stop("inla_rs_group: n must be >= 2", call. = FALSE)
   }
   if (method == "quantile") {
     br <- unique(as.numeric(quantile(x[ok], probs = seq(0, 1, length.out = n + 1L), na.rm = TRUE)))
@@ -255,11 +259,11 @@ rinla_group <- function(x, n = NULL, method = c("quantile", "cut")) {
 }
 
 #' Scale a Besag/GMRF precision so geom-mean marginal variance ≈ 1.
-rinla_scale_model <- function(adj_list, tau = 1) {
-  rinla_core_scale_model_csc(adj_list, tau = tau)
+inla_rs_scale_model <- function(adj_list, tau = 1) {
+  inla_rs_scale_model_csc(adj_list, tau = tau)
 }
 
-.rinla_find_all_f_calls <- function(expr) {
+.inla_rs_find_all_f_calls <- function(expr) {
   out <- list()
   walk <- function(e) {
     if (is.call(e)) {
@@ -274,7 +278,7 @@ rinla_scale_model <- function(adj_list, tau = 1) {
   out
 }
 
-.rinla_strip_f <- function(expr) {
+.inla_rs_strip_f <- function(expr) {
   if (!is.call(expr)) {
     return(expr)
   }
@@ -282,15 +286,15 @@ rinla_scale_model <- function(adj_list, tau = 1) {
     return(NULL)
   }
   if (identical(expr[[1]], as.symbol("+"))) {
-    a <- .rinla_strip_f(expr[[2]])
-    b <- .rinla_strip_f(expr[[3]])
+    a <- .inla_rs_strip_f(expr[[2]])
+    b <- .inla_rs_strip_f(expr[[3]])
     if (is.null(a)) return(b)
     if (is.null(b)) return(a)
     return(call("+", a, b))
   }
   if (identical(expr[[1]], as.symbol("-")) && length(expr) == 3L) {
-    a <- .rinla_strip_f(expr[[2]])
-    b <- .rinla_strip_f(expr[[3]])
+    a <- .inla_rs_strip_f(expr[[2]])
+    b <- .inla_rs_strip_f(expr[[3]])
     if (is.null(b)) return(a)
     if (is.null(a)) return(call("-", b))
     return(call("-", a, b))
@@ -298,7 +302,7 @@ rinla_scale_model <- function(adj_list, tau = 1) {
   expr
 }
 
-.rinla_normalize_adj <- function(graph) {
+.inla_rs_normalize_adj <- function(graph) {
   if (is.null(graph)) {
     return(NULL)
   }
@@ -310,10 +314,10 @@ rinla_scale_model <- function(adj_list, tau = 1) {
   lapply(graph, as.integer)
 }
 
-# Models accepted by `f()` in [rinla_core_inla] (must match Rust structured path).
-.rinla_supported_f_models <- c("iid", "rw2", "ar1", "besag", "fgn")
+# Models accepted by `f()` in [inla_rs] (must match Rust structured path).
+.inla_rs_supported_f_models <- c("iid", "rw2", "ar1", "besag", "fgn")
 
-.rinla_effect_theta_len <- function(model, order = 0L) {
+.inla_rs_effect_theta_len <- function(model, order = 0L) {
   model <- tolower(model)
   if (model %in% c("iid", "rw2", "besag")) return(1L)
   if (model %in% c("ar1", "fgn")) return(2L)
@@ -321,7 +325,7 @@ rinla_scale_model <- function(adj_list, tau = 1) {
   stop("Unknown model '", model, "'", call. = FALSE)
 }
 
-.rinla_default_theta <- function(model, order = 0L) {
+.inla_rs_default_theta <- function(model, order = 0L) {
   model <- tolower(model)
   if (model == "fgn" && order > 0L) return(c(1.0, 2.0))
   if (model %in% c("ar1", "fgn")) return(c(0.0, 0.0))
@@ -340,8 +344,8 @@ rinla_scale_model <- function(adj_list, tau = 1) {
 #'
 #' Supported `f()` models: `iid`, `rw2`, `ar1`, `besag`, `fgn`.
 #'
-#' Preprocessing helpers: [rinla_group], [rinla_scale_model].
-rinla_core_inla <- function(
+#' Preprocessing helpers: [inla_rs_group], [inla_rs_scale_model].
+inla_rs <- function(
     formula,
     data,
     family = "gaussian",
@@ -361,6 +365,7 @@ rinla_core_inla <- function(
     link = "default",
     adj_list = NULL,
     fixed_prec = 1e-4,
+    deterministic = FALSE,
     ...) {
   supported <- c(
     "gaussian", "poisson", "binomial", "nbinomial", "negative_binomial",
@@ -393,15 +398,15 @@ rinla_core_inla <- function(
       args = list(...)
     )
   }
-  f_env$inla.group <- rinla_group
+  f_env$inla.group <- inla_rs_group
 
-  f_calls <- .rinla_find_all_f_calls(formula[[3]])
+  f_calls <- .inla_rs_find_all_f_calls(formula[[3]])
   f_structs <- lapply(f_calls, function(fc) eval(fc, envir = f_env))
 
   # Fixed-effects design matrix from stripped formula.
   # When only f() terms remain, build X ourselves so typos in covariates still
   # surface as model.matrix errors instead of being swallowed.
-  rhs_fixed <- .rinla_strip_f(formula[[3]])
+  rhs_fixed <- .inla_rs_strip_f(formula[[3]])
   if (is.null(rhs_fixed)) {
     has_minus1 <- grepl("(^|\\s)-\\s*1(\\s|$)|(^|\\s)0\\s*\\+",
                         paste(deparse(formula[[3]]), collapse = " "))
@@ -450,13 +455,13 @@ rinla_core_inla <- function(
 
   for (fs in f_structs) {
     model <- tolower(fs$model)
-    if (!(model %in% .rinla_supported_f_models)) {
+    if (!(model %in% .inla_rs_supported_f_models)) {
       stop("Unsupported f() model '", fs$model, "'. Supported: ",
-           paste(.rinla_supported_f_models, collapse = ", "), call. = FALSE)
+           paste(.inla_rs_supported_f_models, collapse = ", "), call. = FALSE)
     }
     idx_name <- fs$name
     # Support inla.group(...) captured as name string — evaluate index from data
-    if (grepl("^inla\\.group\\(", idx_name) || grepl("^rinla_group\\(", idx_name)) {
+    if (grepl("^inla\\.group\\(", idx_name) || grepl("^inla_rs_group\\(", idx_name)) {
       idx <- as.integer(eval(parse(text = idx_name), envir = data))
     } else if (!is.null(fs$values)) {
       idx <- as.integer(fs$values)
@@ -485,7 +490,7 @@ rinla_core_inla <- function(
     } else if (model == "besag") {
       graph <- fs$graph
       if (is.null(graph)) graph <- adj_list
-      graph <- .rinla_normalize_adj(graph)
+      graph <- .inla_rs_normalize_adj(graph)
       if (is.null(graph)) {
         stop("besag requires graph= or adj_list=", call. = FALSE)
       }
@@ -509,7 +514,7 @@ rinla_core_inla <- function(
     effect_types <- c(effect_types, model)
     effect_ns <- c(effect_ns, n_e)
     effect_scales <- c(effect_scales, if (isTRUE(fs$scale.model)) 1L else 0L)
-    tlen <- .rinla_effect_theta_len(model, order)
+    tlen <- .inla_rs_effect_theta_len(model, order)
     effect_theta_lens <- c(effect_theta_lens, tlen)
     effect_orders <- c(effect_orders, as.integer(order))
     if (model == "besag") {
@@ -529,7 +534,7 @@ rinla_core_inla <- function(
         }
         theta <- c(theta, init)
       } else {
-        theta <- c(theta, .rinla_default_theta(model, order))
+        theta <- c(theta, .inla_rs_default_theta(model, order))
       }
     }
     col_off <- col_off + n_e
@@ -565,7 +570,7 @@ rinla_core_inla <- function(
   if (is.null(Ntrials)) Ntrials <- numeric(0)
   if (is.null(event)) event <- numeric(0)
 
-  raw <- rinla_core_run_inla_structured(
+  raw <- inla_rs_run_inla_structured(
     initial_theta = theta,
     y_obs = y,
     obs_precision = obs_precision,
@@ -593,10 +598,11 @@ rinla_core_inla <- function(
     inflation = inflation,
     alpha = alpha,
     gamma = gamma,
-    shape = shape
+    shape = shape,
+    deterministic = deterministic
   )
 
-  .rinla_attach_summaries(
+  .inla_rs_attach_summaries(
     raw,
     effect_types = effect_types,
     effect_ns = effect_ns,
@@ -615,8 +621,8 @@ rinla_core_inla <- function(
   )
 }
 
-#' Build Gaussian interim summary tables + class `"rinla"`.
-.rinla_attach_summaries <- function(raw, effect_types, effect_ns, effect_orders = NULL,
+#' Build Gaussian interim summary tables + class `"inla_rs"`.
+.inla_rs_attach_summaries <- function(raw, effect_types, effect_ns, effect_orders = NULL,
                                     effect_names, fixed_names) {
   means <- as.numeric(raw$latent_means)
   vars <- as.numeric(raw$latent_variances)
@@ -746,6 +752,6 @@ rinla_core_inla <- function(
   } else {
     out$hurst <- NA_real_
   }
-  class(out) <- c("rinla", "list")
+  class(out) <- c("inla_rs", "list")
   out
 }

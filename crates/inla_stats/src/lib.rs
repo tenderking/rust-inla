@@ -50,4 +50,7 @@ pub use rw2d::rw2d_precision_csc;
 pub use spde::spde_precision_csc;
 
 // Re-export math primitives commonly used with stats APIs.
-pub use inla_math::{CscMatrix, Eval1D};
+pub use inla_math::{
+    ConstraintSpec, CscMatrix, Eval1D, HARD_CONSTRAINT_KAPPA, augment_precision_csc,
+    model_rank_deficiency, project_constraints, sum_to_zero_constraint,
+};

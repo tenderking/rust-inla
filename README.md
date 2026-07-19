@@ -84,9 +84,9 @@ cargo build -p r-inla --release
 
 Then in R:
 ```r
-source("r-inla/R/rinla_core.R")
-.rinla_core_dynload("target/release/librinla.so")
-rinla_core_ar1_precision_csc(n = 100L, rho = 0.7, tau = 1.0)
+source("r-inla/R/inla_rs.R")
+.inla_rs_dynload("target/release/libinla_rs.so")
+inla_rs_ar1_precision_csc(n = 100L, rho = 0.7, tau = 1.0)
 ```
 
 ### C FFI bindings (`inla_sys`)

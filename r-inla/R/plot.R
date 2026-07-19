@@ -1,16 +1,16 @@
-#' Plot selected panels from a `"rinla"` fit.
+#' Plot selected panels from a `"inla_rs"` fit.
 #'
 #' Mirrors a subset of classic `plot.inla`: hyperparameter densities,
 #' random-effect mean ± quantile ribbon, and linear predictor.
 #'
-#' @param x A `"rinla"` result.
+#' @param x A `"inla_rs"` result.
 #' @param plot.hyperparameters Plot internal hyperparameter marginals.
 #' @param plot.random.effects Plot random-effect summaries.
 #' @param plot.predictor Plot linear predictor mean ± 95% band.
 #' @param single One plot per page when TRUE.
 #' @param ... Unused.
 #' @export
-plot.rinla <- function(
+plot.inla_rs <- function(
     x,
     plot.hyperparameters = TRUE,
     plot.random.effects = TRUE,

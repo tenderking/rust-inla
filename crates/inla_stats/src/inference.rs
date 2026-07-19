@@ -1,9 +1,10 @@
 use rayon::prelude::*;
 
 use inla_math::{
-    CscMatrix, Eval1D, LdltFactor, ccd_design, csc_to_dense, grid_design, invert_symmetric_matrix,
-    jacobi_eigen, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize_dense, matvec_csc,
-    predictor_variances_diag,
+    CscMatrix, ConstraintSpec, Eval1D, HARD_CONSTRAINT_KAPPA, LdltFactor, augment_precision_csc,
+    ccd_design, csc_to_dense, grid_design, invert_symmetric_matrix, jacobi_eigen,
+    laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize_dense, matvec_csc,
+    predictor_variances_diag, project_constraints,
 };
 
 #[cfg(test)]
@@ -567,7 +568,7 @@ pub fn find_latent_mode(
     max_iter: usize,
     tol: f64,
 ) -> Result<(Vec<f64>, LdltFactor, f64), String> {
-    find_latent_mode_a(q_prior, obs, None, max_iter, tol)
+    find_latent_mode_a(q_prior, obs, None, None, max_iter, tol)
 }
 
 fn latent_objective(
@@ -598,11 +599,12 @@ fn latent_objective(
     Ok(log_lik - 0.5 * quad)
 }
 
-/// Mode of π(x | θ, y) with optional projector `A` (`η = A x`).
+/// Mode of π(x | θ, y) with optional projector `A` (`η = A x`) and linear constraints.
 pub fn find_latent_mode_a(
     q_prior: &CscMatrix,
     obs: &[Obs],
     a: Option<&CscMatrix>,
+    constraints: Option<&ConstraintSpec>,
     max_iter: usize,
     tol: f64,
 ) -> Result<(Vec<f64>, LdltFactor, f64), String> {
@@ -625,6 +627,25 @@ pub fn find_latent_mode_a(
             }
         }
     }
+    if let Some(c) = constraints {
+        c.validate()?;
+        if c.n != n {
+            return Err(format!(
+                "constraints n={} does not match latent dimension {n}",
+                c.n
+            ));
+        }
+    }
+
+    // Working prior: Q + κ AᵀA when constrained (R-INLA extraconstr-style).
+    let q_aug;
+    let q_work = match constraints {
+        Some(c) => {
+            q_aug = augment_precision_csc(q_prior, c, HARD_CONSTRAINT_KAPPA)?;
+            &q_aug
+        }
+        None => q_prior,
+    };
 
     let mut x = vec![0.0; n];
     let mut ldlt = None;
@@ -639,7 +660,7 @@ pub fn find_latent_mode_a(
             evals.push(eval_likelihood(eta[i], &obs[i])?);
         }
 
-        let (step, factor) = laplace_newton_step_a(q_prior, &evals, a, &x)?;
+        let (step, factor) = laplace_newton_step_a(q_work, &evals, a, &x)?;
         if step.iter().any(|s| !s.is_finite()) {
             return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
         }
@@ -658,7 +679,10 @@ pub fn find_latent_mode_a(
             for i in 0..n {
                 x_trial[i] = x[i] + alpha * step[i];
             }
-            if latent_objective(q_prior, obs, a, &x_trial).is_ok() {
+            if let Some(c) = constraints {
+                project_constraints(&mut x_trial, c)?;
+            }
+            if latent_objective(q_work, obs, a, &x_trial).is_ok() {
                 break;
             }
             alpha *= 0.5;
@@ -684,9 +708,17 @@ pub fn find_latent_mode_a(
         }
     }
 
+    if let Some(c) = constraints {
+        project_constraints(&mut x, c)?;
+    }
+
     let factor = ldlt.ok_or_else(|| "Failed to factorize posterior precision".to_string())?;
-    let mut a_prior = csc_to_dense(q_prior)?;    for i in 0..n {
-        a_prior[i * n + i] += 1e-12;
+    let mut a_prior = csc_to_dense(q_work)?;
+    // Tiny jitter only when unconstrained; hard constraints already make Q SPD.
+    if constraints.is_none() {
+        for i in 0..n {
+            a_prior[i * n + i] += 1e-12;
+        }
     }
     let factor_prior = ldlt_factorize_dense(&a_prior, n)?;
 
@@ -694,7 +726,7 @@ pub fn find_latent_mode_a(
     let log_det_post = factor.d.iter().map(|&v| v.abs().ln()).sum::<f64>();
 
     let mut q_x = vec![0.0; n];
-    for (col, colvec) in q_prior.outer_iterator().enumerate() {
+    for (col, colvec) in q_work.outer_iterator().enumerate() {
         for (row, value) in colvec.iter() {
             q_x[row] += value * x[col];
         }
@@ -770,22 +802,29 @@ pub fn run_inla_inference(
         log_prior_density,
         obs,
         None,
+        None,
         strategy,
         step_or_f0,
         &crate::marginals::MarginalOptions::default(),
+        false,
     )
 }
 
-/// End-to-end INLA with optional observation projector `A` (`η = A x`).
+/// End-to-end INLA with optional observation projector `A` (`η = A x`) and constraints.
+///
+/// When `deterministic` is true, CCD/grid node evaluation is sequential (stable ordering /
+/// bit-reproducible on a given machine) instead of Rayon-parallel.
 pub fn run_inla_inference_a(
     initial_theta: &[f64],
     build_prior: &(dyn Fn(&[f64]) -> Result<CscMatrix, String> + Sync),
     log_prior_density: &(dyn Fn(&[f64]) -> f64 + Sync),
     obs: &[Obs],
     a: Option<&CscMatrix>,
+    constraints: Option<&ConstraintSpec>,
     strategy: &str,
     step_or_f0: f64,
     marginal_opts: &crate::marginals::MarginalOptions,
+    deterministic: bool,
 ) -> Result<InferenceResult, String> {
     let m = initial_theta.len();
     let n_obs = obs.len();
@@ -795,6 +834,7 @@ pub fn run_inla_inference_a(
         log_prior_density,
         obs,
         a,
+        constraints,
     };
 
     let mode = crate::hyper_opt::nelder_mead(initial_theta, 0.1, 200, 1e-6, &config)?;
@@ -837,52 +877,60 @@ pub fn run_inla_inference_a(
         }
     }
 
-    let results: Vec<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)> = z_points
-        .par_iter()
-        .map(|z| {
-            let mut theta = mode.clone();
-            for i in 0..m {
-                let mut diff = 0.0;
-                for j in 0..m {
-                    diff += v[i * m + j] * lambdas[j].abs().sqrt() * z[j];
-                }
-                theta[i] += diff;
+    let eval_node = |z: &Vec<f64>| -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64), String> {
+        let mut theta = mode.clone();
+        for i in 0..m {
+            let mut diff = 0.0;
+            for j in 0..m {
+                diff += v[i * m + j] * lambdas[j].abs().sqrt() * z[j];
             }
+            theta[i] += diff;
+        }
 
-            let q_prior = build_prior(&theta)?;
-            let (x_star, ldlt, marginal_log_lik) =
-                match find_latent_mode_a(&q_prior, obs, a, 200, 1e-5) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        // Drop this integration node (weight → 0 via -∞ log-posterior).
-                        let n_lat = q_prior.rows();
-                        return Ok((
-                            theta,
-                            vec![0.0; n_lat],
-                            vec![1.0; n_lat],
-                            vec![0.0; n_obs],
-                            vec![1.0; n_obs],
-                            f64::NEG_INFINITY,
-                        ));
-                    }
-                };
-
-            let variances = ldlt_diagonal_inverse(&ldlt)?;
-            let eta = match a {
-                None => x_star.clone(),
-                Some(a_mat) => matvec_csc(a_mat, &x_star)?,
-            };
-            let eta_var = match a {
-                None => variances.clone(),
-                Some(a_mat) => predictor_variances_diag(a_mat, &variances)?,
+        let q_prior = build_prior(&theta)?;
+        let (x_star, ldlt, marginal_log_lik) =
+            match find_latent_mode_a(&q_prior, obs, a, constraints, 200, 1e-5) {
+                Ok(v) => v,
+                Err(_) => {
+                    let n_lat = q_prior.rows();
+                    return Ok((
+                        theta,
+                        vec![0.0; n_lat],
+                        vec![1.0; n_lat],
+                        vec![0.0; n_obs],
+                        vec![1.0; n_obs],
+                        f64::NEG_INFINITY,
+                    ));
+                }
             };
 
-            let log_prior = log_prior_density(&theta);
-            let log_post = marginal_log_lik + log_prior;
+        let variances = ldlt_diagonal_inverse(&ldlt)?;
+        let eta = match a {
+            None => x_star.clone(),
+            Some(a_mat) => matvec_csc(a_mat, &x_star)?,
+        };
+        let eta_var = match a {
+            None => variances.clone(),
+            Some(a_mat) => predictor_variances_diag(a_mat, &variances)?,
+        };
 
-            Ok((theta, x_star, variances, eta, eta_var, log_post))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+        let log_prior = log_prior_density(&theta);
+        let log_post = marginal_log_lik + log_prior;
+
+        Ok((theta, x_star, variances, eta, eta_var, log_post))
+    };
+
+    let results: Vec<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)> = if deterministic {
+        z_points
+            .iter()
+            .map(eval_node)
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        z_points
+            .par_iter()
+            .map(eval_node)
+            .collect::<Result<Vec<_>, String>>()?
+    };
 
     if !results.iter().any(|r| r.5.is_finite()) {
         return Err("Newton-Raphson did not converge at any integration node".to_string());
@@ -1474,9 +1522,11 @@ mod tests {
             &log_prior,
             &obs,
             Some(&a),
+            None,
             "ccd",
             1.0,
             &crate::marginals::MarginalOptions::default(),
+            false,
         )
         .expect("A-matrix inference");
         assert!(!result.internal_marginals_hyperpar.is_empty());
@@ -1533,6 +1583,69 @@ mod tests {
         }
         let q = identity_csc(n, 1.0).unwrap();
         let a = identity_csc(n, 1.0).unwrap();
-        find_latent_mode_a(&q, &obs, Some(&a), 100, 1e-5).expect("A=I");
+        find_latent_mode_a(&q, &obs, Some(&a), None, 100, 1e-5).expect("A=I");
+    }
+
+    #[test]
+    fn rw1_hard_sum_to_zero_holds() {
+        use inla_math::{identity_csc, sum_to_zero_constraint};
+        let n = 8usize;
+        let y: Vec<f64> = (0..n).map(|i| (i as f64 - 3.5) * 0.3).collect();
+        let mut obs = Vec::new();
+        for &yi in &y {
+            obs.push(Obs::Gaussian(GaussianObs {
+                y: yi,
+                precision: 4.0,
+                link: Link::Identity,
+            }));
+        }
+        // Latent layout: [rw1(n), intercept(1)]; constrain RW1 block only.
+        let constr = sum_to_zero_constraint(n, 1)
+            .unwrap()
+            .embed(n + 1, 0)
+            .unwrap();
+
+        let a = {
+            let mut rows = Vec::new();
+            let mut cols = Vec::new();
+            let mut vals = Vec::new();
+            for i in 0..n {
+                rows.push(i);
+                cols.push(i);
+                vals.push(1.0);
+                rows.push(i);
+                cols.push(n);
+                vals.push(1.0);
+            }
+            csc_from_triplets_0based(n, n + 1, &rows, &cols, &vals).unwrap()
+        };
+
+        let build_prior = |theta: &[f64]| -> Result<CscMatrix, String> {
+            let tau = theta[0].exp();
+            let q_u = crate::latent_models::rw1_precision_csc(n, tau)?;
+            let q_b = identity_csc(1, 1e-4)?;
+            block_diag_csc(&[q_u, q_b])
+        };
+        let log_prior = |theta: &[f64]| -> f64 { -0.5 * 0.1 * theta[0] * theta[0] };
+
+        let result = run_inla_inference_a(
+            &[0.0],
+            &build_prior,
+            &log_prior,
+            &obs,
+            Some(&a),
+            Some(&constr),
+            "ccd",
+            1.0,
+            &crate::marginals::MarginalOptions::default(),
+            false,
+        )
+        .expect("constrained rw1");
+        let s: f64 = result.latent_means[..n].iter().sum();
+        assert!(
+            s.abs() < 1e-4,
+            "sum of RW1 posterior means should be ~0, got {s}"
+        );
+        assert!(result.marginal_log_lik.is_finite());
     }
 }

@@ -94,6 +94,87 @@ def _default_theta(model: str, order: int = 0) -> list[float]:
     return [0.0]
 
 
+def _rank_deficiency(model: str) -> int:
+    m = model.lower()
+    if m in ("rw1", "besag", "besag2", "seasonal", "bym"):
+        return 1
+    if m == "rw2":
+        return 2
+    return 0
+
+
+def _sum_to_zero_a(n: int, k: int) -> tuple[list[float], list[float]]:
+    """Orthonormal sum-to-zero rows matching Rust ``sum_to_zero_constraint``."""
+    if n <= 0 or k not in (1, 2):
+        raise ValueError(f"sum_to_zero requires n>0 and k in {{1,2}}, got n={n} k={k}")
+    a = [0.0] * (k * n)
+    inv = 1.0 / float(n) ** 0.5
+    for c in range(n):
+        a[c] = inv
+    if k == 2:
+        mean = (n - 1) / 2.0
+        ss = 0.0
+        for c in range(n):
+            v = c - mean
+            a[n + c] = v
+            ss += v * v
+        scale = ss**0.5
+        for c in range(n):
+            a[n + c] /= scale
+    return a, [0.0] * k
+
+
+def _embed_constraint(
+    block_a: list[float], block_e: list[float], block_n: int, full_n: int, offset: int
+) -> tuple[list[float], list[float]]:
+    k = len(block_e)
+    a = [0.0] * (k * full_n)
+    for r in range(k):
+        for c in range(block_n):
+            a[r * full_n + (offset + c)] = block_a[r * block_n + c]
+    return a, list(block_e)
+
+
+def _vstack_constraints(
+    parts: list[tuple[list[float], list[float]]],
+) -> Optional[tuple[list[float], list[float]]]:
+    if not parts:
+        return None
+    a_all: list[float] = []
+    e_all: list[float] = []
+    for a, e in parts:
+        a_all.extend(a)
+        e_all.extend(e)
+    return a_all, e_all
+
+
+def _control_get(cc: Mapping[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in cc:
+            return cc[k]
+        # R-style dotted aliases
+        dotted = k.replace("_", ".")
+        if dotted in cc:
+            return cc[dotted]
+    return None
+
+
+def _resolve_marginal_indices(
+    value: Any, n: int, *, name: str
+) -> Optional[list[int]]:
+    if value is None:
+        return None
+    if value is True:
+        return list(range(n))
+    if value is False:
+        return None
+    idx = [int(i) for i in value]
+    for i in idx:
+        if i < 0 or i >= n:
+            raise ValueError(f"{name}: index {i} out of range [0, {n})")
+    return idx
+
+
 def _resolve_f_model(
     ft,
     *,
@@ -231,8 +312,11 @@ def _fit(
     step_or_f0: float = 1.0,
     initial_theta: Optional[Sequence[float]] = None,
     control_family: Optional[Mapping[str, Any]] = None,
+    control_compute: Optional[Mapping[str, Any]] = None,
     fixed_prec: float = 1e-4,
     latent_marginal_indices: Optional[Sequence[int]] = None,
+    predictor_marginal_indices: Optional[Sequence[int]] = None,
+    deterministic: bool = False,
     models: Optional[Mapping[str, GenericLike]] = None,
     rgeneric: Optional[GenericLike] = None,
     verbose: bool = False,
@@ -250,6 +334,15 @@ def _fit(
         Likelihood family. ``cbinomial`` is accepted as an alias of ``binomial``.
     Ntrials :
         Binomial trials ``n``, or ``cbind``-style ``(n_obs, 2)`` array of ``(y, n)``.
+    control_compute :
+        Opt-in compute flags. Recognized keys (underscore or R-style dots)::
+
+            return_marginals_latent / return.marginals.random
+                True → all latent indices; or a sequence of 0-based indices.
+            return_marginals_predictor / return.marginals.predictor
+                True → all predictor indices; or a sequence of 0-based indices.
+    deterministic :
+        If True, evaluate CCD/grid nodes sequentially (reproducible ordering).
     models :
         Mapping of name → ``GenericModel`` / ``Model`` for ``f(..., model='name')``.
     rgeneric :
@@ -462,28 +555,13 @@ def _fit(
                 blocks.append(g.precision(ti))
             elif typ == "iid":
                 tau = float(np.exp(ti[0])) if ti else 1.0
-                if has_intercept:
-                    q = core.iid_precision_matrix(n_e, tau).to_scipy().copy()
-                    q = q + sparse.csr_matrix(np.ones((n_e, n_e)) * 1.0)
-                    blocks.append(q.tocsc())
-                else:
-                    blocks.append(core.iid_precision_matrix(n_e, tau))
+                blocks.append(core.iid_precision_matrix(n_e, tau))
             elif typ == "rw1":
                 tau = float(np.exp(ti[0])) if ti else 1.0
-                if has_intercept:
-                    q = core.rw1_precision_matrix(n_e, tau).to_scipy().copy()
-                    q = q + sparse.csr_matrix(np.ones((n_e, n_e)) * 1.0)
-                    blocks.append(q.tocsc())
-                else:
-                    blocks.append(core.rw1_precision_matrix(n_e, tau))
+                blocks.append(core.rw1_precision_matrix(n_e, tau))
             elif typ == "rw2":
                 tau = float(np.exp(ti[0])) if ti else 1.0
-                if has_intercept:
-                    q = core.rw2_precision_matrix(n_e, tau).to_scipy().copy()
-                    q = q + sparse.csr_matrix(np.ones((n_e, n_e)) * 1.0)
-                    blocks.append(q.tocsc())
-                else:
-                    blocks.append(core.rw2_precision_matrix(n_e, tau))
+                blocks.append(core.rw2_precision_matrix(n_e, tau))
             elif typ == "ar1":
                 if len(ti) < 2:
                     raise ValueError("ar1 needs theta=[log_tau, logit_rho]")
@@ -494,14 +572,8 @@ def _fit(
                 tau = float(np.exp(ti[0])) if ti else 1.0
                 adj = graphs[ei]
                 assert adj is not None
-                q = core.besag_precision_matrix(adj, 1.0).to_scipy().copy()
-                q = q.tolil()
-                for i in range(q.shape[0]):
-                    q[i, i] += 1e-5
-                q = q.tocsc() * tau
-                if has_intercept:
-                    q = q + sparse.csr_matrix(np.ones((n_e, n_e)) * 1.0)
-                blocks.append(q.tocsc())
+                q = core.besag_precision_matrix(adj, tau)
+                blocks.append(q)
             elif typ == "fgn":
                 if len(ti) < 2:
                     raise ValueError("fgn needs two hyperparameters")
@@ -531,6 +603,21 @@ def _fit(
             else:
                 owned.append(sparse.csc_matrix(b).copy())
         return core.PyCscMatrix.from_scipy(sparse.block_diag(owned, format="csc"))
+
+    # Hard sum-to-zero on intrinsic fields (and iid when intercept present).
+    constr_parts: list[tuple[list[float], list[float]]] = []
+    off = 0
+    for typ, n_e in zip(types, ns):
+        k = _rank_deficiency(typ)
+        if k == 0 and typ == "iid" and has_intercept:
+            k = 1
+        if k > 0:
+            ba, be = _sum_to_zero_a(n_e, k)
+            constr_parts.append(_embed_constraint(ba, be, n_e, col_off, off))
+        off += n_e
+    stacked = _vstack_constraints(constr_parts)
+    constraints_a = stacked[0] if stacked is not None else None
+    constraints_e = stacked[1] if stacked is not None else None
 
     def log_prior_density(th):
         th = list(th)
@@ -562,9 +649,39 @@ def _fit(
         strategy=strategy,
         step_or_f0=step_or_f0,
         a=a,
-        latent_marginal_indices=list(latent_marginal_indices)
-        if latent_marginal_indices is not None
-        else None,
+        latent_marginal_indices=(
+            list(latent_marginal_indices)
+            if latent_marginal_indices is not None
+            else (
+                _resolve_marginal_indices(
+                    _control_get(
+                        control_compute or {},
+                        "return_marginals_latent",
+                        "return.marginals.random",
+                    ),
+                    col_off,
+                    name="return_marginals_latent",
+                )
+            )
+        ),
+        predictor_marginal_indices=(
+            list(predictor_marginal_indices)
+            if predictor_marginal_indices is not None
+            else (
+                _resolve_marginal_indices(
+                    _control_get(
+                        control_compute or {},
+                        "return_marginals_predictor",
+                        "return.marginals.predictor",
+                    ),
+                    n_obs,
+                    name="return_marginals_predictor",
+                )
+            )
+        ),
+        constraints_a=constraints_a,
+        constraints_e=constraints_e,
+        deterministic=bool(deterministic),
     )
 
     # Attach R-like summary slices (Gaussian interim) via a thin wrapper
