@@ -6,3 +6,12 @@ Cargo.lock
 
 # Upstream R-INLA test dump (do not commit)
 r-inla-testing-main.zip
+
+
+# python
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.cpython-311.so
+**/__pycache__/
+**/*.so
