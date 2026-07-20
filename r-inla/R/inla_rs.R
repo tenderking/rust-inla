@@ -228,6 +228,28 @@ inla_rs_scale_model_csc <- function(adj_list, tau = 1) {
   .Call("wrap__inla_rs_scale_model_csc", adj_list, as.numeric(tau))
 }
 
+inla_rs_prior_log_density <- function(name, param = numeric(0), theta) {
+  .Call(
+    "wrap__inla_rs_prior_log_density",
+    as.character(name),
+    as.numeric(param),
+    as.numeric(theta)
+  )
+}
+
+inla_rs_default_hyper_priors <- function(model) {
+  .Call("wrap__inla_rs_default_hyper_priors", as.character(model))
+}
+
+inla_rs_hyper_prior_stack_log_density <- function(names, params, theta) {
+  .Call(
+    "wrap__inla_rs_hyper_prior_stack_log_density",
+    as.character(names),
+    params,
+    as.numeric(theta)
+  )
+}
+
 #' Bin a continuous covariate into `n` groups (R-INLA `inla.group` style).
 #'
 #' Returns integer group indices in `1..n` (or `1..n_unique` when `n` is NULL).

@@ -617,19 +617,21 @@ fn inla_rs_run_inla_inference(
         }
     };
 
-    let log_prior_density = |theta: &[f64]| -> f64 {
-        let mut lprior = 0.0;
-        for &val in theta {
-            lprior += -0.5 * 0.1 * val * val;
-        }
-        lprior
-    };
-
     let constr = match inla_core::model_rank_deficiency(&model_type_str) {
         0 => None,
         k => Some(
             inla_core::sum_to_zero_constraint(n_latent, k).map_err(Error::Other)?,
         ),
+    };
+
+    let prior_stack = match inla_core::HyperPriorStack::default_for_effect(&model_type_str) {
+        Ok(s) => s,
+        Err(_) => inla_core::HyperPriorStack::new(vec![inla_core::PriorSpec::gaussian(0.0, 0.1)]),
+    };
+    let log_prior_density = move |theta: &[f64]| -> f64 {
+        prior_stack
+            .log_density(theta)
+            .unwrap_or(f64::NEG_INFINITY)
     };
 
     let result = inla_core::run_inla_inference_a(
@@ -976,8 +978,25 @@ fn inla_rs_run_inla_structured(
         inla_core::block_diag_csc(&blocks)
     };
 
-    let log_prior_density =
-        |theta: &[f64]| -> f64 { theta.iter().map(|&v| -0.5 * 0.1 * v * v).sum() };
+    let log_prior_density = {
+        let mut priors = Vec::new();
+        for typ in &effect_types {
+            let m = typ.to_lowercase();
+            if m == "fixed" {
+                continue;
+            }
+            match inla_core::HyperPriorStack::default_for_effect(&m) {
+                Ok(s) => priors.extend(s.priors),
+                Err(_) => priors.push(inla_core::PriorSpec::gaussian(0.0, 0.1)),
+            }
+        }
+        let stack = inla_core::HyperPriorStack::new(priors);
+        move |theta: &[f64]| -> f64 {
+            stack
+                .log_density(theta)
+                .unwrap_or(f64::NEG_INFINITY)
+        }
+    };
 
     let result = inla_core::run_inla_inference_a(
         &initial_theta,
@@ -1021,6 +1040,57 @@ fn inla_rs_scale_model_csc(adj_list: List, tau: f64) -> std::result::Result<Robj
     csc_to_dgcmatrix(&qs)
 }
 
+/// Evaluate named prior on internal θ. `param` may be empty (use defaults).
+#[extendr]
+fn inla_rs_prior_log_density(
+    name: &str,
+    param: Vec<f64>,
+    theta: Vec<f64>,
+) -> std::result::Result<f64, Error> {
+    let spec = inla_core::PriorSpec::from_name_params(name, &param).map_err(Error::Other)?;
+    spec.log_density(&theta).map_err(Error::Other)
+}
+
+/// Default hyperpriors for an effect model: list(names=..., params=list of numeric vectors).
+#[extendr]
+fn inla_rs_default_hyper_priors(model: &str) -> std::result::Result<List, Error> {
+    let stack = inla_core::HyperPriorStack::default_for_effect(model).map_err(Error::Other)?;
+    let pairs = stack.to_names_params();
+    let names: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
+    let mut param_items: Vec<Robj> = Vec::with_capacity(pairs.len());
+    for (_, p) in &pairs {
+        param_items.push(Robj::from(p.clone()));
+    }
+    Ok(list!(names = names, params = List::from_values(param_items)))
+}
+
+/// Sum log-density for a prior stack. `param_list` is a list of numeric vectors.
+#[extendr]
+fn inla_rs_hyper_prior_stack_log_density(
+    names: Vec<String>,
+    param_list: List,
+    theta: Vec<f64>,
+) -> std::result::Result<f64, Error> {
+    if param_list.len() != names.len() {
+        return Err(Error::Other(
+            "param_list length must match names length".into(),
+        ));
+    }
+    let mut params: Vec<Vec<f64>> = Vec::with_capacity(names.len());
+    for item in param_list.values() {
+        let v: Vec<f64> = item
+            .as_real_vector()
+            .ok_or_else(|| Error::Other("each params entry must be numeric".into()))?
+            .iter()
+            .map(|&x| x)
+            .collect();
+        params.push(v);
+    }
+    let stack =
+        inla_core::HyperPriorStack::from_names_params(&names, &params).map_err(Error::Other)?;
+    stack.log_density(&theta).map_err(Error::Other)
+}
+
 extendr_module! {
     mod inla_rs;
     fn inla_rs_read_mesh;
@@ -1045,4 +1115,7 @@ extendr_module! {
     fn inla_rs_run_inla_inference;
     fn inla_rs_run_inla_structured;
     fn inla_rs_scale_model_csc;
+    fn inla_rs_prior_log_density;
+    fn inla_rs_default_hyper_priors;
+    fn inla_rs_hyper_prior_stack_log_density;
 }

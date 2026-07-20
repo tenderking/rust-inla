@@ -1,14 +1,16 @@
 use rayon::prelude::*;
 
 use inla_math::{
-    CscMatrix, ConstraintSpec, Eval1D, HARD_CONSTRAINT_KAPPA, LdltFactor, augment_precision_csc,
-    ccd_design, csc_to_dense, grid_design, invert_symmetric_matrix, jacobi_eigen,
-    laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize_dense, matvec_csc,
+    CscMatrix, ConstraintSpec, Eval1D, HARD_CONSTRAINT_KAPPA, LdltFactor, add_csc,
+    augment_precision_csc, ccd_design, grid_design, identity_csc, invert_symmetric_matrix,
+    jacobi_eigen, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize, matvec_csc,
     predictor_variances_diag, project_constraints,
 };
 
+use crate::priors::PriorSpec;
+
 #[cfg(test)]
-use inla_math::{block_diag_csc, csc_from_triplets_0based, identity_csc};
+use inla_math::{block_diag_csc, csc_from_triplets_0based};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Link {
@@ -108,22 +110,7 @@ pub struct WeibullSurvivalObs {
 const LOG_NORMC_GAUSSIAN: f64 = -0.918_938_533_204_672_8;
 
 pub fn eval_prior_gaussian(theta: f64, p: GaussianPrior) -> Result<Eval1D, String> {
-    if p.precision < 0.0 || !p.precision.is_finite() {
-        return Err("gaussian prior precision must be finite and >= 0".to_string());
-    }
-    if p.precision == 0.0 {
-        return Ok(Eval1D {
-            logp: 0.0,
-            grad: 0.0,
-            hess: 0.0,
-        });
-    }
-    let d = theta - p.mean;
-    Ok(Eval1D {
-        logp: LOG_NORMC_GAUSSIAN + 0.5 * p.precision.ln() - 0.5 * p.precision * d * d,
-        grad: -p.precision * d,
-        hess: -p.precision,
-    })
+    PriorSpec::gaussian(p.mean, p.precision).eval1d(theta)
 }
 
 pub fn eval_prior_gamma(x: f64, p: GammaPrior) -> Result<Eval1D, String> {
@@ -133,6 +120,7 @@ pub fn eval_prior_gamma(x: f64, p: GammaPrior) -> Result<Eval1D, String> {
     if p.shape <= 0.0 || p.scale <= 0.0 || !p.shape.is_finite() || !p.scale.is_finite() {
         return Err("gamma prior shape/scale must be finite and > 0".to_string());
     }
+    // Shape–scale parameterization (mean = shape * scale).
     let a = p.shape;
     let b = p.scale;
     let logp = (a - 1.0) * (x / b).ln() - x / b - log_gamma(a) - b.ln();
@@ -141,20 +129,14 @@ pub fn eval_prior_gamma(x: f64, p: GammaPrior) -> Result<Eval1D, String> {
     Ok(Eval1D { logp, grad, hess })
 }
 
+/// Log-gamma prior on θ = log x with Gamma(shape, **scale**) on x (legacy API).
+/// Prefer [`crate::priors::PriorSpec::loggamma`] which uses the R-INLA **rate** convention.
 pub fn eval_prior_loggamma(theta: f64, p: GammaPrior) -> Result<Eval1D, String> {
-    if !theta.is_finite() {
-        return Err("log-gamma prior input must be finite".to_string());
+    if p.scale <= 0.0 || !p.scale.is_finite() {
+        return Err("log-gamma prior scale must be finite and > 0".to_string());
     }
-    if p.shape <= 0.0 || p.scale <= 0.0 || !p.shape.is_finite() || !p.scale.is_finite() {
-        return Err("log-gamma prior shape/scale must be finite and > 0".to_string());
-    }
-    let x = theta.exp();
-    let base = eval_prior_gamma(x, p)?;
-    Ok(Eval1D {
-        logp: base.logp + theta,
-        grad: base.grad * x + 1.0,
-        hess: base.hess * x * x + base.grad * x,
-    })
+    let rate = 1.0 / p.scale;
+    PriorSpec::loggamma(p.shape, rate).eval1d(theta)
 }
 
 pub fn eval_likelihood_gaussian(eta: f64, o: GaussianObs) -> Result<Eval1D, String> {
@@ -660,7 +642,7 @@ pub fn find_latent_mode_a(
             evals.push(eval_likelihood(eta[i], &obs[i])?);
         }
 
-        let (step, factor) = laplace_newton_step_a(q_work, &evals, a, &x)?;
+        let (step, factor) = laplace_newton_step_a(q_work, &evals, a, &x).map_err(|e| e.to_string())?;
         if step.iter().any(|s| !s.is_finite()) {
             return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
         }
@@ -713,17 +695,17 @@ pub fn find_latent_mode_a(
     }
 
     let factor = ldlt.ok_or_else(|| "Failed to factorize posterior precision".to_string())?;
-    let mut a_prior = csc_to_dense(q_work)?;
-    // Tiny jitter only when unconstrained; hard constraints already make Q SPD.
-    if constraints.is_none() {
-        for i in 0..n {
-            a_prior[i * n + i] += 1e-12;
-        }
-    }
-    let factor_prior = ldlt_factorize_dense(&a_prior, n)?;
+    // Prefer sparse path for prior log-det (same sparsity as q_work).
+    let factor_prior = if constraints.is_none() {
+        let eye = identity_csc(n, 1e-12).map_err(|e| e.to_string())?;
+        let q_jitter = add_csc(q_work, &eye).map_err(|e| e.to_string())?;
+        ldlt_factorize(&q_jitter).map_err(|e| e.to_string())?
+    } else {
+        ldlt_factorize(q_work).map_err(|e| e.to_string())?
+    };
 
-    let log_det_prior = factor_prior.d.iter().map(|&v| v.abs().ln()).sum::<f64>();
-    let log_det_post = factor.d.iter().map(|&v| v.abs().ln()).sum::<f64>();
+    let log_det_prior = factor_prior.log_abs_det();
+    let log_det_post = factor.log_abs_det();
 
     let mut q_x = vec![0.0; n];
     for (col, colvec) in q_work.outer_iterator().enumerate() {
@@ -826,8 +808,39 @@ pub fn run_inla_inference_a(
     marginal_opts: &crate::marginals::MarginalOptions,
     deterministic: bool,
 ) -> Result<InferenceResult, String> {
+    run_inla_inference_a_cancellable(
+        initial_theta,
+        build_prior,
+        log_prior_density,
+        obs,
+        a,
+        constraints,
+        strategy,
+        step_or_f0,
+        marginal_opts,
+        deterministic,
+        None,
+    )
+}
+
+/// End-to-end INLA with optional observation projector `A` (`η = A x`), constraints, and cancellation callback.
+pub fn run_inla_inference_a_cancellable(
+    initial_theta: &[f64],
+    build_prior: &(dyn Fn(&[f64]) -> Result<CscMatrix, String> + Sync),
+    log_prior_density: &(dyn Fn(&[f64]) -> f64 + Sync),
+    obs: &[Obs],
+    a: Option<&CscMatrix>,
+    constraints: Option<&ConstraintSpec>,
+    strategy: &str,
+    step_or_f0: f64,
+    marginal_opts: &crate::marginals::MarginalOptions,
+    deterministic: bool,
+    check_cancel: Option<&(dyn Fn() -> Result<(), String> + Sync)>,
+) -> Result<InferenceResult, String> {
     let m = initial_theta.len();
     let n_obs = obs.len();
+
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let config = crate::hyper_opt::ModelConfig {
         build_prior,
@@ -835,6 +848,7 @@ pub fn run_inla_inference_a(
         obs,
         a,
         constraints,
+        check_cancel,
     };
 
     let mode = crate::hyper_opt::nelder_mead(initial_theta, 0.1, 200, 1e-6, &config)?;
@@ -849,6 +863,9 @@ pub fn run_inla_inference_a(
     let (z_points, z_weights) = match strategy.to_lowercase().as_str() {
         "grid" => {
             let evaluator = |z: &[f64]| -> f64 {
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    return f64::NEG_INFINITY;
+                }
                 let mut theta = mode.clone();
                 for i in 0..m {
                     let mut diff = 0.0;
@@ -878,6 +895,16 @@ pub fn run_inla_inference_a(
     }
 
     let eval_node = |z: &Vec<f64>| -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64), String> {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Operation cancelled by user".to_string());
+        }
+        if let Some(cancel) = check_cancel {
+            if let Err(err) = cancel() {
+                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Err(err);
+            }
+        }
+
         let mut theta = mode.clone();
         for i in 0..m {
             let mut diff = 0.0;
@@ -891,7 +918,16 @@ pub fn run_inla_inference_a(
         let (x_star, ldlt, marginal_log_lik) =
             match find_latent_mode_a(&q_prior, obs, a, constraints, 200, 1e-5) {
                 Ok(v) => v,
-                Err(_) => {
+                Err(_e) => {
+                    if let Some(cancel) = check_cancel {
+                        if let Err(err) = cancel() {
+                            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return Err(err);
+                        }
+                    }
+                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err("Operation cancelled by user".to_string());
+                    }
                     let n_lat = q_prior.rows();
                     return Ok((
                         theta,
@@ -904,7 +940,7 @@ pub fn run_inla_inference_a(
                 }
             };
 
-        let variances = ldlt_diagonal_inverse(&ldlt)?;
+        let variances = ldlt_diagonal_inverse(&ldlt).map_err(|e| e.to_string())?;
         let eta = match a {
             None => x_star.clone(),
             Some(a_mat) => matvec_csc(a_mat, &x_star)?,
@@ -1647,5 +1683,60 @@ mod tests {
             "sum of RW1 posterior means should be ~0, got {s}"
         );
         assert!(result.marginal_log_lik.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod sparse_path_smoke {
+    use super::*;
+    use inla_math::{identity_csc, ldlt_factorize, ldlt_solve};
+
+    #[test]
+    fn ar1_and_fgn_sparse_factorize_no_panic() {
+        let n = 20;
+        let q = crate::ar1::ar1_precision_csc(n, 0.7, 4.0).unwrap();
+        let f = ldlt_factorize(&q).expect("ar1 factorize");
+        let x = ldlt_solve(&f, &vec![1.0; n]).expect("ar1 solve");
+        assert!(x.iter().all(|v| v.is_finite()));
+
+        let n = 30;
+        let q = crate::latent_models::fgn_precision_csc(n, 0.7, 1.0).unwrap();
+        let f = ldlt_factorize(&q).expect("fgn factorize");
+        let x = ldlt_solve(&f, &vec![1.0; n]).expect("fgn solve");
+        assert!(x.iter().all(|v| v.is_finite()));
+        assert!(f.log_abs_det().is_finite());
+    }
+
+    #[test]
+    fn fgn_gaussian_inference_no_panic() {
+        let n = 30;
+        let build = move |theta: &[f64]| -> Result<CscMatrix, String> {
+            let tau = theta[0].exp();
+            let hurst = 1.0 / (1.0 + (-theta[1]).exp());
+            crate::latent_models::fgn_precision_csc(n, hurst, tau)
+        };
+        let obs: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: 0.1 * (i as f64).sin(),
+                    precision: 1000.0,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+        let a = identity_csc(n, 1.0).unwrap();
+        let res = run_inla_inference_a(
+            &[0.0, 0.0],
+            &build,
+            &|_| 0.0,
+            &obs,
+            Some(&a),
+            None,
+            "ccd",
+            1.0,
+            &crate::marginals::MarginalOptions::default(),
+            true,
+        );
+        assert!(res.is_ok(), "{res:?}");
     }
 }

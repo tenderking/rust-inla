@@ -8,14 +8,33 @@ pub fn nelder_mead(
     tol: f64,
     f: &dyn Fn(&[f64]) -> Result<f64, String>,
 ) -> Result<Vec<f64>, String> {
+    nelder_mead_cancellable(initial, step_size, max_iter, tol, f, None)
+}
+
+/// Minimize `f` with Nelder–Mead, supporting an optional `check_cancel` callback.
+pub fn nelder_mead_cancellable(
+    initial: &[f64],
+    step_size: f64,
+    max_iter: usize,
+    tol: f64,
+    f: &dyn Fn(&[f64]) -> Result<f64, String>,
+    check_cancel: Option<&dyn Fn() -> Result<(), String>>,
+) -> Result<Vec<f64>, String> {
     let m = initial.len();
     let mut vertices = vec![vec![0.0; m]; m + 1];
     let mut f_vals = vec![0.0; m + 1];
+
+    if let Some(cancel) = check_cancel {
+        cancel()?;
+    }
 
     vertices[0] = initial.to_vec();
     f_vals[0] = f(&vertices[0])?;
 
     for i in 1..=m {
+        if let Some(cancel) = check_cancel {
+            cancel()?;
+        }
         let mut v = initial.to_vec();
         v[i - 1] += step_size;
         vertices[i] = v;
@@ -23,8 +42,12 @@ pub fn nelder_mead(
     }
 
     for _iter in 0..max_iter {
+        if let Some(cancel) = check_cancel {
+            cancel()?;
+        }
+
         let mut idxs: Vec<usize> = (0..=m).collect();
-        idxs.sort_by(|&a, &b| f_vals[a].partial_cmp(&f_vals[b]).unwrap());
+        idxs.sort_by(|&a, &b| f_vals[a].partial_cmp(&f_vals[b]).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut sorted_vertices = vec![vec![0.0; m]; m + 1];
         let mut sorted_f = vec![0.0; m + 1];
@@ -56,7 +79,15 @@ pub fn nelder_mead(
         for j in 0..m {
             reflected[j] = centroid[j] + 1.0 * (centroid[j] - vertices[m][j]);
         }
-        let f_r = f(&reflected).unwrap_or(f64::INFINITY);
+        let f_r = match f(&reflected) {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(cancel) = check_cancel {
+                    cancel()?;
+                }
+                return Err(e);
+            }
+        };
 
         if f_vals[0] <= f_r && f_r < f_vals[m - 1] {
             vertices[m] = reflected;
@@ -69,7 +100,15 @@ pub fn nelder_mead(
             for j in 0..m {
                 expanded[j] = centroid[j] + 2.0 * (reflected[j] - centroid[j]);
             }
-            let f_e = f(&expanded).unwrap_or(f64::INFINITY);
+            let f_e = match f(&expanded) {
+                Ok(v) => v,
+                Err(e) => {
+                    if let Some(cancel) = check_cancel {
+                        cancel()?;
+                    }
+                    return Err(e);
+                }
+            };
             if f_e < f_r {
                 vertices[m] = expanded;
                 f_vals[m] = f_e;
@@ -86,7 +125,15 @@ pub fn nelder_mead(
             for j in 0..m {
                 contracted[j] = centroid[j] + 0.5 * (reflected[j] - centroid[j]);
             }
-            let f_c = f(&contracted).unwrap_or(f64::INFINITY);
+            let f_c = match f(&contracted) {
+                Ok(v) => v,
+                Err(e) => {
+                    if let Some(cancel) = check_cancel {
+                        cancel()?;
+                    }
+                    return Err(e);
+                }
+            };
             if f_c < f_r {
                 vertices[m] = contracted;
                 f_vals[m] = f_c;
@@ -97,7 +144,15 @@ pub fn nelder_mead(
             for j in 0..m {
                 contracted[j] = centroid[j] + 0.5 * (vertices[m][j] - centroid[j]);
             }
-            let f_c = f(&contracted).unwrap_or(f64::INFINITY);
+            let f_c = match f(&contracted) {
+                Ok(v) => v,
+                Err(e) => {
+                    if let Some(cancel) = check_cancel {
+                        cancel()?;
+                    }
+                    return Err(e);
+                }
+            };
             if f_c < f_vals[m] {
                 vertices[m] = contracted;
                 f_vals[m] = f_c;
@@ -110,6 +165,9 @@ pub fn nelder_mead(
         }
 
         for i in 1..=m {
+            if let Some(cancel) = check_cancel {
+                cancel()?;
+            }
             for j in 0..m {
                 vertices[i][j] = vertices[0][j] + 0.5 * (vertices[i][j] - vertices[0][j]);
             }
@@ -128,17 +186,31 @@ pub fn compute_hessian(
     f: &dyn Fn(&[f64]) -> Result<f64, String>,
     h: f64,
 ) -> Result<Vec<f64>, String> {
+    compute_hessian_cancellable(mode, f, h, None)
+}
+
+/// Finite-difference Hessian of `g = -f` with optional cancellation check.
+pub fn compute_hessian_cancellable(
+    mode: &[f64],
+    f: &dyn Fn(&[f64]) -> Result<f64, String>,
+    h: f64,
+    check_cancel: Option<&dyn Fn() -> Result<(), String>>,
+) -> Result<Vec<f64>, String> {
     let m = mode.len();
     let mut hessian = vec![0.0; m * m];
 
-    let g = |theta: &[f64]| -> f64 {
-        match f(theta) {
-            Ok(v) => -v,
-            Err(_) => f64::NEG_INFINITY,
+    let eval_g = |theta: &[f64]| -> Result<f64, String> {
+        if let Some(cancel) = check_cancel {
+            cancel()?;
         }
+        let v = f(theta)?;
+        Ok(-v)
     };
 
-    let g_mode = g(mode);
+    let g_mode = match eval_g(mode) {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
 
     for i in 0..m {
         for j in 0..m {
@@ -148,7 +220,16 @@ pub fn compute_hessian(
                 let mut theta_minus = mode.to_vec();
                 theta_minus[i] -= h;
 
-                let val = (g(&theta_plus) - 2.0 * g_mode + g(&theta_minus)) / (h * h);
+                let g_plus = match eval_g(&theta_plus) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                };
+                let g_minus = match eval_g(&theta_minus) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                };
+
+                let val = (g_plus - 2.0 * g_mode + g_minus) / (h * h);
                 hessian[i * m + j] = val;
             } else if i < j {
                 let mut tp_pp = mode.to_vec();
@@ -167,7 +248,24 @@ pub fn compute_hessian(
                 tp_mm[i] -= h;
                 tp_mm[j] -= h;
 
-                let val = (g(&tp_pp) - g(&tp_pm) - g(&tp_mp) + g(&tp_mm)) / (4.0 * h * h);
+                let g_pp = match eval_g(&tp_pp) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                };
+                let g_pm = match eval_g(&tp_pm) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                };
+                let g_mp = match eval_g(&tp_mp) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                };
+                let g_mm = match eval_g(&tp_mm) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e),
+                };
+
+                let val = (g_pp - g_pm - g_mp + g_mm) / (4.0 * h * h);
                 hessian[i * m + j] = val;
                 hessian[j * m + i] = val;
             }
@@ -176,3 +274,4 @@ pub fn compute_hessian(
 
     Ok(hessian)
 }
+

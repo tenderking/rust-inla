@@ -7,9 +7,16 @@ description = "Sparse linear algebra, LDLT, optimization, and design-matrix help
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = ["sparse-ldlt"]
+## faer sparse LDLᵀ (bypass csc_to_dense on the hot path)
+sparse-ldlt = ["dep:faer"]
+
 [dependencies]
 sprs = "0.11"
 rayon = "1"
+thiserror = "2"
+faer = { version = "0.24", optional = true, default-features = false, features = ["std", "sparse-linalg"] }
 
 [dev-dependencies]
 criterion = "0.5"

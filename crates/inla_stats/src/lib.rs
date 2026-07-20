@@ -11,6 +11,7 @@ pub mod latent_models;
 pub mod marginals;
 pub mod matern2d;
 pub mod model_selection;
+pub mod priors;
 pub mod rw2d;
 pub mod spde;
 
@@ -32,7 +33,7 @@ pub use inference::{
     eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
     eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
     eval_prior_loggamma, find_latent_mode, find_latent_mode_a, run_inla_inference,
-    run_inla_inference_a,
+    run_inla_inference_a, run_inla_inference_a_cancellable,
 };
 pub use latent_models::{
     fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,
@@ -46,6 +47,7 @@ pub use matern2d::matern2d_precision_csc;
 pub use model_selection::{
     CpoResult, DicResult, compute_cpo_pit, compute_dic, compute_marginal_log_lik_gaussian,
 };
+pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use rw2d::rw2d_precision_csc;
 pub use spde::spde_precision_csc;
 

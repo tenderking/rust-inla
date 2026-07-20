@@ -161,7 +161,7 @@ pub fn scale_model_csc(q: &CscMatrix) -> Result<CscMatrix, String> {
         return identity_csc(1, 1.0);
     }
 
-    let a = crate::ldlt::csc_to_dense(q)?;
+    let a = crate::ldlt::csc_to_dense(q).map_err(|e| e.to_string())?;
     let (evals, evecs) = crate::integration::jacobi_eigen(&a, n, 500)?;
     let max_lam = evals.iter().copied().fold(0.0_f64, f64::max).abs().max(1.0);
     // Same spirit as inla.ginv / MASS::ginv default tol

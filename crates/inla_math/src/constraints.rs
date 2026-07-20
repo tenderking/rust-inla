@@ -135,6 +135,10 @@ pub fn sum_to_zero_constraint(n: usize, k: usize) -> Result<ConstraintSpec, Stri
 pub const HARD_CONSTRAINT_KAPPA: f64 = 3.059_023_205_018_258e6; // exp(15)
 
 /// Return `Q + κ Aᵀ A` as CSC (makes intrinsic Q SPD for LDLT).
+///
+/// Assembled from triplets without densifying `Q`. For full sum-to-zero
+/// constraints `AᵀA` is dense, so the result may still be dense — but sparse
+/// `Q` is never copied into an `n²` buffer first.
 pub fn augment_precision_csc(
     q: &CscMatrix,
     constr: &ConstraintSpec,
@@ -149,21 +153,24 @@ pub fn augment_precision_csc(
     }
     let n = constr.n;
     let k = constr.k;
-    // Q + κ Aᵀ A : dense update on support of AᵀA (usually dense for sum-to-zero)
-    let mut dense = crate::ldlt::csc_to_dense(q)?;
+    // Upper bound: Q nnz + full AᵀA (k may make AᵀA dense).
+    let nnz_hint = q.nnz() + n * n;
+    let mut tri = TriMatI::<f64, usize>::with_capacity((n, n), nnz_hint);
+    for (col, colvec) in q.outer_iterator().enumerate() {
+        for (row, &val) in colvec.iter() {
+            if val != 0.0 {
+                tri.add_triplet(row, col, val);
+            }
+        }
+    }
+    // κ (Aᵀ A)_{ij} = κ Σ_r A_{ri} A_{rj}
     for i in 0..n {
         for j in 0..n {
             let mut s = 0.0;
             for r in 0..k {
                 s += constr.a[r * n + i] * constr.a[r * n + j];
             }
-            dense[i * n + j] += kappa * s;
-        }
-    }
-    let mut tri = TriMatI::<f64, usize>::with_capacity((n, n), n * n);
-    for i in 0..n {
-        for j in 0..n {
-            let v = dense[i * n + j];
+            let v = kappa * s;
             if v != 0.0 {
                 tri.add_triplet(i, j, v);
             }

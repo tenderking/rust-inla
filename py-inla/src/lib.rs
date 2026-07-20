@@ -1,7 +1,59 @@
 use inla_core::ar1_precision;
-use pyo3::exceptions::PyValueError;
+use inla_core::MathError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::IntoPyObjectExt;
 use pyo3::types::PyDict;
+
+/// Map [`MathError`] into a Python exception.
+///
+/// Singular / not-PD / not-symmetric become `numpy.linalg.LinAlgError` when
+/// NumPy is importable, otherwise `scipy.linalg.LinAlgError`, else `ValueError`.
+fn math_error_to_py(py: Python<'_>, err: MathError) -> PyErr {
+    if err.is_linalg() {
+        let msg = err.to_string();
+        if let Ok(np) = py.import("numpy") {
+            if let Ok(linalg) = np.getattr("linalg") {
+                if let Ok(exc) = linalg.getattr("LinAlgError") {
+                    return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
+                        PyValueError::new_err(err.to_string()).into_bound_py_any(py).unwrap()
+                    }));
+                }
+            }
+        }
+        if let Ok(sp) = py.import("scipy") {
+            if let Ok(linalg) = sp.getattr("linalg") {
+                if let Ok(exc) = linalg.getattr("LinAlgError") {
+                    return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
+                        PyValueError::new_err(err.to_string()).into_bound_py_any(py).unwrap()
+                    }));
+                }
+            }
+        }
+        return PyValueError::new_err(msg);
+    }
+    match err {
+        MathError::OutOfMemory => PyRuntimeError::new_err(err.to_string()),
+        other => PyValueError::new_err(other.to_string()),
+    }
+}
+
+/// Map a string error that may originate from [`MathError::to_string`].
+fn string_error_to_py(py: Python<'_>, err: String) -> PyErr {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("keyboard") || lower.contains("interrupt") || lower.contains("cancelled") {
+        return pyo3::exceptions::PyKeyboardInterrupt::new_err(());
+    }
+    if lower.contains("not positive definite")
+        || lower.contains("singular")
+        || lower.contains("not symmetric")
+        || lower.contains("numerically unstable in ldl")
+    {
+        return math_error_to_py(py, MathError::NotPositiveDefinite);
+    }
+    PyValueError::new_err(err)
+}
+
 
 /// Computes a 1D AR1 precision matrix and returns sparse triplets (i, j, x)
 /// in 1-based format (compatible with R sparse matrices).
@@ -366,13 +418,32 @@ fn run_inla_inference_py(
         }
     };
 
+    let py_err_store = std::sync::Arc::new(std::sync::Mutex::new(None::<PyErr>));
+    let store1 = py_err_store.clone();
+    let store2 = py_err_store.clone();
+    let store3 = py_err_store.clone();
+
     // 2. Closure for build_prior calling back to Python
     let build_prior_closure = move |theta: &[f64]| -> Result<inla_core::sparse::CscMatrix, String> {
         Python::with_gil(|py| {
             let theta_py = theta.to_vec();
-            let res = build_prior
-                .call1(py, (theta_py,))
-                .map_err(|e| e.to_string())?;
+            let res = match build_prior.call1(py, (theta_py,)) {
+                Ok(val) => val,
+                Err(e) => {
+                    let mut lock = store1.lock().unwrap();
+                    if lock.is_none() {
+                        let py_err = if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                            || e.to_string().contains("KeyboardInterrupt")
+                        {
+                            pyo3::exceptions::PyKeyboardInterrupt::new_err(())
+                        } else {
+                            e
+                        };
+                        *lock = Some(py_err);
+                    }
+                    return Err("Python build_prior callback failed".to_string());
+                }
+            };
             let bound = res.bind(py);
             csc_from_python(bound).map_err(|e| e.to_string())
         })
@@ -385,7 +456,20 @@ fn run_inla_inference_py(
             let res = log_prior_density.call1(py, (theta_py,));
             match res {
                 Ok(val) => val.extract::<f64>(py).unwrap_or(f64::NEG_INFINITY),
-                Err(_) => f64::NEG_INFINITY,
+                Err(e) => {
+                    let mut lock = store2.lock().unwrap();
+                    if lock.is_none() {
+                        let py_err = if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                            || e.to_string().contains("KeyboardInterrupt")
+                        {
+                            pyo3::exceptions::PyKeyboardInterrupt::new_err(())
+                        } else {
+                            e
+                        };
+                        *lock = Some(py_err);
+                    }
+                    f64::NEG_INFINITY
+                }
             }
         })
     };
@@ -396,23 +480,55 @@ fn run_inla_inference_py(
         predictor_indices: predictor_marginal_indices.unwrap_or_default(),
         ..Default::default()
     };
-    // 4. Run the core solver (releasing GIL for Rayon parallel execution)
-    let result = py
-        .allow_threads(|| {
-            inla_core::run_inla_inference_a(
-                &initial_theta,
-                &build_prior_closure,
-                &log_prior_density_closure,
-                &rust_obs,
-                a_mat.as_ref(),
-                constr_spec.as_ref(),
-                strategy,
-                step_or_f0,
-                &opts,
-                deterministic,
-            )
+    let check_cancel = move || {
+        Python::with_gil(|py| {
+            if let Err(e) = py.check_signals() {
+                let mut lock = store3.lock().unwrap();
+                if lock.is_none() {
+                    let py_err = if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                        || e.to_string().contains("KeyboardInterrupt")
+                    {
+                        pyo3::exceptions::PyKeyboardInterrupt::new_err(())
+                    } else {
+                        e
+                    };
+                    *lock = Some(py_err);
+                }
+                Err("interrupted".to_string())
+            } else {
+                Ok(())
+            }
         })
-        .map_err(PyValueError::new_err)?;
+    };
+
+    // 4. Run the core solver (releasing GIL for Rayon parallel execution)
+    let result = py.allow_threads(|| {
+        inla_core::run_inla_inference_a_cancellable(
+            &initial_theta,
+            &build_prior_closure,
+            &log_prior_density_closure,
+            &rust_obs,
+            a_mat.as_ref(),
+            constr_spec.as_ref(),
+            strategy,
+            step_or_f0,
+            &opts,
+            deterministic,
+            Some(&check_cancel),
+        )
+    });
+
+    if let Err(err) = py.check_signals() {
+        return Err(err);
+    }
+    if let Some(err) = py_err_store.lock().unwrap().take() {
+        if err.to_string().contains("KeyboardInterrupt") {
+            return Err(pyo3::exceptions::PyKeyboardInterrupt::new_err(()));
+        }
+        return Err(err);
+    }
+
+    let result = result.map_err(|msg| string_error_to_py(py, msg))?;
 
     // 5. Build and return the wrapped result
     Ok(PyInferenceResult {
@@ -717,6 +833,33 @@ fn fgn_approx_latent_len(n_obs: usize, order: usize) -> usize {
     inla_core::fgn_approx_latent_len(n_obs, order)
 }
 
+/// Evaluate a named prior on internal θ: `log π(θ | prior, param)`.
+#[pyfunction]
+fn prior_log_density(name: &str, param: Vec<f64>, theta: Vec<f64>) -> PyResult<f64> {
+    let spec = inla_core::PriorSpec::from_name_params(name, &param).map_err(PyValueError::new_err)?;
+    spec.log_density(&theta).map_err(PyValueError::new_err)
+}
+
+/// Sum log-densities for a stack of named priors (concatenated θ).
+#[pyfunction]
+fn hyper_prior_stack_log_density(
+    names: Vec<String>,
+    params: Vec<Vec<f64>>,
+    theta: Vec<f64>,
+) -> PyResult<f64> {
+    let stack = inla_core::HyperPriorStack::from_names_params(&names, &params)
+        .map_err(PyValueError::new_err)?;
+    stack.log_density(&theta).map_err(PyValueError::new_err)
+}
+
+/// Default `(prior_name, param)` list for an effect model (`besag`, `ar1`, …).
+#[pyfunction]
+fn default_hyper_priors(model: &str) -> PyResult<Vec<(String, Vec<f64>)>> {
+    let stack =
+        inla_core::HyperPriorStack::default_for_effect(model).map_err(PyValueError::new_err)?;
+    Ok(stack.to_names_params())
+}
+
 /// The initialization function for the Python extension module `inla._native`.
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -734,6 +877,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_intern_from_hurst, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_latent_len, m)?)?;
+    m.add_function(wrap_pyfunction!(prior_log_density, m)?)?;
+    m.add_function(wrap_pyfunction!(hyper_prior_stack_log_density, m)?)?;
+    m.add_function(wrap_pyfunction!(default_hyper_priors, m)?)?;
     m.add_function(wrap_pyfunction!(run_inla_inference_py, m)?)?;
     Ok(())
 }

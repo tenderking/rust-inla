@@ -28,13 +28,13 @@ pub use inla_fmesher::{
 // `math_compute_hessian` / `math_nelder_mead` are the generic math optimizers;
 // flat `compute_hessian` / `nelder_mead` below are the INLA wrappers from stats.
 pub use inla_math::{
-    CscForR, CscMatrix, Eval1D, LdltFactor, add_csc, at_diag_a, block_diag_csc, ccd_design,
-    compute_hessian as math_compute_hessian, csc_for_r_dgcmatrix, csc_from_triplets_0based,
-    csc_to_dense, grid_design, identity_csc, invert_symmetric_matrix, jacobi_eigen,
-    laplace_newton_step, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize,
+    CscForR, CscMatrix, DenseLdltFactor, Eval1D, LdltFactor, MathError, add_csc, at_diag_a,
+    block_diag_csc, ccd_design, compute_hessian as math_compute_hessian, csc_for_r_dgcmatrix,
+    csc_from_triplets_0based, csc_to_dense, grid_design, identity_csc, invert_symmetric_matrix,
+    jacobi_eigen, laplace_newton_step, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize,
     ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place, matvec_csc, matvec_transpose_csc,
     nelder_mead as math_nelder_mead, predictor_variances_diag, scale_csc, scale_model_csc,
-    sparse_from_triplets, triplets_to_csc,
+    sparse_from_triplets, triplets_to_csc, with_thread_scratch, LdltScratch,
 };
 
 /// CSC helpers from [`inla_math::sparse`], plus [`ar1_precision_csc`] from [`inla_stats`]
@@ -111,12 +111,12 @@ pub mod mesh {
 // --- Stats flat re-exports (previous inla_core public API) ---
 pub use inla_stats::{
     Ar1Precision, BinomialObs, ConstraintSpec, CpoResult, DicResult, ExponentialSurvivalObs,
-    GammaPrior, GaussianObs, GaussianPrior, HARD_CONSTRAINT_KAPPA, InferenceResult, LaplaceObs,
-    Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs, Obs, PoissonObs,
-    WeibullSurvivalObs, ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType,
-    ar1_precision, ar1_precision_csc, arp_precision_csc, augment_precision_csc,
-    besag_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic, compute_hessian,
-    compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
+    GammaPrior, GaussianObs, GaussianPrior, HARD_CONSTRAINT_KAPPA, HyperPriorStack, InferenceResult,
+    LaplaceObs, Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs, Obs,
+    PoissonObs, PriorFamily, PriorSpec, WeibullSurvivalObs, ZeroInflatedBinomialObs,
+    ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision, ar1_precision_csc, arp_precision_csc,
+    augment_precision_csc, besag_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic,
+    compute_hessian, compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
     eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
     eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
     eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
@@ -127,7 +127,8 @@ pub use inla_stats::{
     hyperpar_marginals, iid_precision_csc, marginal_cdf, marginal_quantiles,
     marginal_summary_quantiles, matern2d_precision_csc, model_rank_deficiency, nelder_mead,
     project_constraints, read_graph_file, run_inla_inference, run_inla_inference_a,
-    rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
+    run_inla_inference_a_cancellable, rw1_cyclic_precision_csc, rw1_precision_csc,
+    rw2_cyclic_precision_csc, rw2_precision_csc,
     rw2d_precision_csc, seasonal_precision_csc, spde_precision_csc, sum_to_zero_constraint,
     two_diid_precision_csc,
 };

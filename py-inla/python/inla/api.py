@@ -148,6 +148,55 @@ def _vstack_constraints(
     return a_all, e_all
 
 
+def _as_param_list(val) -> list[float]:
+    if val is None:
+        return []
+    return [float(x) for x in np.asarray(val, dtype=float).reshape(-1)]
+
+
+def _resolve_effect_priors(model: str, kwargs: Optional[Mapping[str, Any]]) -> list[tuple[str, list[float]]]:
+    """Build (name, param) list for an effect from f() kwargs or model defaults."""
+    kw = dict(kwargs or {})
+    # Flat f(..., prior=..., param=...) → first hyper slot
+    if "prior" in kw:
+        name = str(kw["prior"])
+        param = _as_param_list(kw.get("param"))
+        defaults = core.default_hyper_priors(model)
+        if not defaults:
+            return [(name, param)]
+        out = [(name, param)]
+        # keep remaining default slots (e.g. AR1 rho) if only prec overridden
+        for i, (dn, dp) in enumerate(defaults):
+            if i == 0:
+                continue
+            out.append((dn, dp))
+        return out
+    hyper = kw.get("hyper")
+    if isinstance(hyper, Mapping):
+        defaults = core.default_hyper_priors(model)
+        # Map R-style keys onto default slots by order: prec, rho/rho1, ...
+        key_order = []
+        for k in ("prec", "rho", "rho1", "cor1", "h", "hurst"):
+            if k in hyper:
+                key_order.append(k)
+        for k in hyper:
+            if k not in key_order:
+                key_order.append(k)
+        out: list[tuple[str, list[float]]] = []
+        for i, k in enumerate(key_order):
+            h = hyper[k]
+            if not isinstance(h, Mapping):
+                raise ValueError(f"hyper['{k}'] must be a mapping with prior=/param=")
+            name = str(h.get("prior") or (defaults[i][0] if i < len(defaults) else "gaussian"))
+            param = _as_param_list(h.get("param"))
+            out.append((name, param))
+        # If fewer keys than default slots, append remaining defaults
+        if len(out) < len(defaults):
+            out.extend(defaults[len(out) :])
+        return out
+    return list(core.default_hyper_priors(model))
+
+
 def _control_get(cc: Mapping[str, Any], *keys: str) -> Any:
     for k in keys:
         if k in cc:
@@ -399,6 +448,7 @@ def _fit(
     effect_graphs: list[Optional[list[list[int]]]] = []
     effect_scale: list[bool] = []
     effect_generics: list[Optional[GenericLike]] = []
+    effect_prior_specs: list[list[tuple[str, list[float]]]] = []
     theta: list[float] = []
 
     # Fixed effects block first → latent_means[0] is intercept when present
@@ -417,6 +467,7 @@ def _fit(
         effect_graphs.append(None)
         effect_scale.append(False)
         effect_generics.append(None)
+        effect_prior_specs.append([])
         col_off += p
 
     for ft, gmodel in zip(parsed.f_terms, resolved_generics):
@@ -447,6 +498,7 @@ def _fit(
             effect_names.append(ft.index)
             effect_scale.append(False)
             effect_generics.append(gmodel)
+            effect_prior_specs.append([])
             tlen = int(gmodel.n_theta)
             if ft.initial is not None:
                 init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
@@ -504,6 +556,7 @@ def _fit(
         effect_names.append(ft.index)
         effect_scale.append(bool(ft.scale_model))
         effect_generics.append(None)
+        effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs))
         tlen = _theta_len(model, order)
         if ft.initial is not None:
             init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
@@ -530,6 +583,7 @@ def _fit(
     orders = list(effect_orders)
     graphs = list(effect_graphs)
     generics = list(effect_generics)
+    prior_specs = list(effect_prior_specs)
     theta_lens: list[int] = []
     for t, o, g in zip(types, orders, generics):
         if g is not None:
@@ -633,7 +687,10 @@ def _fit(
             if g is not None:
                 lp += g.eval_log_prior(ti)
             else:
-                lp += float(-0.5 * 0.1 * sum(float(v) ** 2 for v in ti))
+                specs = prior_specs[ei]
+                names = [s[0] for s in specs]
+                params = [s[1] for s in specs]
+                lp += float(core.hyper_prior_stack_log_density(names, params, ti))
         return lp
 
     if verbose:

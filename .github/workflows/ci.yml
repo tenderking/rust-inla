@@ -1,0 +1,42 @@
+name: CI & Maturin Wheels
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  rust-tests:
+    name: Rust Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo test
+        run: cargo test --workspace
+
+  maturin-build:
+    name: Maturin Build & Pytest
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install maturin and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest numpy scipy pandas
+      - name: Build abi3 wheel
+        run: |
+          cd py-inla
+          maturin build --release
+      - name: Install wheel and run pytest
+        run: |
+          pip install py-inla/target/wheels/*.whl
+          pytest py-inla/tests
