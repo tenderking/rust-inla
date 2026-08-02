@@ -96,10 +96,11 @@ def _default_theta(model: str, order: int = 0) -> list[float]:
 
 def _rank_deficiency(model: str) -> int:
     m = model.lower()
-    if m in ("rw1", "besag", "besag2", "seasonal", "bym"):
+    if m in ("rw1", "rw2", "besag", "besag2", "seasonal", "bym"):
+        # R-INLA f(..., constr=TRUE) applies sum-to-zero only.
+        # RW2 still has rankdef 2; the linear null-space is left improper
+        # unless the user adds extraconstr (not the default).
         return 1
-    if m == "rw2":
-        return 2
     return 0
 
 
@@ -255,6 +256,36 @@ def _resolve_f_model(
         f"unsupported f() model '{ft.model}'. Built-ins: {supported}. "
         f"Or pass models={{'{ft.model}': ...}} / inla.generic.define(...)."
     )
+
+
+def _compute_scale_factor(q_scipy) -> float:
+    n = q_scipy.shape[0]
+    if n <= 1:
+        return 1.0
+    a = q_scipy.toarray()
+    evals, evecs = np.linalg.eigh(a)
+    max_lam = max(np.max(np.abs(evals)), 1.0)
+    tol = np.sqrt(np.finfo(float).eps) * max_lam
+    
+    valid = evals > tol
+    if not np.any(valid):
+        raise ValueError("scale_model: ginv has no positive diagonal")
+    
+    evals_valid = evals[valid]
+    evecs_valid = evecs[:, valid]
+    
+    ginv_diag = np.sum((evecs_valid ** 2) / evals_valid, axis=1)
+    
+    valid_diag = (ginv_diag > 0.0) & np.isfinite(ginv_diag)
+    if not np.any(valid_diag):
+        raise ValueError("scale_model: ginv has no positive diagonal")
+        
+    log_sum = np.sum(np.log(ginv_diag[valid_diag]))
+    count = np.sum(valid_diag)
+    
+    fac = np.exp(log_sum / count)
+    return float(fac)
+
 
 
 def _build_obs(
@@ -541,9 +572,19 @@ def _fit(
             effect_graphs.append(None)
             effect_ns.append(n_e)
         else:
-            levels = np.sort(np.unique(idx))
-            n_e = int(levels.size)
-            zcol = np.searchsorted(levels, idx)
+            raw_idx = data[ft.index]
+            if hasattr(raw_idx, "cat"):
+                levels = np.asarray(raw_idx.cat.categories)
+                n_e = int(levels.size)
+                zcol = np.asarray(raw_idx.cat.codes)
+            elif hasattr(raw_idx, "categories"):
+                levels = np.asarray(raw_idx.categories)
+                n_e = int(levels.size)
+                zcol = np.asarray(raw_idx.codes)
+            else:
+                levels = np.sort(np.unique(idx))
+                n_e = int(levels.size)
+                zcol = np.searchsorted(levels, idx)
             for r in range(n_obs):
                 rows.append(r)
                 cols.append(col_off + int(zcol[r]))
@@ -591,6 +632,32 @@ def _fit(
         else:
             theta_lens.append(_theta_len(t, o))
     has_intercept = bool(parsed.intercept)
+
+    # Precompute scaling factors for effect_scale
+    precomputed_scales = []
+    for t, n_e, g, scale_flag in zip(types, ns, graphs, effect_scale):
+        if not scale_flag:
+            precomputed_scales.append(1.0)
+            continue
+        q_base = None
+        if t == "iid":
+            q_base = core.iid_precision_matrix(n_e, 1.0)
+        elif t == "rw1":
+            q_base = core.rw1_precision_matrix(n_e, 1.0)
+        elif t == "rw2":
+            q_base = core.rw2_precision_matrix(n_e, 1.0)
+        elif t == "besag":
+            assert g is not None
+            q_base = core.besag_precision_matrix(g, 1.0)
+            
+        if q_base is not None:
+            if isinstance(q_base, core.PyCscMatrix):
+                q_scipy = q_base.to_scipy()
+            else:
+                q_scipy = sparse.csc_matrix(q_base)
+            precomputed_scales.append(_compute_scale_factor(q_scipy))
+        else:
+            precomputed_scales.append(1.0)
 
     def build_prior(th):
         th = list(th)
@@ -645,6 +712,14 @@ def _fit(
                     blocks.append(core.fgn_precision_matrix(n_e, hurst, tau))
             else:
                 raise ValueError(f"unsupported effect type {typ}")
+            
+            # Apply scaling
+            if precomputed_scales[ei] != 1.0:
+                q = blocks[-1]
+                if isinstance(q, core.PyCscMatrix):
+                    q = q.to_scipy()
+                blocks[-1] = q * precomputed_scales[ei]
+
         if len(blocks) == 1:
             b0 = blocks[0]
             if isinstance(b0, core.PyCscMatrix):

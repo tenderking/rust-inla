@@ -9,7 +9,7 @@ from typing import Any
 
 
 _F_CALL_RE = re.compile(
-    r"f\s*\(\s*(?P<idx>[A-Za-z_][\w.]*)\s*(?P<rest>(?:,\s*.*)?)\s*\)",
+    r"f\s*\(\s*(?P<idx>[A-Za-z_][\w.]*)\s*(?P<rest>(?:,\s*.*?)?)\s*\)",
     re.DOTALL,
 )
 
