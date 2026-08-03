@@ -14,7 +14,7 @@ echo "[1/2] Building r-inla (release)..."
 cargo build -p r-inla --release
 
 echo "[2/2] Running R smoke test..."
-Rscript -e '
+Rscript - << 'EOF'
 source("R/inla_rs.R")
 source("R/summary.R")
 source("R/plot.R")
@@ -91,7 +91,32 @@ res_rw2 <- inla_rs(y ~ -1 + f(idx, model = "rw2", obs_precision = 100.0), data =
 cat("RW2 Hyperparameter Mode (log_tau):", paste(round(res_rw2$mode, 4), collapse = ", "), "\n")
 cat("RW2 Marginal Log-Likelihood:", round(res_rw2$marginal_log_lik, 4), "\n")
 
-cat("\n--- Non-Gaussian families (poisson / binomial / laplace) ---\n")
+cat("\n--- Testing Formula Parser & Inference (RW1, Seasonal, AR, CRW1, CRW2) ---\n")
+res_rw1 <- inla_rs(y ~ -1 + f(idx, model = "rw1", obs_precision = 50.0), data = df)
+cat("RW1 Marginal Log-Likelihood:", round(res_rw1$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_rw1$marginal_log_lik))
+
+t_seas <- 1:24
+df_seas <- data.frame(y = sin(t_seas * 0.5) + rnorm(24, sd = 0.1), idx = t_seas)
+res_seas <- inla_rs(y ~ -1 + f(idx, model = "seasonal", season = 4L, obs_precision = 50.0), data = df_seas)
+cat("Seasonal(4) Marginal Log-Likelihood:", round(res_seas$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_seas$marginal_log_lik))
+
+res_ar2 <- inla_rs(y ~ -1 + f(idx, model = "ar", order = 2L, obs_precision = 50.0), data = df)
+cat("AR(2) mode length:", length(res_ar2$mode), " mlik:", round(res_ar2$marginal_log_lik, 4), "\n")
+stopifnot(length(res_ar2$mode) >= 3L)
+
+pos_crw <- sort(runif(15, 0, 10))
+df_crw <- data.frame(y = sin(pos_crw) + rnorm(15, sd = 0.1), idx = 1:15)
+res_crw1 <- inla_rs(y ~ -1 + f(idx, model = "crw1", positions = pos_crw, obs_precision = 50.0), data = df_crw)
+cat("CRW1 Marginal Log-Likelihood:", round(res_crw1$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_crw1$marginal_log_lik))
+
+res_crw2 <- inla_rs(y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout = "simple", obs_precision = 50.0), data = df_crw)
+cat("CRW2 simple Marginal Log-Likelihood:", round(res_crw2$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_crw2$marginal_log_lik))
+
+cat("\n--- Non-Gaussian families (poisson / binomial / nbinom / zip / exp / weibull / laplace) ---\n")
 set.seed(3)
 counts <- c(2, 3, 2, 4, 3, 2, 3, 2)
 df_p <- data.frame(y = counts, idx = seq_along(counts))
@@ -115,6 +140,42 @@ res_bin <- inla_rs(
 )
 cat("Binomial+IID mode:", paste(round(res_bin$mode, 4), collapse = ", "), "\n")
 
+res_nb <- inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_p,
+  family = "nbinomial",
+  size = 2.0,
+  initial_theta = 1.0
+)
+cat("NBinomial+IID mode:", paste(round(res_nb$mode, 4), collapse = ", "), "\n")
+
+res_zip <- inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_p,
+  family = "zeroinflatedpoisson0",
+  zero_prob = 0.2,
+  initial_theta = 1.0
+)
+cat("ZIP+IID mode:", paste(round(res_zip$mode, 4), collapse = ", "), "\n")
+
+df_surv <- data.frame(y = c(1.2, 2.5, 0.8, 3.1, 1.9, 2.0), event = c(1, 0, 1, 1, 0, 1), idx = 1:6)
+res_exp <- inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_surv,
+  family = "exponential_survival",
+  initial_theta = 0.0
+)
+cat("ExponentialSurvival+IID mode:", paste(round(res_exp$mode, 4), collapse = ", "), "\n")
+
+res_weib <- inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_surv,
+  family = "weibull_survival",
+  shape = 1.5,
+  initial_theta = 0.0
+)
+cat("WeibullSurvival+IID mode:", paste(round(res_weib$mode, 4), collapse = ", "), "\n")
+
 y_lap <- c(0.2, -0.1, 0.4, 0.0, -0.3, 0.1, 0.2, -0.2)
 df_l <- data.frame(y = y_lap, idx = seq_along(y_lap))
 res_lap <- inla_rs(
@@ -122,7 +183,7 @@ res_lap <- inla_rs(
   data = df_l,
   family = "laplace",
   alpha = 0.5,
-  gamma = 0.2,
+  gamma = 0.5,
   initial_theta = 1.0
 )
 cat("Laplace+IID mode:", paste(round(res_lap$mode, 4), collapse = ", "), "\n")
@@ -130,6 +191,23 @@ cat("Laplace+IID mode:", paste(round(res_lap$mode, 4), collapse = ", "), "\n")
 q_fgn4 <- inla_rs_fgn_approx_precision_csc(20L, 0.7, 1.0, order = 4L)
 cat("FGN approx order=4 dim=", paste(dim(q_fgn4), collapse = "x"),
     " nnz=", length(q_fgn4@x), " (sparse)\n", sep = "")
+
+cat("\n--- SPDE fit (mesh + projector A) ---\n")
+verts <- matrix(as.numeric(c(0,0, 1,0, 1,1, 0,1, 0.5,0.5)), ncol=2, byrow=TRUE)
+tris <- matrix(as.integer(c(1,2,5, 2,3,5, 3,4,5, 4,1,5)), ncol=3, byrow=TRUE)
+loc <- rbind(c(0.25,0.25), c(0.75,0.25), c(0.75,0.75), c(0.25,0.75), c(0.5,0.5), c(0.4,0.6))
+set.seed(11)
+y_spde <- 0.4 * sin(loc[,1] * 2) + 0.3 * cos(loc[,2] * 1.5) + rnorm(nrow(loc), sd = 0.1)
+A_spde <- inla_rs_spde_projector_csc(verts, tris, loc[,1], loc[,2])
+cat("SPDE A dim=", paste(dim(A_spde), collapse="x"), " nnz=", length(A_spde@x), "\n", sep="")
+res_spde <- inla_rs_spde(
+  y = y_spde, loc = loc, vertices = verts, triangles = tris,
+  initial_theta = c(0, 0), obs_precision = 50, constrain = FALSE
+)
+cat("SPDE mode (log_tau, log_kappa):", paste(round(res_spde$mode, 4), collapse = ", "), "\n")
+cat("SPDE mlik:", round(res_spde$marginal_log_lik, 4), " n_latent=", res_spde$n_latent, "\n", sep="")
+stopifnot(length(res_spde$latent_means) == res_spde$n_latent)
+stopifnot(is.finite(res_spde$marginal_log_lik))
 
 cat("\n--- FGN Parameter Estimation Validation ---\n")
 sim_fgn <- function(n, H) {
@@ -144,7 +222,7 @@ sim_fgn <- function(n, H) {
 
 set.seed(123)
 # Exact dense FGN: keep moderate n (O(n³)). For n≈500 use order=3/4 approx.
-n_val <- 100
+n_val <- 500
 h_targets <- c(0.6, 0.7, 0.8, 0.9)
 
 for (H_true in h_targets) {
@@ -170,4 +248,4 @@ for (H_true in h_targets) {
   cat(sprintf("  [Result] Real H = %.1f | Est H = %.4f | Est tau = %.4f\n",
               H_true, est_H, est_tau))
 }
-'
+EOF
