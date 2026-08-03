@@ -164,6 +164,58 @@ impl Mesh2D {
         self.locate_point_from(0, point)
     }
 
+    /// Build piecewise-linear FEM projector rows for observation locations.
+    ///
+    /// For each point inside (or on the boundary of) a triangle, returns up to
+    /// three triplets `(obs_row, vertex_col, barycentric_weight)`. Points that
+    /// fall outside the mesh return an error (R-INLA would require a domain
+    /// extension / nearest-boundary policy).
+    pub fn observation_projector_triplets(
+        &self,
+        points: &[Vertex2],
+    ) -> Result<Vec<(usize, usize, f64)>, String> {
+        let mut trips = Vec::with_capacity(points.len() * 3);
+        let mut start = 0usize;
+        for (row, &p) in points.iter().enumerate() {
+            let loc = if self.triangles.is_empty() {
+                PointLocation::Outside
+            } else {
+                self.locate_point_from(start, p)
+            };
+            let (tri_idx, bary) = match loc {
+                PointLocation::Triangle {
+                    triangle,
+                    barycentric,
+                }
+                | PointLocation::Edge {
+                    triangle,
+                    barycentric,
+                    ..
+                }
+                | PointLocation::Vertex {
+                    triangle,
+                    barycentric,
+                    ..
+                } => (triangle, barycentric),
+                PointLocation::Outside => {
+                    return Err(format!(
+                        "observation point ({}, {}) is outside the mesh",
+                        p.x, p.y
+                    ));
+                }
+            };
+            start = tri_idx;
+            let verts = self.triangles[tri_idx].0;
+            for k in 0..3 {
+                let w = bary[k];
+                if w.abs() > GEOM_EPSILON {
+                    trips.push((row, verts[k], w));
+                }
+            }
+        }
+        Ok(trips)
+    }
+
     pub fn locate_point_from(&self, start_triangle: usize, point: Vertex2) -> PointLocation {
         if self.triangles.is_empty() || start_triangle >= self.triangles.len() {
             return PointLocation::Outside;
