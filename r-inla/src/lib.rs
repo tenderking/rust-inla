@@ -257,6 +257,144 @@ fn inla_rs_spde_precision_mesh_csc(
     csc_to_dgcmatrix(&csc)
 }
 
+fn parse_mesh2d_from_r(
+    vertices_mat: &Robj,
+    triangles_mat: &Robj,
+) -> std::result::Result<inla_core::fmesher::Mesh2D, Error> {
+    if !vertices_mat.is_matrix() || !triangles_mat.is_matrix() {
+        return Err(Error::Other(
+            "vertices and triangles must be matrices".to_string(),
+        ));
+    }
+    let dim_v = vertices_mat
+        .dim()
+        .ok_or_else(|| Error::Other("could not get vertices dims".to_string()))?;
+    let dim_t = triangles_mat
+        .dim()
+        .ok_or_else(|| Error::Other("could not get triangles dims".to_string()))?;
+    if dim_v.len() != 2 || dim_v[1] != 2 {
+        return Err(Error::Other("vertices must be an N x 2 matrix".to_string()));
+    }
+    if dim_t.len() != 2 || dim_t[1] != 3 {
+        return Err(Error::Other(
+            "triangles must be an M x 3 matrix".to_string(),
+        ));
+    }
+    let n_vertices = dim_v[0].0 as usize;
+    let n_triangles = dim_t[0].0 as usize;
+    let vertices_data = vertices_mat
+        .as_real_vector()
+        .ok_or_else(|| Error::Other("vertices must be real".to_string()))?;
+    let triangles_data = triangles_mat
+        .as_integer_vector()
+        .ok_or_else(|| Error::Other("triangles must be integers".to_string()))?;
+    let mut vertices = Vec::with_capacity(n_vertices);
+    for r in 0..n_vertices {
+        let x = vertices_data[r];
+        let y = vertices_data[r + n_vertices];
+        vertices.push(inla_core::fmesher::Vertex2 { x, y });
+    }
+    let mut triangles = Vec::with_capacity(n_triangles);
+    for r in 0..n_triangles {
+        let i0 = (triangles_data[r] - 1) as usize;
+        let i1 = (triangles_data[r + n_triangles] - 1) as usize;
+        let i2 = (triangles_data[r + 2 * n_triangles] - 1) as usize;
+        triangles.push(inla_core::fmesher::Triangle([i0, i1, i2]));
+    }
+    inla_core::fmesher::build_mesh2d(vertices, triangles).map_err(Error::Other)
+}
+
+/// Piecewise-linear FEM projector `A` (`length(loc_x) × n_vertices`).
+#[extendr]
+fn inla_rs_spde_projector_csc(
+    vertices_mat: Robj,
+    triangles_mat: Robj,
+    loc_x: Vec<f64>,
+    loc_y: Vec<f64>,
+) -> std::result::Result<Robj, Error> {
+    let mesh = parse_mesh2d_from_r(&vertices_mat, &triangles_mat)?;
+    let a = inla_core::spde_projector_from_xy(&mesh, &loc_x, &loc_y).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&a)
+}
+
+/// End-to-end SPDE Gaussian INLA: mesh + locations → A, θ=`[log_tau, log_kappa]`.
+#[extendr]
+fn inla_rs_run_spde(
+    initial_theta: Vec<f64>,
+    y_obs: Vec<f64>,
+    obs_precision: f64,
+    strategy: &str,
+    step_or_f0: f64,
+    vertices_mat: Robj,
+    triangles_mat: Robj,
+    loc_x: Vec<f64>,
+    loc_y: Vec<f64>,
+    constrain: bool,
+    deterministic: bool,
+) -> std::result::Result<List, Error> {
+    if initial_theta.len() != 2 {
+        return Err(Error::Other(
+            "SPDE initial_theta must be length 2: [log_tau, log_kappa]".into(),
+        ));
+    }
+    if y_obs.len() != loc_x.len() || loc_x.len() != loc_y.len() {
+        return Err(Error::Other(
+            "y, loc_x, loc_y must have the same length".into(),
+        ));
+    }
+    let mesh = parse_mesh2d_from_r(&vertices_mat, &triangles_mat)?;
+    let fem = mesh.assemble_fem_blocks();
+    let a = inla_core::spde_projector_from_xy(&mesh, &loc_x, &loc_y).map_err(Error::Other)?;
+    let n_latent = mesh.vertices.len();
+    let obs: Vec<inla_core::Obs> = y_obs
+        .iter()
+        .map(|&y| {
+            inla_core::Obs::Gaussian(inla_core::GaussianObs {
+                y,
+                precision: obs_precision,
+                link: inla_core::Link::Identity,
+            })
+        })
+        .collect();
+    let constr = if constrain {
+        Some(inla_core::sum_to_zero_constraint(n_latent, 1).map_err(Error::Other)?)
+    } else {
+        None
+    };
+    let build_prior = move |theta: &[f64]| {
+        let (tau, kappa) = inla_core::spde_params_from_theta(theta)?;
+        inla_core::spde_precision_csc(&fem, kappa, tau)
+    };
+    let log_prior = |theta: &[f64]| -> f64 {
+        match inla_core::HyperPriorStack::default_for_effect("spde") {
+            Ok(stack) => stack.log_density(theta).unwrap_or(f64::NEG_INFINITY),
+            Err(_) => theta.iter().map(|&v| -0.5 * 0.1 * v * v).sum(),
+        }
+    };
+    let result = inla_core::run_inla_inference_a(
+        &initial_theta,
+        &build_prior,
+        &log_prior,
+        &obs,
+        Some(&a),
+        constr.as_ref(),
+        strategy,
+        step_or_f0,
+        &inla_core::MarginalOptions::default(),
+        deterministic,
+    )
+    .map_err(Error::Other)?;
+    Ok(list!(
+        mode = result.mode,
+        hessian = result.hessian,
+        latent_means = result.latent_means,
+        latent_variances = result.latent_variances,
+        marginal_log_lik = result.marginal_log_lik,
+        n_latent = n_latent as i32,
+        n_obs = y_obs.len() as i32
+    ))
+}
+
 #[extendr]
 fn inla_rs_crw1_precision_csc(positions: Vec<f64>, tau: f64) -> std::result::Result<Robj, Error> {
     let csc = inla_core::crw1_precision_csc(&positions, tau).map_err(Error::Other)?;
@@ -892,9 +1030,34 @@ fn inla_rs_run_inla_structured(
                     };
                     scale_csc_entries(&q0, tau)?
                 }
+                "rw1" => {
+                    let tau = th.first().copied().unwrap_or(0.0).exp();
+                    let q0 = inla_core::rw1_precision_csc(n_e, 1.0)?;
+                    let q0 = if effect_scales_b[ei] {
+                        inla_core::scale_model_csc(&q0)?
+                    } else {
+                        q0
+                    };
+                    scale_csc_entries(&q0, tau)?
+                }
                 "rw2" => {
                     let tau = th.first().copied().unwrap_or(0.0).exp();
                     let q0 = inla_core::rw2_precision_csc(n_e, 1.0)?;
+                    let q0 = if effect_scales_b[ei] {
+                        inla_core::scale_model_csc(&q0)?
+                    } else {
+                        q0
+                    };
+                    scale_csc_entries(&q0, tau)?
+                }
+                "seasonal" => {
+                    let tau = th.first().copied().unwrap_or(0.0).exp();
+                    let season = if effect_orders_u[ei] > 0 {
+                        effect_orders_u[ei]
+                    } else {
+                        4
+                    };
+                    let q0 = inla_core::seasonal_precision_csc(n_e, season, 1.0, true)?;
                     let q0 = if effect_scales_b[ei] {
                         inla_core::scale_model_csc(&q0)?
                     } else {
@@ -909,6 +1072,43 @@ fn inla_rs_run_inla_structured(
                     let tau = th[0].exp();
                     let rho = 2.0 / (1.0 + (-th[1]).exp()) - 1.0;
                     let q0 = inla_core::ar1_precision_csc(n_e, rho, 1.0)?;
+                    let q0 = if effect_scales_b[ei] {
+                        inla_core::scale_model_csc(&q0)?
+                    } else {
+                        q0
+                    };
+                    scale_csc_entries(&q0, tau)?
+                }
+                "ar" | "arp" => {
+                    let tau = th.first().copied().unwrap_or(0.0).exp();
+                    let pacf: Vec<f64> = if th.len() > 1 {
+                        th[1..].iter().map(|&v| (v * 0.5).tanh()).collect()
+                    } else {
+                        vec![0.0]
+                    };
+                    let q0 = inla_core::arp_precision_csc(n_e, &pacf, 1.0)?;
+                    let q0 = if effect_scales_b[ei] {
+                        inla_core::scale_model_csc(&q0)?
+                    } else {
+                        q0
+                    };
+                    scale_csc_entries(&q0, tau)?
+                }
+                "crw1" => {
+                    let tau = th.first().copied().unwrap_or(0.0).exp();
+                    let positions: Vec<f64> = (0..n_e).map(|i| i as f64).collect();
+                    let q0 = inla_core::crw1_precision_csc(&positions, 1.0)?;
+                    let q0 = if effect_scales_b[ei] {
+                        inla_core::scale_model_csc(&q0)?
+                    } else {
+                        q0
+                    };
+                    scale_csc_entries(&q0, tau)?
+                }
+                "crw2" => {
+                    let tau = th.first().copied().unwrap_or(0.0).exp();
+                    let positions: Vec<f64> = (0..n_e).map(|i| i as f64).collect();
+                    let q0 = inla_core::crw2_precision_csc(&positions, 1.0, "simple")?;
                     let q0 = if effect_scales_b[ei] {
                         inla_core::scale_model_csc(&q0)?
                     } else {
@@ -1108,6 +1308,8 @@ extendr_module! {
     fn inla_rs_besag_precision_csc;
     fn inla_rs_bym_precision_csc;
     fn inla_rs_spde_precision_mesh_csc;
+    fn inla_rs_spde_projector_csc;
+    fn inla_rs_run_spde;
     fn inla_rs_crw1_precision_csc;
     fn inla_rs_crw2_precision_csc;
     fn inla_rs_fgn_precision_csc;

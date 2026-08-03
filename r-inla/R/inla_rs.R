@@ -80,6 +80,68 @@ inla_rs_spde_precision_mesh_csc <- function(vertices_mat, triangles_mat, kappa, 
   .Call("wrap__inla_rs_spde_precision_mesh_csc", as.matrix(vertices_mat), as.matrix(triangles_mat), as.numeric(kappa), as.numeric(tau))
 }
 
+#' Piecewise-linear SPDE projector A (n_obs x n_vertices).
+inla_rs_spde_projector_csc <- function(vertices_mat, triangles_mat, loc_x, loc_y) {
+  .Call(
+    "wrap__inla_rs_spde_projector_csc",
+    as.matrix(vertices_mat),
+    as.matrix(triangles_mat),
+    as.numeric(loc_x),
+    as.numeric(loc_y)
+  )
+}
+
+#' Fit a Gaussian SPDE model on a triangular mesh.
+#'
+#' Hyperparameters are internal \eqn{\theta = (\log\tau, \log\kappa)}.
+#' Observation field is \eqn{\eta = A x} with barycentric FEM weights.
+#'
+#' @param y Numeric response.
+#' @param loc Two-column matrix / data.frame of observation coordinates, or
+#'   parallel `loc_x` / `loc_y` vectors.
+#' @param vertices N x 2 vertex coordinates.
+#' @param triangles M x 3 triangle indices (1-based).
+#' @param initial_theta Length-2 starting values `[log_tau, log_kappa]`.
+#' @param obs_precision Gaussian observation precision.
+#' @param constrain If TRUE, apply a sum-to-zero constraint on the field.
+inla_rs_spde <- function(
+    y,
+    loc = NULL,
+    loc_x = NULL,
+    loc_y = NULL,
+    vertices,
+    triangles,
+    initial_theta = c(0.0, 0.0),
+    obs_precision = 25.0,
+    strategy = "ccd",
+    step_or_f0 = 1.0,
+    constrain = FALSE,
+    deterministic = FALSE) {
+  if (!is.null(loc)) {
+    loc <- as.matrix(loc)
+    if (ncol(loc) != 2L) stop("loc must have 2 columns", call. = FALSE)
+    loc_x <- loc[, 1]
+    loc_y <- loc[, 2]
+  }
+  if (is.null(loc_x) || is.null(loc_y)) {
+    stop("Provide loc=cbind(x,y) or loc_x= and loc_y=", call. = FALSE)
+  }
+  .Call(
+    "wrap__inla_rs_run_spde",
+    as.numeric(initial_theta),
+    as.numeric(y),
+    as.numeric(obs_precision)[1],
+    as.character(strategy)[1],
+    as.numeric(step_or_f0)[1],
+    as.matrix(vertices),
+    as.matrix(triangles),
+    as.numeric(loc_x),
+    as.numeric(loc_y),
+    as.logical(constrain)[1],
+    as.logical(deterministic)[1]
+  )
+}
+
 inla_rs_crw1_precision_csc <- function(positions, tau = 1) {
   .Call("wrap__inla_rs_crw1_precision_csc", as.numeric(positions), as.numeric(tau))
 }
@@ -337,12 +399,16 @@ inla_rs_scale_model <- function(adj_list, tau = 1) {
 }
 
 # Models accepted by `f()` in [inla_rs] (must match Rust structured path).
-.inla_rs_supported_f_models <- c("iid", "rw2", "ar1", "besag", "fgn")
+.inla_rs_supported_f_models <- c("iid", "rw1", "rw2", "ar1", "ar", "arp", "besag", "fgn", "seasonal", "crw1", "crw2")
 
 .inla_rs_effect_theta_len <- function(model, order = 0L) {
   model <- tolower(model)
-  if (model %in% c("iid", "rw2", "besag")) return(1L)
+  if (model %in% c("iid", "rw1", "rw2", "besag", "seasonal", "crw1", "crw2")) return(1L)
   if (model %in% c("ar1", "fgn")) return(2L)
+  if (model %in% c("ar", "arp")) {
+    p <- if (order > 0L) as.integer(order) else 2L
+    return(1L + p)
+  }
   if (model == "fixed") return(0L)
   stop("Unknown model '", model, "'", call. = FALSE)
 }
@@ -351,6 +417,10 @@ inla_rs_scale_model <- function(adj_list, tau = 1) {
   model <- tolower(model)
   if (model == "fgn" && order > 0L) return(c(1.0, 2.0))
   if (model %in% c("ar1", "fgn")) return(c(0.0, 0.0))
+  if (model %in% c("ar", "arp")) {
+    p <- if (order > 0L) as.integer(order) else 2L
+    return(rep(0.0, 1L + p))
+  }
   if (model == "fixed") return(numeric(0))
   c(0.0)
 }
@@ -402,6 +472,11 @@ inla_rs <- function(
   }
 
   data <- as.data.frame(data)
+  if (is.null(event) && fam %in% c("exponential", "exponential_survival", "weibull", "weibull_survival")) {
+    if (!is.null(data[["event"]])) {
+      event <- as.numeric(data[["event"]])
+    }
+  }
   resp_var <- all.vars(formula)[1]
   y <- as.numeric(data[[resp_var]])
   n_obs <- length(y)
