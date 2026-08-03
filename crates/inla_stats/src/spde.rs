@@ -1,6 +1,57 @@
-use inla_fmesher::FemBlocks;
+use inla_fmesher::{FemBlocks, Mesh2D, Vertex2};
 use inla_math::{CscMatrix, sparse_from_triplets};
 use sprs::TriMatI;
+
+/// Internal SPDE hyperparameters: `θ = [log(τ), log(κ)]`.
+#[inline]
+pub fn spde_params_from_theta(theta: &[f64]) -> Result<(f64, f64), String> {
+    if theta.len() < 2 {
+        return Err("SPDE requires θ = [log_tau, log_kappa]".to_string());
+    }
+    let tau = theta[0].exp();
+    let kappa = theta[1].exp();
+    if !tau.is_finite() || tau <= 0.0 {
+        return Err(format!("SPDE tau=exp(θ0) invalid: {tau}"));
+    }
+    if !kappa.is_finite() || kappa <= 0.0 {
+        return Err(format!("SPDE kappa=exp(θ1) invalid: {kappa}"));
+    }
+    Ok((tau, kappa))
+}
+
+/// Piecewise-linear observation projector `A` (`n_obs × n_vertices`).
+///
+/// `η = A x` evaluates the SPDE field at observation locations via barycentric
+/// weights from [`Mesh2D::observation_projector_triplets`].
+pub fn spde_projector_csc(mesh: &Mesh2D, locations: &[Vertex2]) -> Result<CscMatrix, String> {
+    let n_obs = locations.len();
+    let n_v = mesh.vertices.len();
+    if n_obs == 0 {
+        return Err("SPDE projector requires at least one location".to_string());
+    }
+    if n_v == 0 {
+        return Err("SPDE projector requires a non-empty mesh".to_string());
+    }
+    let trips = mesh.observation_projector_triplets(locations)?;
+    Ok(sparse_from_triplets(n_obs, n_v, &trips))
+}
+
+/// Convenience: build `A` from separate `x` / `y` coordinate vectors.
+pub fn spde_projector_from_xy(mesh: &Mesh2D, x: &[f64], y: &[f64]) -> Result<CscMatrix, String> {
+    if x.len() != y.len() {
+        return Err(format!(
+            "SPDE projector: x length {} != y length {}",
+            x.len(),
+            y.len()
+        ));
+    }
+    let locs: Vec<Vertex2> = x
+        .iter()
+        .zip(y.iter())
+        .map(|(&xi, &yi)| Vertex2 { x: xi, y: yi })
+        .collect();
+    spde_projector_csc(mesh, &locs)
+}
 
 pub fn spde_precision_csc(fem: &FemBlocks, kappa: f64, tau: f64) -> Result<CscMatrix, String> {
     let n = fem.c0.rows;
@@ -80,6 +131,21 @@ pub fn spde_precision_csc(fem: &FemBlocks, kappa: f64, tau: f64) -> Result<CscMa
 mod tests {
     use super::*;
     use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
+
+    #[test]
+    fn projector_interpolates_at_vertices() {
+        let vertices = vec![
+            Vertex2 { x: 0.0, y: 0.0 },
+            Vertex2 { x: 1.0, y: 0.0 },
+            Vertex2 { x: 0.0, y: 1.0 },
+        ];
+        let mesh = build_mesh2d(vertices, vec![Triangle([0, 1, 2])]).unwrap();
+        let a = spde_projector_csc(&mesh, &[Vertex2 { x: 0.0, y: 0.0 }]).unwrap();
+        assert_eq!(a.rows(), 1);
+        assert_eq!(a.cols(), 3);
+        assert!((*a.get(0, 0).unwrap_or(&0.0) - 1.0).abs() < 1e-12);
+        assert!(a.get(0, 1).map(|v| *v).unwrap_or(0.0).abs() < 1e-12);
+    }
 
     #[test]
     fn test_spde_precision() {

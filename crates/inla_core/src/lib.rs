@@ -129,7 +129,8 @@ pub use inla_stats::{
     project_constraints, read_graph_file, run_inla_inference, run_inla_inference_a,
     run_inla_inference_a_cancellable, rw1_cyclic_precision_csc, rw1_precision_csc,
     rw2_cyclic_precision_csc, rw2_precision_csc,
-    rw2d_precision_csc, seasonal_precision_csc, spde_precision_csc, sum_to_zero_constraint,
+    rw2d_precision_csc, seasonal_precision_csc, spde_params_from_theta, spde_precision_csc,
+    spde_projector_csc, spde_projector_from_xy, sum_to_zero_constraint,
     two_diid_precision_csc,
 };
 

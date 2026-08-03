@@ -49,7 +49,9 @@ pub use model_selection::{
 };
 pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use rw2d::rw2d_precision_csc;
-pub use spde::spde_precision_csc;
+pub use spde::{
+    spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
+};
 
 // Re-export math primitives commonly used with stats APIs.
 pub use inla_math::{

@@ -229,18 +229,28 @@ impl HyperPriorStack {
     pub fn default_for_effect(model: &str) -> Result<Self, String> {
         let m = model.to_ascii_lowercase();
         match m.as_str() {
-            "iid" | "rw1" | "rw2" | "besag" | "besag2" | "seasonal" | "bym" => {
+            "iid" | "rw1" | "rw2" | "besag" | "besag2" | "seasonal" | "bym" | "crw1" | "crw2" => {
                 Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)]))
             }
             "ar1" => Ok(Self::new(vec![
                 PriorSpec::pc_prec(1.0, 0.01),
                 PriorSpec::pc_cor1(0.5, 0.75),
             ])),
+            "ar" | "arp" => Ok(Self::new(vec![
+                PriorSpec::pc_prec(1.0, 0.01),
+                PriorSpec::gaussian(0.0, 0.1),
+                PriorSpec::gaussian(0.0, 0.1),
+            ])),
             "fgn" => Ok(Self::new(vec![
                 PriorSpec::pc_prec(1.0, 0.01),
                 // Hurst on internal scale: weak Gaussian (no dedicated PC yet)
                 PriorSpec::gaussian(0.0, 0.1),
             ])),
+            // θ = [log_tau, log_kappa]; PC Matérn on range/σ scale (d=2).
+            "spde" => Ok(Self::new(vec![PriorSpec::from_name_params(
+                "pc.matern",
+                &[1.0, 1.0, 2.0],
+            )?])),
             "fixed" => Ok(Self::new(vec![])),
             other => Err(format!(
                 "no default hyperprior for effect type '{other}'"
