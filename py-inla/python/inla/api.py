@@ -12,7 +12,19 @@ from inla import generic as generic_mod
 from inla.formula import ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
 
-SUPPORTED_F_MODELS = ("iid", "rw2", "ar1", "besag", "fgn", "rw1")
+SUPPORTED_F_MODELS = (
+    "iid",
+    "rw1",
+    "rw2",
+    "ar1",
+    "ar",
+    "arp",
+    "besag",
+    "fgn",
+    "seasonal",
+    "crw1",
+    "crw2",
+)
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
 
 FAMILY_ALIASES = {
@@ -71,10 +83,13 @@ def _resolve_graph(f_term, data: Mapping[str, Any]) -> list[list[int]]:
 
 def _theta_len(model: str, order: int = 0) -> int:
     model = model.lower()
-    if model in ("iid", "rw1", "rw2", "besag"):
+    if model in ("iid", "rw1", "rw2", "besag", "seasonal", "crw1", "crw2"):
         return 1
     if model in ("ar1", "fgn"):
         return 2
+    if model in ("ar", "arp"):
+        p = order if order > 0 else 2
+        return 1 + p
     if model == "fixed":
         return 0
     return 1
@@ -86,6 +101,9 @@ def _default_theta(model: str, order: int = 0) -> list[float]:
         return [1.0, 2.0]
     if model in ("ar1", "fgn"):
         return [0.0, 0.0]
+    if model in ("ar", "arp"):
+        p = order if order > 0 else 2
+        return [0.0] * (1 + p)
     if model == "fixed":
         return []
     if model == "besag":
@@ -96,10 +114,8 @@ def _default_theta(model: str, order: int = 0) -> list[float]:
 
 def _rank_deficiency(model: str) -> int:
     m = model.lower()
-    if m in ("rw1", "rw2", "besag", "besag2", "seasonal", "bym"):
+    if m in ("rw1", "rw2", "besag", "besag2", "seasonal", "bym", "crw1", "crw2"):
         # R-INLA f(..., constr=TRUE) applies sum-to-zero only.
-        # RW2 still has rankdef 2; the linear null-space is left improper
-        # unless the user adds extraconstr (not the default).
         return 1
     return 0
 
@@ -348,6 +364,16 @@ def _build_obs(
         elif fam in ("laplace",):
             d["alpha"] = float(alpha)
             d["gamma"] = float(gamma)
+        elif fam in ("zero_inflated_poisson", "zeroinflatedpoisson0", "zeroinflatedpoisson1", "zip"):
+            d["exposure"] = float(E_arr[i]) if E_arr is not None else 1.0
+            d["zero_prob"] = float(zero_prob)
+            d["inflation"] = str(inflation)
+        elif fam in ("zero_inflated_binomial", "zeroinflatedbinomial0", "zeroinflatedbinomial1", "zib"):
+            if ntrials is None:
+                raise ValueError("zero_inflated_binomial requires Ntrials")
+            d["n"] = float(ntrials[i])
+            d["zero_prob"] = float(zero_prob)
+            d["inflation"] = str(inflation)
         elif fam in ("exponential", "exponential_survival"):
             d["event"] = float(event_arr[i]) if event_arr is not None else 1.0
         elif fam in ("weibull", "weibull_survival"):
@@ -482,6 +508,10 @@ def _fit(
     effect_prior_specs: list[list[tuple[str, list[float]]]] = []
     theta: list[float] = []
 
+    effect_positions: list[Optional[list[float]]] = []
+    effect_layouts: list[str] = []
+    effect_seasons: list[int] = []
+
     # Fixed effects block first → latent_means[0] is intercept when present
     if p > 0:
         for j in range(p):
@@ -499,6 +529,9 @@ def _fit(
         effect_scale.append(False)
         effect_generics.append(None)
         effect_prior_specs.append([])
+        effect_positions.append(None)
+        effect_layouts.append("simple")
+        effect_seasons.append(4)
         col_off += p
 
     for ft, gmodel in zip(parsed.f_terms, resolved_generics):
@@ -530,6 +563,9 @@ def _fit(
             effect_scale.append(False)
             effect_generics.append(gmodel)
             effect_prior_specs.append([])
+            effect_positions.append(None)
+            effect_layouts.append("simple")
+            effect_seasons.append(4)
             tlen = int(gmodel.n_theta)
             if ft.initial is not None:
                 init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
@@ -592,6 +628,23 @@ def _fit(
             effect_graphs.append(None)
             effect_ns.append(n_e)
 
+        # Positions resolution for CRW models
+        raw_pos = ft.kwargs.get("positions")
+        if raw_pos is not None:
+            if isinstance(raw_pos, str):
+                pos_arr = _get_col(data, raw_pos).tolist()
+            else:
+                pos_arr = [float(p) for p in np.asarray(raw_pos, dtype=float).reshape(-1)]
+        else:
+            pos_arr = [float(p) for p in np.sort(np.unique(idx))]
+        effect_positions.append(pos_arr)
+
+        layout = str(ft.kwargs.get("layout", "simple"))
+        effect_layouts.append(layout)
+
+        season = int(ft.kwargs.get("season", ft.kwargs.get("s", order if order > 0 else 4)))
+        effect_seasons.append(season)
+
         effect_types.append(model)
         effect_orders.append(int(order))
         effect_names.append(ft.index)
@@ -625,6 +678,10 @@ def _fit(
     graphs = list(effect_graphs)
     generics = list(effect_generics)
     prior_specs = list(effect_prior_specs)
+    positions_list = list(effect_positions)
+    layouts_list = list(effect_layouts)
+    seasons_list = list(effect_seasons)
+
     theta_lens: list[int] = []
     for t, o, g in zip(types, orders, generics):
         if g is not None:
@@ -689,6 +746,27 @@ def _fit(
                 tau = float(np.exp(ti[0]))
                 rho = 2.0 / (1.0 + np.exp(-ti[1])) - 1.0
                 blocks.append(core.ar1_precision_matrix_csc(n_e, rho, tau))
+            elif typ in ("ar", "arp"):
+                tau = float(np.exp(ti[0])) if ti else 1.0
+                pacf = [float(np.tanh(v * 0.5)) for v in ti[1:]] if len(ti) > 1 else [0.0]
+                blocks.append(core.arp_precision_matrix(n_e, pacf, tau))
+            elif typ == "seasonal":
+                tau = float(np.exp(ti[0])) if ti else 1.0
+                season = seasons_list[ei]
+                blocks.append(core.seasonal_precision_matrix(n_e, season=season, tau=tau))
+            elif typ == "crw1":
+                tau = float(np.exp(ti[0])) if ti else 1.0
+                pos = positions_list[ei]
+                if pos is None or len(pos) < 2:
+                    pos = [float(i) for i in range(n_e)]
+                blocks.append(core.crw1_precision_matrix(pos, tau))
+            elif typ == "crw2":
+                tau = float(np.exp(ti[0])) if ti else 1.0
+                pos = positions_list[ei]
+                if pos is None or len(pos) < 3:
+                    pos = [float(i) for i in range(n_e)]
+                layout = layouts_list[ei]
+                blocks.append(core.crw2_precision_matrix(pos, tau, layout=layout))
             elif typ == "besag":
                 tau = float(np.exp(ti[0])) if ti else 1.0
                 adj = graphs[ei]
@@ -867,3 +945,6 @@ class InlaResult:
 
     def __getattr__(self, name):
         return getattr(self._native, name)
+
+
+fit = _fit

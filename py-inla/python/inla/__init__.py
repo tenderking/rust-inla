@@ -21,7 +21,10 @@ from inla._native import (
     PyMarginal1D,
     ar1_precision_matrix,
     ar1_precision_matrix_csc,
+    arp_precision_matrix,
     besag_precision_matrix,
+    crw1_precision_matrix,
+    crw2_precision_matrix,
     fgn_approx_latent_len,
     fgn_approx_precision_matrix,
     fgn_hurst_from_intern,
@@ -30,8 +33,9 @@ from inla._native import (
     iid_precision_matrix,
     rw1_precision_matrix,
     rw2_precision_matrix,
+    seasonal_precision_matrix,
 )
-from inla.api import InlaResult, _fit
+from inla.api import InlaResult, _fit, fit
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
 
@@ -40,6 +44,9 @@ class _InlaModule(types.ModuleType):
     """Package module that is itself callable: ``inla(...)``."""
 
     def __call__(self, *args, **kwargs):
+        return _fit(*args, **kwargs)
+
+    def fit(self, *args, **kwargs):
         return _fit(*args, **kwargs)
 
     def define(self, *args, **kwargs):
@@ -58,6 +65,7 @@ _mod.__dict__.update(
         "__path__": __path__,
         "__package__": __package__,
         "__all__": [
+            "fit",
             "InlaResult",
             "PyCscMatrix",
             "PyMarginal1D",
@@ -69,8 +77,12 @@ _mod.__dict__.update(
             "Model",
             "ar1_precision_matrix",
             "ar1_precision_matrix_csc",
+            "arp_precision_matrix",
             "rw1_precision_matrix",
             "rw2_precision_matrix",
+            "seasonal_precision_matrix",
+            "crw1_precision_matrix",
+            "crw2_precision_matrix",
             "iid_precision_matrix",
             "besag_precision_matrix",
             "fgn_precision_matrix",
@@ -79,6 +91,7 @@ _mod.__dict__.update(
             "fgn_intern_from_hurst",
             "fgn_approx_latent_len",
         ],
+        "fit": fit,
         "InlaResult": InlaResult,
         "PyCscMatrix": PyCscMatrix,
         "PyMarginal1D": PyMarginal1D,
@@ -90,8 +103,12 @@ _mod.__dict__.update(
         "Model": Model,
         "ar1_precision_matrix": ar1_precision_matrix,
         "ar1_precision_matrix_csc": ar1_precision_matrix_csc,
+        "arp_precision_matrix": arp_precision_matrix,
         "rw1_precision_matrix": rw1_precision_matrix,
         "rw2_precision_matrix": rw2_precision_matrix,
+        "seasonal_precision_matrix": seasonal_precision_matrix,
+        "crw1_precision_matrix": crw1_precision_matrix,
+        "crw2_precision_matrix": crw2_precision_matrix,
         "iid_precision_matrix": iid_precision_matrix,
         "besag_precision_matrix": besag_precision_matrix,
         "fgn_precision_matrix": fgn_precision_matrix,
