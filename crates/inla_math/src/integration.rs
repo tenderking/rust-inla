@@ -225,7 +225,28 @@ pub fn invert_symmetric_matrix(h: &[f64], m: usize) -> Result<Vec<f64>, String> 
     Ok(inv)
 }
 
+/// Self-adjoint eigendecomposition.
+///
+/// Prefer faer's divide-and-conquer / QR path when available; otherwise fall
+/// back to classical Jacobi rotations (`max_iter` only used by the fallback).
 pub fn jacobi_eigen(
+    matrix: &[f64],
+    m: usize,
+    max_iter: usize,
+) -> Result<(Vec<f64>, Vec<f64>), String> {
+    #[cfg(feature = "sparse-ldlt")]
+    {
+        let _ = max_iter;
+        return crate::dense_faer::selfadjoint_eigen(matrix, m).map_err(|e| e.to_string());
+    }
+    #[cfg(not(feature = "sparse-ldlt"))]
+    {
+        jacobi_eigen_scalar(matrix, m, max_iter)
+    }
+}
+
+#[cfg(not(feature = "sparse-ldlt"))]
+fn jacobi_eigen_scalar(
     matrix: &[f64],
     m: usize,
     max_iter: usize,

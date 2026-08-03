@@ -86,6 +86,19 @@ pub fn csc_to_dense(csc: &CscMatrix) -> Result<Vec<f64>, MathError> {
 }
 
 pub(crate) fn ldlt_factorize_dense_inner(a: &[f64], n: usize) -> Result<DenseLdltFactor, MathError> {
+    #[cfg(feature = "sparse-ldlt")]
+    {
+        crate::dense_faer::ldlt_factorize(a, n)
+    }
+    #[cfg(not(feature = "sparse-ldlt"))]
+    {
+        ldlt_factorize_dense_scalar(a, n)
+    }
+}
+
+/// Scalar fallback when the faer backend is disabled.
+#[cfg(not(feature = "sparse-ldlt"))]
+pub(crate) fn ldlt_factorize_dense_scalar(a: &[f64], n: usize) -> Result<DenseLdltFactor, MathError> {
     if a.len() != n * n {
         return Err(MathError::DimensionMismatch {
             context: "dense LDLᵀ matrix length",
