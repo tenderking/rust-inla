@@ -240,50 +240,12 @@ pub fn fgn_precision_csc(n: usize, hurst: f64, tau: f64) -> Result<CscMatrix, St
 
 /// Invert an SPD matrix via Cholesky: A = L Lᵀ ⇒ A⁻¹ = L⁻ᵀ L⁻¹.
 fn invert_spd_cholesky(a: &[f64], n: usize) -> Result<Vec<f64>, String> {
-    let mut l = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..=i {
-            let mut s = a[i * n + j];
-            for k in 0..j {
-                s -= l[i * n + k] * l[j * n + k];
-            }
-            if i == j {
-                if s <= 1e-15 {
-                    return Err("FGN covariance is not positive definite".to_string());
-                }
-                l[i * n + j] = s.sqrt();
-            } else {
-                l[i * n + j] = s / l[j * n + j];
-            }
+    inla_math::invert_spd_cholesky(a, n).map_err(|e| match e {
+        inla_math::MathError::NotPositiveDefinite => {
+            "FGN covariance is not positive definite".to_string()
         }
-    }
-
-    // Y = L⁻¹ (lower triangular)
-    let mut y = vec![0.0; n * n];
-    for i in 0..n {
-        y[i * n + i] = 1.0 / l[i * n + i];
-        for j in 0..i {
-            let mut s = 0.0;
-            for k in j..i {
-                s -= l[i * n + k] * y[k * n + j];
-            }
-            y[i * n + j] = s / l[i * n + i];
-        }
-    }
-
-    // A⁻¹ = Yᵀ Y
-    let mut inv = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..=i {
-            let mut s = 0.0;
-            for k in i..n {
-                s += y[k * n + i] * y[k * n + j];
-            }
-            inv[i * n + j] = s;
-            inv[j * n + i] = s;
-        }
-    }
-    Ok(inv)
+        other => other.to_string(),
+    })
 }
 
 #[cfg(test)]
