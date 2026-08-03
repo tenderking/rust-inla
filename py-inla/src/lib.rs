@@ -833,6 +833,107 @@ fn fgn_approx_latent_len(n_obs: usize, order: usize) -> usize {
     inla_core::fgn_approx_latent_len(n_obs, order)
 }
 
+/// Build a seasonal precision matrix.
+#[pyfunction]
+#[pyo3(signature = (n, season=4, tau=1.0, cyclic=true))]
+fn seasonal_precision_matrix(
+    n: usize,
+    season: usize,
+    tau: f64,
+    cyclic: bool,
+) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::seasonal_precision_csc(n, season, tau, cyclic)
+        .map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Build an AR(p) precision matrix from PACF values.
+#[pyfunction]
+#[pyo3(signature = (n, pacf, tau=1.0))]
+fn arp_precision_matrix(n: usize, pacf: Vec<f64>, tau: f64) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::arp_precision_csc(n, &pacf, tau).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Build a CRW1 precision matrix from positions.
+#[pyfunction]
+#[pyo3(signature = (positions, tau=1.0))]
+fn crw1_precision_matrix(positions: Vec<f64>, tau: f64) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::crw1_precision_csc(&positions, tau).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Matérn-on-lattice precision (`nrow * ncol` nodes).
+#[pyfunction]
+#[pyo3(signature = (nrow, ncol, nu=1, range=1.0, prec=1.0, cyclic=false))]
+fn matern2d_precision_matrix(
+    nrow: usize,
+    ncol: usize,
+    nu: usize,
+    range: f64,
+    prec: f64,
+    cyclic: bool,
+) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::matern2d_precision_csc(nrow, ncol, nu, range, prec, cyclic)
+        .map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// SPDE precision from a triangular mesh (`vertices` Nx2, `triangles` Mx3, 0-based).
+#[pyfunction]
+#[pyo3(signature = (vertices, triangles, kappa, tau=1.0))]
+fn spde_precision_matrix(
+    vertices: Vec<(f64, f64)>,
+    triangles: Vec<(usize, usize, usize)>,
+    kappa: f64,
+    tau: f64,
+) -> PyResult<PyCscMatrix> {
+    let verts: Vec<inla_core::fmesher::Vertex2> = vertices
+        .into_iter()
+        .map(|(x, y)| inla_core::fmesher::Vertex2 { x, y })
+        .collect();
+    let tris: Vec<inla_core::fmesher::Triangle> = triangles
+        .into_iter()
+        .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
+        .collect();
+    let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
+    let fem = mesh.assemble_fem_blocks();
+    let csc = inla_core::spde_precision_csc(&fem, kappa, tau).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Piecewise-linear SPDE projector A (`n_obs × n_vertices`).
+#[pyfunction]
+#[pyo3(signature = (vertices, triangles, loc_x, loc_y))]
+fn spde_projector_matrix(
+    vertices: Vec<(f64, f64)>,
+    triangles: Vec<(usize, usize, usize)>,
+    loc_x: Vec<f64>,
+    loc_y: Vec<f64>,
+) -> PyResult<PyCscMatrix> {
+    let verts: Vec<inla_core::fmesher::Vertex2> = vertices
+        .into_iter()
+        .map(|(x, y)| inla_core::fmesher::Vertex2 { x, y })
+        .collect();
+    let tris: Vec<inla_core::fmesher::Triangle> = triangles
+        .into_iter()
+        .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
+        .collect();
+    let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
+    let csc =
+        inla_core::spde_projector_from_xy(&mesh, &loc_x, &loc_y).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Build a CRW2 precision matrix from positions.
+#[pyfunction]
+#[pyo3(signature = (positions, tau=1.0, layout="simple"))]
+fn crw2_precision_matrix(positions: Vec<f64>, tau: f64, layout: &str) -> PyResult<PyCscMatrix> {
+    let csc =
+        inla_core::crw2_precision_csc(&positions, tau, layout).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
 /// Evaluate a named prior on internal θ: `log π(θ | prior, param)`.
 #[pyfunction]
 fn prior_log_density(name: &str, param: Vec<f64>, theta: Vec<f64>) -> PyResult<f64> {
@@ -874,6 +975,13 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(besag_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(seasonal_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(arp_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(crw1_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(crw2_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(matern2d_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(spde_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(spde_projector_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_intern_from_hurst, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_latent_len, m)?)?;
