@@ -20,19 +20,30 @@ Downstream crates should prefer `inla_core::…` for a stable surface, or depend
 
 ## Features
 
-- **Pure-Rust inference engine** — native $LDL^T$ factorization, Nelder-Mead hyperparameter optimisation, and Laplace approximation with analytic gradients/Hessians
-- **Rayon-parallelised CCD integration** — the hyperparameter grid loop runs across all CPU cores with no data races
-- **Sparse matrix support** — uses `sprs` internally; exports to `dgCMatrix` for R and SciPy for Python
+- **Pure-Rust inference engine** — faer sparse/dense $LDL^T$, Nelder–Mead hyperparameter optimisation, and Laplace approximation with analytic gradients/Hessians
+- **Rayon-parallelised CCD integration** — the hyperparameter grid loop runs across CPU cores; large sparse factors can use faer Rayon as well
+- **Sparse matrix support** — `sprs` CSC + faer factorize; exports to `dgCMatrix` for R and SciPy for Python
 - **R bridge** — `extendr` exports precision matrices directly as native `dgCMatrix` S4 objects, bypassing file I/O
 - **Python bridge** — `PyO3` / Maturin exposes the same engine with zero-copy sparse matrix handoffs
 - **Model selection** — DIC, CPO, PIT, and marginal likelihoods with outlier detection heuristics
 
 ## Supported Models
 
-**Latent GMRF precision matrices:** AR(1), AR(p), RW1, RW2, CRW1, CRW2, seasonal, Besag, BYM, Matérn 2D, SPDE (FEM-assembled)
+Status is tracked in [`plan.md`](plan.md). Many GMRF builders and likelihood kernels exist in Rust; only a subset is wired through the R/Python formula APIs and e2e ports.
 
-**Likelihoods:** Gaussian, Poisson, Binomial, Negative Binomial, Zero-inflated Poisson/Binomial, Laplace, Exponential survival, Weibull survival
+### Formula / inference (R `inla_rs`, Python `inla`)
 
+**Latent `f()` models:** `iid`, `rw1` (Python), `rw2`, `ar1`, `besag`, `fgn` (exact dense or AR-mixture `order=3/4`)
+
+**SPDE (dedicated API):** triangular mesh → FEM `Q(κ,τ)` + barycentric projector `A`; R `inla_rs_spde(...)`, Python `spde_precision_matrix` / `spde_projector_matrix` + `run_inla_inference(..., a=A)`. θ = `[log τ, log κ]`.
+
+**Families with e2e coverage:** Gaussian, Poisson, Binomial (plus Laplace smoke on R)
+
+### Precision / likelihood kernels only (not full formula e2e)
+
+**Latent Q builders:** AR(p), RW1, CRW1/CRW2, seasonal, BYM (2n block; needs A for full model), Matérn 2D lattice (e2e port with A = I)
+
+**Likelihood eval units:** Negative binomial, zero-inflated Poisson/Binomial, Exponential / Weibull survival
 ## Building
 
 ```bash
