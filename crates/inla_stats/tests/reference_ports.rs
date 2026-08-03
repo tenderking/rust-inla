@@ -1,12 +1,16 @@
 //! Ports of scenarios from `reference/r-inla-tests/` onto rust-inla.
 //! These call `inla_stats::run_inla_inference`, not classic R-INLA.
 
+use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
 use inla_stats::{
-    BinomialObs, GaussianObs, Link, MarginalOptions, Obs, PoissonObs, ar1_precision_csc,
-    arp_precision_csc, besag_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc,
-    fgn_hurst_from_intern, fgn_precision_csc, iid_precision_csc, run_inla_inference,
-    run_inla_inference_a, rw1_precision_csc, rw2_precision_csc, seasonal_precision_csc,
-    sum_to_zero_constraint,
+    BinomialObs, ExponentialSurvivalObs, GaussianObs, LaplaceObs, Link, MarginalOptions,
+    NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
+    ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision_csc, arp_precision_csc,
+    besag_precision_csc, crw1_precision_csc, crw2_precision_csc, fgn_approx_latent_len,
+    fgn_approx_precision_csc, fgn_hurst_from_intern, fgn_precision_csc, iid_precision_csc,
+    matern2d_precision_csc, run_inla_inference, run_inla_inference_a, rw1_precision_csc,
+    rw2_precision_csc, seasonal_precision_csc, spde_params_from_theta, spde_precision_csc,
+    spde_projector_csc, sum_to_zero_constraint,
 };
 
 fn log_prior_flatish(theta: &[f64]) -> f64 {
@@ -96,15 +100,23 @@ fn port_arp_gaussian() {
     let n = 16;
     let y: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.4).sin() * 0.5).collect();
     let obs = gaussian_obs(&y, 16.0);
+    // AR(2): theta length = 1 + p = 3 (theta[0]=log(tau), theta[1..]=logit PACF)
     let build_prior = |theta: &[f64]| {
         let tau = theta[0].exp();
-        // Fixed mild AR(2) PACF; only tau free (keeps m=1 for speed/stability).
-        let _ = theta;
-        arp_precision_csc(n, &[0.4, 0.2], tau)
+        let pacf1 = (theta[1] * 0.5).tanh();
+        let pacf2 = (theta[2] * 0.5).tanh();
+        arp_precision_csc(n, &[pacf1, pacf2], tau)
     };
-    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
-        .expect("arp");
-    assert_finite_result(&result, n, 1);
+    let result = run_inla_inference(
+        &[0.0, 0.5, 0.2],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        "ccd",
+        1.0,
+    )
+    .expect("arp");
+    assert_finite_result(&result, n, 3);
 }
 
 #[test]
@@ -327,3 +339,267 @@ fn port_iid_binomial() {
         .expect("binomial");
     assert_finite_result(&result, n, 1);
 }
+
+#[test]
+fn port_iid_nbinom() {
+    let ys = [1.0, 3.0, 2.0, 6.0, 4.0, 5.0];
+    let n = ys.len();
+    let obs: Vec<Obs> = ys
+        .iter()
+        .map(|&y| {
+            Obs::NegativeBinomial(NegativeBinomialObs {
+                y,
+                exposure: 1.0,
+                size: 2.0,
+                link: Link::Log,
+            })
+        })
+        .collect();
+    let build_prior = |theta: &[f64]| iid_precision_csc(n, theta[0].exp());
+    let result = run_inla_inference(&[1.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("nbinom");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_iid_zip() {
+    let ys = [0.0, 2.0, 0.0, 4.0, 1.0, 0.0, 3.0];
+    let n = ys.len();
+    let obs: Vec<Obs> = ys
+        .iter()
+        .map(|&y| {
+            Obs::ZeroInflatedPoisson(ZeroInflatedPoissonObs {
+                y,
+                exposure: 1.0,
+                zero_prob: 0.2,
+                link: Link::Log,
+                inflation: ZeroInflationType::Type0,
+            })
+        })
+        .collect();
+    let build_prior = |theta: &[f64]| iid_precision_csc(n, theta[0].exp());
+    let result = run_inla_inference(&[1.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("zip");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_iid_zib() {
+    let ys = [0.0, 3.0, 0.0, 5.0, 2.0, 0.0];
+    let n = ys.len();
+    let obs: Vec<Obs> = ys
+        .iter()
+        .map(|&y| {
+            Obs::ZeroInflatedBinomial(ZeroInflatedBinomialObs {
+                y,
+                n: 10.0,
+                zero_prob: 0.15,
+                link: Link::Logit,
+                inflation: ZeroInflationType::Type0,
+            })
+        })
+        .collect();
+    let build_prior = |theta: &[f64]| iid_precision_csc(n, theta[0].exp());
+    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("zib");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_iid_exponential_survival() {
+    // Survival times with right-censoring indicator (1=observed, 0=censored)
+    let times = [1.2, 2.5, 0.8, 3.1, 1.9, 2.0];
+    let events = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+    let n = times.len();
+    let obs: Vec<Obs> = times
+        .iter()
+        .zip(events.iter())
+        .map(|(&t, &e)| {
+            Obs::ExponentialSurvival(ExponentialSurvivalObs {
+                y: t,
+                event: e,
+                link: Link::Log,
+            })
+        })
+        .collect();
+    let build_prior = |theta: &[f64]| iid_precision_csc(n, theta[0].exp());
+    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("exponential survival");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_iid_weibull_survival() {
+    let times = [0.9, 1.8, 2.3, 0.5, 1.4, 2.1];
+    let events = [1.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+    let n = times.len();
+    let obs: Vec<Obs> = times
+        .iter()
+        .zip(events.iter())
+        .map(|(&t, &e)| {
+            Obs::WeibullSurvival(WeibullSurvivalObs {
+                y: t,
+                event: e,
+                shape: 1.5,
+                link: Link::Log,
+            })
+        })
+        .collect();
+    let build_prior = |theta: &[f64]| iid_precision_csc(n, theta[0].exp());
+    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("weibull survival");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_iid_laplace() {
+    let y = [0.2, -0.5, 0.8, 0.1, -0.3, 0.4];
+    let n = y.len();
+    let obs: Vec<Obs> = y
+        .iter()
+        .map(|&yi| {
+            Obs::Laplace(LaplaceObs {
+                y: yi,
+                alpha: 0.5,
+                gamma: 0.5,
+                link: Link::Identity,
+            })
+        })
+        .collect();
+    let build_prior = |theta: &[f64]| iid_precision_csc(n, theta[0].exp());
+    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("laplace");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_crw1_gaussian() {
+    let pos = [0.0, 1.2, 2.5, 4.0, 5.5, 7.0];
+    let n = pos.len();
+    let y: Vec<f64> = pos.iter().map(|&p| p * 0.2 + (p * 0.5_f64).sin()).collect();
+    let obs = gaussian_obs(&y, 25.0);
+    let build_prior = |theta: &[f64]| crw1_precision_csc(&pos, theta[0].exp());
+    let constr = sum_to_zero_constraint(n, 1).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("crw1");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_crw2_gaussian() {
+    let pos = [0.0, 1.0, 2.5, 4.0, 6.0, 8.0];
+    let n = pos.len();
+    let y: Vec<f64> = pos.iter().map(|&p| (p * 0.3_f64).sin()).collect();
+    let obs = gaussian_obs(&y, 30.0);
+    let build_prior = |theta: &[f64]| crw2_precision_csc(&pos, theta[0].exp(), "simple");
+    let constr = sum_to_zero_constraint(n, 2).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("crw2 simple");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_matern2d_gaussian() {
+    // Lattice Matérn: observations at every grid node ⇒ A = I.
+    let nrow = 4;
+    let ncol = 4;
+    let n = nrow * ncol;
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let r = (i % nrow) as f64;
+            let c = (i / nrow) as f64;
+            0.3 * (r * 0.7).sin() + 0.2 * (c * 0.5).cos()
+        })
+        .collect();
+    let obs = gaussian_obs(&y, 40.0);
+    let build_prior = |theta: &[f64]| {
+        let prec = theta[0].exp();
+        matern2d_precision_csc(nrow, ncol, 1, 2.0, prec, false)
+    };
+    let result = run_inla_inference(&[0.0], &build_prior, &log_prior_flatish, &obs, "ccd", 1.0)
+        .expect("matern2d");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_spde_gaussian() {
+    // Unit square mesh (2 triangles) + interior observation locations.
+    // Latent dim = #vertices; projector A maps field → η at locs.
+    let vertices = vec![
+        Vertex2 { x: 0.0, y: 0.0 },
+        Vertex2 { x: 1.0, y: 0.0 },
+        Vertex2 { x: 1.0, y: 1.0 },
+        Vertex2 { x: 0.0, y: 1.0 },
+        Vertex2 { x: 0.5, y: 0.5 },
+    ];
+    let triangles = vec![
+        Triangle([0, 1, 4]),
+        Triangle([1, 2, 4]),
+        Triangle([2, 3, 4]),
+        Triangle([3, 0, 4]),
+    ];
+    let mesh = build_mesh2d(vertices, triangles).expect("mesh");
+    let fem = mesh.assemble_fem_blocks();
+    let n_latent = mesh.vertices.len();
+
+    let locs = [
+        Vertex2 { x: 0.25, y: 0.25 },
+        Vertex2 { x: 0.75, y: 0.25 },
+        Vertex2 { x: 0.75, y: 0.75 },
+        Vertex2 { x: 0.25, y: 0.75 },
+        Vertex2 { x: 0.5, y: 0.5 },
+        Vertex2 { x: 0.4, y: 0.6 },
+    ];
+    let a = spde_projector_csc(&mesh, &locs).expect("projector A");
+    assert_eq!(a.cols(), n_latent);
+    assert_eq!(a.rows(), locs.len());
+
+    let y: Vec<f64> = locs
+        .iter()
+        .map(|p| 0.4 * (p.x * 2.0).sin() + 0.3 * (p.y * 1.5).cos())
+        .collect();
+    let obs = gaussian_obs(&y, 50.0);
+
+    let build_prior = move |theta: &[f64]| {
+        let (tau, kappa) = spde_params_from_theta(theta)?;
+        spde_precision_csc(&fem, kappa, tau)
+    };
+    // Optional sum-to-zero when an intercept is present; here field-only.
+    let result = run_inla_inference_a(
+        &[0.0, 0.0], // log_tau, log_kappa
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        Some(&a),
+        None,
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("spde");
+    assert_finite_result(&result, n_latent, 2);
+}
+
