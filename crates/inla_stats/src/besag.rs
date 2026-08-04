@@ -128,6 +128,37 @@ pub fn bym_precision_csc(
     Ok(tri.to_csc())
 }
 
+/// BYM2 precision (Riebler et al.): length-`n` field
+/// `Q = τ [(1-φ) I + φ Q★]` where `Q★` is the scaled ICAR structure.
+pub fn bym2_precision_csc(adj: &[Vec<usize>], tau: f64, phi: f64) -> Result<CscMatrix, String> {
+    let n = adj.len();
+    if n == 0 {
+        return Err("BYM2 requires at least 1 node".to_string());
+    }
+    if tau <= 0.0 || !tau.is_finite() {
+        return Err("BYM2 tau must be finite and > 0".to_string());
+    }
+    if !(0.0..=1.0).contains(&phi) || !phi.is_finite() {
+        return Err("BYM2 phi must be in [0, 1]".to_string());
+    }
+    let q_icar = besag_precision_csc(adj, 1.0)?;
+    let q_star = inla_math::scale_model_csc(&q_icar)?;
+    let mut tri = TriMatI::<f64, usize>::with_capacity((n, n), q_star.nnz() + n);
+    let w_iid = tau * (1.0 - phi);
+    let w_sp = tau * phi;
+    for i in 0..n {
+        if w_iid != 0.0 {
+            tri.add_triplet(i, i, w_iid);
+        }
+    }
+    for (val, (r, c)) in q_star.iter() {
+        if w_sp != 0.0 {
+            tri.add_triplet(r, c, w_sp * *val);
+        }
+    }
+    Ok(tri.to_csc())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +205,9 @@ mod tests {
         approx(get(&d_bym, 8, 0, 0), 3.0, 1e-12);
         approx(get(&d_bym, 8, 4, 4), 2.5, 1e-12); // IID diagonal
         approx(get(&d_bym, 8, 0, 4), 0.0, 1e-12); // Block isolation
+
+        let q_bym2 = bym2_precision_csc(&adj, 2.0, 0.5).unwrap();
+        assert_eq!(q_bym2.rows(), 4);
+        assert_eq!(q_bym2.cols(), 4);
     }
 }

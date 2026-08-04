@@ -29,21 +29,22 @@ Downstream crates should prefer `inla_core::…` for a stable surface, or depend
 
 ## Supported Models
 
-Status is tracked in [`plan.md`](plan.md). Many GMRF builders and likelihood kernels exist in Rust; only a subset is wired through the R/Python formula APIs and e2e ports.
+Status is tracked in [`plan.md`](plan.md).
 
 ### Formula / inference (R `inla_rs`, Python `inla`)
 
-**Latent `f()` models:** `iid`, `rw1` (Python), `rw2`, `ar1`, `besag`, `fgn` (exact dense or AR-mixture `order=3/4`)
+**Latent `f()` models:** `iid`, `rw1`, `rw2`, `rw2d`, `ar1`, `ar` / `arp`, `besag`, `bym`, `bym2`, `fgn`, `seasonal`, `crw1`, `crw2` (`simple`/`pairs`/`block` in Python), `matern2d`, `spde` (Python formula; R dedicated API)
 
-**SPDE (dedicated API):** triangular mesh → FEM `Q(κ,τ)` + barycentric projector `A`; R `inla_rs_spde(...)`, Python `spde_precision_matrix` / `spde_projector_matrix` + `run_inla_inference(..., a=A)`. θ = `[log τ, log κ]`.
+**SPDE (dedicated API):** triangular mesh → FEM `Q(κ,τ)` + barycentric projector `A`; R `inla_rs_spde(...)`, Python `f(model='spde', ...)` or `spde_precision_matrix` / `spde_projector_matrix`. θ = `[log τ, log κ]`.
 
-**Families with e2e coverage:** Gaussian, Poisson, Binomial (plus Laplace smoke on R)
+**Families:** Gaussian, Poisson, Binomial, Negative Binomial, Zero-inflated Poisson/Binomial, Laplace, Exponential / Weibull survival (right-censoring via `event`; R auto-reads `data$event` when omitted)
 
-### Precision / likelihood kernels only (not full formula e2e)
+### Still partial / deferred
 
-**Latent Q builders:** AR(p), RW1, CRW1/CRW2, seasonal, BYM (2n block; needs A for full model), Matérn 2D lattice (e2e port with A = I)
+**SPDE in multi-effect R formulas** — Python `f(model='spde')` works; R still uses dedicated `inla_rs_spde(...)`  
+**CRW2 `layout="block"`** — Q + Python formula; R structured still defaults to `"simple"`  
+**copy** — shared latent with β scaling not started
 
-**Likelihood eval units:** Negative binomial, zero-inflated Poisson/Binomial, Exponential / Weibull survival
 ## Building
 
 ```bash

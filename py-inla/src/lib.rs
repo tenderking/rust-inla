@@ -784,6 +784,27 @@ fn besag_precision_matrix(adj: Vec<Vec<usize>>, tau: f64) -> PyResult<PyCscMatri
     Ok(PyCscMatrix { matrix: csc })
 }
 
+/// Classic BYM precision (2n): spatial ICAR ⊕ IID.
+#[pyfunction]
+#[pyo3(signature = (adj, tau_spatial=1.0, tau_iid=1.0))]
+fn bym_precision_matrix(
+    adj: Vec<Vec<usize>>,
+    tau_spatial: f64,
+    tau_iid: f64,
+) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::bym_precision_csc(&adj, tau_spatial, tau_iid)
+        .map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// BYM2 precision (length n): `τ[(1-φ)I + φ Q★]`.
+#[pyfunction]
+#[pyo3(signature = (adj, tau=1.0, phi=0.5))]
+fn bym2_precision_matrix(adj: Vec<Vec<usize>>, tau: f64, phi: f64) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::bym2_precision_csc(&adj, tau, phi).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
 /// Build an FGN (exact dense) precision matrix.
 #[pyfunction]
 #[pyo3(signature = (n, hurst, tau=1.0))]
@@ -879,6 +900,31 @@ fn matern2d_precision_matrix(
     Ok(PyCscMatrix { matrix: csc })
 }
 
+/// 2D intrinsic random walk precision on an `nrow × ncol` lattice.
+#[pyfunction]
+#[pyo3(signature = (nrow, ncol, tau=1.0, cyclic=false, bvalue_zero=false))]
+fn rw2d_precision_matrix(
+    nrow: usize,
+    ncol: usize,
+    tau: f64,
+    cyclic: bool,
+    bvalue_zero: bool,
+) -> PyResult<PyCscMatrix> {
+    let csc = inla_core::rw2d_precision_csc(nrow, ncol, tau, cyclic, bvalue_zero)
+        .map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Sparse Kronecker product `A ⊗ B`.
+#[pyfunction]
+fn kronecker_csc(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyCscMatrix> {
+    let a_m = csc_from_python(a)?;
+    let b_m = csc_from_python(b)?;
+    Ok(PyCscMatrix {
+        matrix: inla_core::kronecker_csc(&a_m, &b_m),
+    })
+}
+
 /// SPDE precision from a triangular mesh (`vertices` Nx2, `triangles` Mx3, 0-based).
 #[pyfunction]
 #[pyo3(signature = (vertices, triangles, kappa, tau=1.0))]
@@ -923,6 +969,35 @@ fn spde_projector_matrix(
     let csc =
         inla_core::spde_projector_from_xy(&mesh, &loc_x, &loc_y).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
+}
+
+/// FEM mass (`c0` / C) and stiffness (`g1` / G) for a triangular mesh.
+///
+/// Analogous to classic INLA `spde$param.inla$M0` / `M1`.
+#[pyfunction]
+fn fem_blocks_mesh(
+    py: Python<'_>,
+    vertices: Vec<(f64, f64)>,
+    triangles: Vec<(usize, usize, usize)>,
+) -> PyResult<Bound<'_, PyDict>> {
+    let verts: Vec<inla_core::fmesher::Vertex2> = vertices
+        .into_iter()
+        .map(|(x, y)| inla_core::fmesher::Vertex2 { x, y })
+        .collect();
+    let tris: Vec<inla_core::fmesher::Triangle> = triangles
+        .into_iter()
+        .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
+        .collect();
+    let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
+    let fem = mesh.assemble_fem_blocks();
+    let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
+    let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
+    let out = PyDict::new(py);
+    out.set_item("c0", PyCscMatrix { matrix: c0 })?;
+    out.set_item("g1", PyCscMatrix { matrix: g1 })?;
+    out.set_item("n_vertices", mesh.vertices.len())?;
+    out.set_item("n_triangles", mesh.triangles.len())?;
+    Ok(out)
 }
 
 /// Build a CRW2 precision matrix from positions.
@@ -973,6 +1048,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rw2_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(iid_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(besag_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(bym_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(bym2_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(seasonal_precision_matrix, m)?)?;
@@ -980,8 +1057,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crw1_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(crw2_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(matern2d_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(rw2d_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(kronecker_csc, m)?)?;
     m.add_function(wrap_pyfunction!(spde_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(spde_projector_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(fem_blocks_mesh, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_intern_from_hurst, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_latent_len, m)?)?;

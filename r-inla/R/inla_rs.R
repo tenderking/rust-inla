@@ -68,6 +68,17 @@ inla_rs_matern2d_precision_csc <- function(nrow, ncol, nu, range, prec = 1, cycl
   .Call("wrap__inla_rs_matern2d_precision_csc", as.integer(nrow), as.integer(ncol), as.integer(nu), as.numeric(range), as.numeric(prec), as.logical(cyclic))
 }
 
+inla_rs_rw2d_precision_csc <- function(nrow, ncol, tau = 1, cyclic = FALSE, bvalue_zero = FALSE) {
+  .Call(
+    "wrap__inla_rs_rw2d_precision_csc",
+    as.integer(nrow),
+    as.integer(ncol),
+    as.numeric(tau),
+    as.logical(cyclic),
+    as.logical(bvalue_zero)
+  )
+}
+
 inla_rs_besag_precision_csc <- function(adj_list, tau = 1) {
   .Call("wrap__inla_rs_besag_precision_csc", adj_list, as.numeric(tau))
 }
@@ -76,8 +87,56 @@ inla_rs_bym_precision_csc <- function(adj_list, tau_spatial = 1, tau_iid = 1) {
   .Call("wrap__inla_rs_bym_precision_csc", adj_list, as.numeric(tau_spatial), as.numeric(tau_iid))
 }
 
+inla_rs_bym2_precision_csc <- function(adj_list, tau = 1, phi = 0.5) {
+  .Call("wrap__inla_rs_bym2_precision_csc", adj_list, as.numeric(tau), as.numeric(phi))
+}
+
 inla_rs_spde_precision_mesh_csc <- function(vertices_mat, triangles_mat, kappa, tau = 1) {
   .Call("wrap__inla_rs_spde_precision_mesh_csc", as.matrix(vertices_mat), as.matrix(triangles_mat), as.numeric(kappa), as.numeric(tau))
+}
+
+#' FEM mass (c0 / C) and stiffness (g1 / G) for a triangular mesh.
+#'
+#' Corresponds to classic INLA `spde$param.inla$M0` / `M1`.
+inla_rs_fem_blocks_mesh <- function(vertices_mat, triangles_mat) {
+  .Call(
+    "wrap__inla_rs_fem_blocks_mesh",
+    as.matrix(vertices_mat),
+    as.matrix(triangles_mat)
+  )
+}
+
+#' Build a regular triangular lattice mesh over a rectangle.
+#'
+#' Stand-in for classic `inla.mesh.2d` when only rust-inla is available:
+#' vertices on an `nx` × `ny` grid, each cell split into two triangles.
+inla_rs_lattice_mesh <- function(xlim = c(0, 1), ylim = c(0, 1), nx = 11L, ny = 11L) {
+  nx <- as.integer(nx)[1]
+  ny <- as.integer(ny)[1]
+  if (nx < 2L || ny < 2L) {
+    stop("nx and ny must be >= 2", call. = FALSE)
+  }
+  xs <- seq(xlim[1], xlim[2], length.out = nx)
+  ys <- seq(ylim[1], ylim[2], length.out = ny)
+  # Column-major: x varies fastest (same as expand.grid(x, y))
+  vertices <- as.matrix(expand.grid(x = xs, y = ys))
+  colnames(vertices) <- c("x", "y")
+  idx <- function(i, j) (j - 1L) * nx + i
+  tris <- matrix(NA_integer_, nrow = 2L * (nx - 1L) * (ny - 1L), ncol = 3L)
+  k <- 0L
+  for (j in seq_len(ny - 1L)) {
+    for (i in seq_len(nx - 1L)) {
+      v00 <- idx(i, j)
+      v10 <- idx(i + 1L, j)
+      v01 <- idx(i, j + 1L)
+      v11 <- idx(i + 1L, j + 1L)
+      k <- k + 1L
+      tris[k, ] <- c(v00, v10, v01)
+      k <- k + 1L
+      tris[k, ] <- c(v10, v11, v01)
+    }
+  }
+  list(vertices = vertices, triangles = tris, nx = nx, ny = ny)
 }
 
 #' Piecewise-linear SPDE projector A (n_obs x n_vertices).
@@ -399,30 +458,87 @@ inla_rs_scale_model <- function(adj_list, tau = 1) {
 }
 
 # Models accepted by `f()` in [inla_rs] (must match Rust structured path).
-.inla_rs_supported_f_models <- c("iid", "rw1", "rw2", "ar1", "ar", "arp", "besag", "fgn", "seasonal", "crw1", "crw2")
+.inla_rs_supported_f_models <- c(
+  "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "bym", "bym2",
+  "fgn", "seasonal", "crw1", "crw2", "matern2d", "rgeneric"
+)
 
-.inla_rs_effect_theta_len <- function(model, order = 0L) {
+.inla_rs_effect_theta_len <- function(model, order = 0L, group_model = NULL) {
   model <- tolower(model)
-  if (model %in% c("iid", "rw1", "rw2", "besag", "seasonal", "crw1", "crw2")) return(1L)
-  if (model %in% c("ar1", "fgn")) return(2L)
-  if (model %in% c("ar", "arp")) {
+  if (model %in% c("iid", "rw1", "rw2", "rw2d", "besag", "seasonal", "crw1", "crw2")) {
+    main <- 1L
+  } else if (model %in% c("ar1", "fgn", "bym", "bym2", "matern2d", "spde")) {
+    main <- 2L
+  } else if (model %in% c("ar", "arp")) {
     p <- if (order > 0L) as.integer(order) else 2L
-    return(1L + p)
+    main <- 1L + p
+  } else if (model == "fixed") {
+    main <- 0L
+  } else if (model == "rgeneric") {
+    main <- if (order > 0L) as.integer(order) else 1L
+  } else {
+    stop("Unknown model '", model, "'", call. = FALSE)
   }
-  if (model == "fixed") return(0L)
-  stop("Unknown model '", model, "'", call. = FALSE)
+  if (is.null(group_model) || !nzchar(group_model)) return(main)
+  g <- tolower(group_model)
+  if (g %in% c("iid", "rw1", "rw2")) return(main + 1L)
+  if (g == "ar1") return(main + 2L)
+  stop("Unsupported control.group model '", group_model, "'", call. = FALSE)
 }
 
-.inla_rs_default_theta <- function(model, order = 0L) {
+.inla_rs_default_theta <- function(model, order = 0L, group_model = NULL) {
   model <- tolower(model)
-  if (model == "fgn" && order > 0L) return(c(1.0, 2.0))
-  if (model %in% c("ar1", "fgn")) return(c(0.0, 0.0))
-  if (model %in% c("ar", "arp")) {
+  if (model == "fgn" && order > 0L) {
+    main <- c(1.0, 2.0)
+  } else if (model %in% c("ar1", "fgn", "matern2d", "spde")) {
+    main <- c(0.0, 0.0)
+  } else if (model == "bym") {
+    main <- c(1.0, 1.0)
+  } else if (model == "bym2") {
+    main <- c(1.0, 0.0)
+  } else if (model %in% c("ar", "arp")) {
     p <- if (order > 0L) as.integer(order) else 2L
-    return(rep(0.0, 1L + p))
+    main <- rep(0.0, 1L + p)
+  } else if (model == "fixed") {
+    main <- numeric(0)
+  } else if (model == "rgeneric") {
+    n_th <- if (order > 0L) as.integer(order) else 1L
+    main <- rep(0.0, n_th)
+  } else {
+    main <- c(0.0)
   }
-  if (model == "fixed") return(numeric(0))
-  c(0.0)
+  if (is.null(group_model) || !nzchar(group_model)) return(main)
+  g <- tolower(group_model)
+  if (g %in% c("iid", "rw1", "rw2")) return(c(main, 0.0))
+  if (g == "ar1") return(c(main, 0.0, 0.0))
+  stop("Unsupported control.group model '", group_model, "'", call. = FALSE)
+}
+
+#' Define an R-callback generic latent model (Python ``inla.define`` analogue).
+#'
+#' @param n Latent dimension.
+#' @param Q Function `function(theta)` returning a `dgCMatrix` precision.
+#' @param n_theta Number of hyperparameters.
+#' @param initial Starting θ.
+#' @param log.prior Optional `function(theta)` log-prior density.
+inla_rs_rgeneric_define <- function(n, Q, n_theta = 1L, initial = NULL, log.prior = NULL,
+                                    name = "rgeneric") {
+  n <- as.integer(n)[1]
+  n_theta <- as.integer(n_theta)[1]
+  if (is.null(initial)) initial <- rep(0.0, n_theta)
+  initial <- as.numeric(initial)
+  if (length(initial) != n_theta) {
+    stop("initial length must equal n_theta", call. = FALSE)
+  }
+  if (!is.function(Q)) stop("Q must be a function(theta)", call. = FALSE)
+  list(
+    n = n,
+    Q = Q,
+    n_theta = n_theta,
+    initial = initial,
+    log.prior = log.prior,
+    name = as.character(name)[1]
+  )
 }
 
 #' Fit a latent GMRF model (formula API with A-matrix / multi-f / fixed effects).
@@ -483,7 +599,8 @@ inla_rs <- function(
 
   f_env <- new.env(parent = parent.frame())
   f_env$f <- function(x, model = "iid", order = 0L, graph = NULL,
-                      scale.model = FALSE, values = NULL, initial = NULL, ...) {
+                      scale.model = FALSE, values = NULL, initial = NULL,
+                      group = NULL, control.group = NULL, ...) {
     list(
       name = deparse(substitute(x)),
       model = as.character(model)[1],
@@ -492,6 +609,8 @@ inla_rs <- function(
       scale.model = isTRUE(scale.model),
       values = values,
       initial = initial,
+      group = if (is.null(group)) NULL else deparse(substitute(group)),
+      control.group = control.group,
       args = list(...)
     )
   }
@@ -584,21 +703,48 @@ inla_rs <- function(
       zcol <- as.integer(idx - umin) # 0..n_time-1
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
       graph <- NULL
-    } else if (model == "besag") {
+      order_enc <- order
+    } else if (model == "rw2d" || model == "matern2d") {
+      nrow <- as.integer(fs$args$nrow)[1]
+      ncol <- as.integer(fs$args$ncol)[1]
+      if (is.na(nrow) || is.na(ncol) || nrow < 1L || ncol < 1L) {
+        stop(model, " requires nrow= and ncol=", call. = FALSE)
+      }
+      if (model == "rw2d" && (nrow < 3L || ncol < 3L)) {
+        stop("rw2d requires nrow= and ncol= (>=3)", call. = FALSE)
+      }
+      n_e <- as.integer(nrow * ncol)
+      zcol <- as.integer(idx)
+      if (min(zcol) >= 1L) zcol <- zcol - 1L
+      if (any(zcol < 0L | zcol >= n_e)) {
+        stop(model, " index out of range for nrow*ncol=", n_e, call. = FALSE)
+      }
+      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+      graph <- NULL
+      order_enc <- if (isTRUE(fs$args$cyclic)) -as.integer(nrow) else as.integer(nrow)
+    } else if (model %in% c("besag", "bym", "bym2")) {
       graph <- fs$graph
       if (is.null(graph)) graph <- adj_list
       graph <- .inla_rs_normalize_adj(graph)
       if (is.null(graph)) {
-        stop("besag requires graph= or adj_list=", call. = FALSE)
+        stop(model, " requires graph= or adj_list=", call. = FALSE)
       }
-      n_e <- length(graph)
+      n_graph <- length(graph)
       umin <- 1L
-      # region ids are typically 1..n_e
       zcol <- as.integer(idx - umin)
-      if (any(zcol < 0L | zcol >= n_e)) {
-        stop("besag index out of range for graph size ", n_e, call. = FALSE)
+      if (any(zcol < 0L | zcol >= n_graph)) {
+        stop(model, " index out of range for graph size ", n_graph, call. = FALSE)
       }
-      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+      if (identical(model, "bym")) {
+        # Observe u + v
+        add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+        add_triplets(seq_len(n_obs) - 1L, col_off + n_graph + zcol, rep(1.0, n_obs))
+        n_e <- as.integer(2L * n_graph)
+      } else {
+        add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+        n_e <- as.integer(n_graph)
+      }
+      order_enc <- as.integer(order)
     } else {
       # Generic: unique sorted levels → latent size
       lev <- sort(unique(idx))
@@ -606,6 +752,7 @@ inla_rs <- function(
       zcol <- match(idx, lev) - 1L
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
       graph <- NULL
+      order_enc <- as.integer(order)
     }
 
     effect_types <- c(effect_types, model)
@@ -613,8 +760,8 @@ inla_rs <- function(
     effect_scales <- c(effect_scales, if (isTRUE(fs$scale.model)) 1L else 0L)
     tlen <- .inla_rs_effect_theta_len(model, order)
     effect_theta_lens <- c(effect_theta_lens, tlen)
-    effect_orders <- c(effect_orders, as.integer(order))
-    if (model == "besag") {
+    effect_orders <- c(effect_orders, as.integer(order_enc))
+    if (model %in% c("besag", "bym", "bym2")) {
       adj_lists[[length(adj_lists) + 1L]] <- graph
     } else {
       adj_lists[[length(adj_lists) + 1L]] <- list()

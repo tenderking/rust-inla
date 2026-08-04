@@ -75,6 +75,14 @@ pub fn csc_for_r_dgcmatrix(csc: &CscMatrix) -> Result<CscForR, String> {
     })
 }
 
+/// Sparse Kronecker product `A ⊗ B` (CSC).
+///
+/// For grouped INLA models, use `kronecker_csc(Q_group, Q_main)` when the latent
+/// is ordered with the main index fastest within each group.
+pub fn kronecker_csc(a: &CscMatrix, b: &CscMatrix) -> CscMatrix {
+    sprs::kronecker_product(a.view(), b.view())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +100,15 @@ mod tests {
         let slots = csc_for_r_dgcmatrix(&csc).unwrap();
         assert_eq!(slots.nrow, 2);
         assert_eq!(slots.i.len(), slots.x.len());
+    }
+
+    #[test]
+    fn kronecker_shape_and_scale() {
+        let a = sparse_from_triplets(2, 2, &[(0, 0, 1.0), (1, 1, 1.0)]);
+        let b = sparse_from_triplets(3, 3, &[(0, 0, 2.0), (1, 1, 2.0), (2, 2, 2.0)]);
+        let k = kronecker_csc(&a, &b);
+        assert_eq!(k.rows(), 6);
+        assert_eq!(k.cols(), 6);
+        assert!((*k.get(0, 0).unwrap_or(&0.0) - 2.0).abs() < 1e-12);
     }
 }

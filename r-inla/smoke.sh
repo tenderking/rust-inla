@@ -209,6 +209,73 @@ cat("SPDE mlik:", round(res_spde$marginal_log_lik, 4), " n_latent=", res_spde$n_
 stopifnot(length(res_spde$latent_means) == res_spde$n_latent)
 stopifnot(is.finite(res_spde$marginal_log_lik))
 
+# Intentionally omit `copy` formula productization in this pass (shared β scaling).
+# Python already covers rgeneric; R exposes inla_rs_rgeneric_define() + rw2d formula.
+
+cat("\n--- Advanced latents: rw2d + rgeneric define ---\n")
+set.seed(21)
+nrow <- 5L; ncol <- 5L; n_g <- nrow * ncol
+idx <- seq_len(n_g)
+y_rw2d <- 0.15 * ((idx - 1L) %% nrow) + 0.1 * ((idx - 1L) %/% nrow) + rnorm(n_g, sd = 0.2)
+df_rw2d <- data.frame(y = y_rw2d, idx = idx)
+q_rw2d <- inla_rs_rw2d_precision_csc(nrow, ncol, tau = 1.0, cyclic = FALSE)
+cat("rw2d Q dim=", paste(dim(q_rw2d), collapse = "x"), " nnz=", length(q_rw2d@x), "\n", sep = "")
+res_rw2d <- inla_rs(
+  y ~ -1 + f(idx, model = "rw2d", nrow = nrow, ncol = ncol, cyclic = FALSE),
+  data = df_rw2d,
+  family = "gaussian"
+)
+cat("rw2d mode:", paste(round(res_rw2d$mode, 4), collapse = ", "),
+    " mlik=", round(res_rw2d$marginal_log_lik, 4), "\n", sep = "")
+stopifnot(length(res_rw2d$latent_means) == n_g)
+stopifnot(is.finite(res_rw2d$marginal_log_lik))
+
+rg <- inla_rs_rgeneric_define(
+  n = 5L,
+  Q = function(theta) {
+    Matrix::Diagonal(5, x = exp(theta[1]))
+  },
+  n_theta = 1L,
+  initial = 0.0
+)
+stopifnot(identical(rg$n, 5L), is.function(rg$Q))
+cat("rgeneric define ok: n=", rg$n, " n_theta=", rg$n_theta, "\n", sep = "")
+
+cat("\n--- Gap models: BYM + matern2d ---\n")
+set.seed(31)
+n_reg <- 6L
+adj <- lapply(seq_len(n_reg), function(i) {
+  as.integer(c(((i - 2L) %% n_reg) + 1L, (i %% n_reg) + 1L))
+})
+y_bym <- rnorm(n_reg, sd = 0.4)
+df_bym <- data.frame(y = y_bym, region = seq_len(n_reg))
+res_bym <- inla_rs(
+  y ~ -1 + f(region, model = "bym", graph = adj),
+  data = df_bym
+)
+cat("BYM mode:", paste(round(res_bym$mode, 4), collapse = ", "),
+    " n_latent=", length(res_bym$latent_means), "\n", sep = "")
+stopifnot(length(res_bym$mode) == 2L, length(res_bym$latent_means) == 2L * n_reg)
+
+res_bym2 <- inla_rs(
+  y ~ -1 + f(region, model = "bym2", graph = adj),
+  data = df_bym
+)
+cat("BYM2 mode:", paste(round(res_bym2$mode, 4), collapse = ", "),
+    " n_latent=", length(res_bym2$latent_means), "\n", sep = "")
+stopifnot(length(res_bym2$latent_means) == n_reg)
+
+nrow_m <- 4L; ncol_m <- 4L; n_m <- nrow_m * ncol_m
+y_m <- 0.2 * sin(seq_len(n_m) * 0.3) + rnorm(n_m, sd = 0.2)
+df_m <- data.frame(y = y_m, idx = seq_len(n_m) - 1L)
+res_m <- inla_rs(
+  y ~ -1 + f(idx, model = "matern2d", nrow = nrow_m, ncol = ncol_m, cyclic = FALSE),
+  data = df_m
+)
+cat("matern2d mode:", paste(round(res_m$mode, 4), collapse = ", "),
+    " mlik=", round(res_m$marginal_log_lik, 4), "\n", sep = "")
+stopifnot(length(res_m$mode) == 2L, is.finite(res_m$marginal_log_lik))
+
 cat("\n--- FGN Parameter Estimation Validation ---\n")
 sim_fgn <- function(n, H) {
   gamma <- function(k, H) {

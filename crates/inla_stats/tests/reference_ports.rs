@@ -6,12 +6,14 @@ use inla_stats::{
     BinomialObs, ExponentialSurvivalObs, GaussianObs, LaplaceObs, Link, MarginalOptions,
     NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
     ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision_csc, arp_precision_csc,
-    besag_precision_csc, crw1_precision_csc, crw2_precision_csc, fgn_approx_latent_len,
-    fgn_approx_precision_csc, fgn_hurst_from_intern, fgn_precision_csc, iid_precision_csc,
-    matern2d_precision_csc, run_inla_inference, run_inla_inference_a, rw1_precision_csc,
-    rw2_precision_csc, seasonal_precision_csc, spde_params_from_theta, spde_precision_csc,
-    spde_projector_csc, sum_to_zero_constraint,
+    besag_precision_csc, bym2_precision_csc, bym_precision_csc, crw1_precision_csc,
+    crw2_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc, fgn_hurst_from_intern,
+    fgn_precision_csc, iid_precision_csc, matern2d_precision_csc, run_inla_inference,
+    run_inla_inference_a, rw1_precision_csc, rw2_precision_csc, rw2d_precision_csc,
+    seasonal_precision_csc, spde_params_from_theta, spde_precision_csc, spde_projector_csc,
+    sum_to_zero_constraint,
 };
+use inla_math::{csc_from_triplets_0based, kronecker_csc};
 
 fn log_prior_flatish(theta: &[f64]) -> f64 {
     theta.iter().map(|&v| -0.5 * 0.1 * v * v).sum()
@@ -296,6 +298,165 @@ fn port_besag_gaussian() {
 }
 
 #[test]
+fn port_bym_gaussian() {
+    let adj = vec![
+        vec![1usize, 3],
+        vec![0, 2],
+        vec![1, 3],
+        vec![0, 2],
+    ];
+    let n = adj.len();
+    let y: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { 0.4 } else { -0.2 })
+        .collect();
+    let obs = gaussian_obs(&y, 15.0);
+    // A maps obs i → u_i + v_i
+    let mut rows = Vec::new();
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+    for i in 0..n {
+        rows.push(i);
+        cols.push(i);
+        vals.push(1.0);
+        rows.push(i);
+        cols.push(n + i);
+        vals.push(1.0);
+    }
+    let a = csc_from_triplets_0based(n, 2 * n, &rows, &cols, &vals).unwrap();
+    let build_prior = |theta: &[f64]| bym_precision_csc(&adj, theta[0].exp(), theta[1].exp());
+    let constr = sum_to_zero_constraint(n, 1)
+        .unwrap()
+        .embed(2 * n, 0)
+        .unwrap();
+    let result = run_inla_inference_a(
+        &[1.0, 1.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        Some(&a),
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("bym");
+    assert_finite_result(&result, 2 * n, 2);
+}
+
+#[test]
+fn port_bym2_gaussian() {
+    let adj = vec![
+        vec![1usize, 3],
+        vec![0, 2],
+        vec![1, 3],
+        vec![0, 2],
+    ];
+    let n = adj.len();
+    let y: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { 0.4 } else { -0.2 })
+        .collect();
+    let obs = gaussian_obs(&y, 15.0);
+    let build_prior = |theta: &[f64]| {
+        let tau = theta[0].exp();
+        let phi = (1.0 / (1.0 + (-theta[1]).exp())).clamp(1e-6, 1.0 - 1e-6);
+        bym2_precision_csc(&adj, tau, phi)
+    };
+    let constr = sum_to_zero_constraint(n, 1).unwrap();
+    let result = run_inla_inference_a(
+        &[1.0, 0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("bym2");
+    assert_finite_result(&result, n, 2);
+}
+
+#[test]
+fn port_rw2d_gaussian() {
+    let nrow = 5;
+    let ncol = 5;
+    let n = nrow * ncol;
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let r = (i % nrow) as f64;
+            let c = (i / nrow) as f64;
+            0.2 * r + 0.1 * c + 0.05 * ((r + c) * 0.4).sin()
+        })
+        .collect();
+    let obs = gaussian_obs(&y, 30.0);
+    let build_prior = |theta: &[f64]| rw2d_precision_csc(nrow, ncol, theta[0].exp(), false, false);
+    let constr = sum_to_zero_constraint(n, 2).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("rw2d");
+    assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_group_besag_ar1_gaussian() {
+    // Spatio-temporal: Q = Q_ar1 ⊗ Q_besag (main=space fastest).
+    let adj = vec![
+        vec![1usize, 3],
+        vec![0, 2],
+        vec![1, 3],
+        vec![0, 2],
+    ];
+    let n_space = adj.len();
+    let n_time = 4usize;
+    let n = n_space * n_time;
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let s = (i % n_space) as f64;
+            let t = (i / n_space) as f64;
+            0.4 * (s * 0.8).sin() + 0.3 * (t * 0.5).cos()
+        })
+        .collect();
+    let obs = gaussian_obs(&y, 20.0);
+    let build_prior = |theta: &[f64]| {
+        let tau_s = theta[0].exp();
+        let tau_t = theta[1].exp();
+        let mut rho = 2.0 / (1.0 + (-theta[2]).exp()) - 1.0;
+        rho = rho.clamp(-0.999, 0.999);
+        let q_main = besag_precision_csc(&adj, tau_s)?;
+        let q_group = ar1_precision_csc(n_time, rho, tau_t)?;
+        Ok(kronecker_csc(&q_group, &q_main))
+    };
+    let constr = sum_to_zero_constraint(n, 1).unwrap();
+    let result = run_inla_inference_a(
+        &[0.0, 0.0, 0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        None,
+        Some(&constr),
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("group besag⊗ar1");
+    assert_finite_result(&result, n, 3);
+}
+
+#[test]
 fn port_iid_poisson() {
     // Mild counts; stronger latent prior helps Newton on the log-link.
     let counts = [2.0, 3.0, 2.0, 4.0, 3.0, 2.0, 3.0, 2.0];
@@ -518,6 +679,39 @@ fn port_crw2_gaussian() {
     )
     .expect("crw2 simple");
     assert_finite_result(&result, n, 1);
+}
+
+#[test]
+fn port_crw2_pairs_gaussian() {
+    let pos = [0.0, 1.0, 2.5, 4.0, 6.0];
+    let n = pos.len();
+    let y: Vec<f64> = pos.iter().map(|&p| (p * 0.3_f64).sin()).collect();
+    let obs = gaussian_obs(&y, 30.0);
+    // Observe value component only (pairs layout: cols 0,2,4,...)
+    let mut rows = Vec::new();
+    let mut cols = Vec::new();
+    let mut vals = Vec::new();
+    for i in 0..n {
+        rows.push(i);
+        cols.push(2 * i);
+        vals.push(1.0);
+    }
+    let a = csc_from_triplets_0based(n, 2 * n, &rows, &cols, &vals).unwrap();
+    let build_prior = |theta: &[f64]| crw2_precision_csc(&pos, theta[0].exp(), "pairs");
+    let result = run_inla_inference_a(
+        &[0.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        Some(&a),
+        None,
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        false,
+    )
+    .expect("crw2 pairs");
+    assert_finite_result(&result, 2 * n, 1);
 }
 
 #[test]

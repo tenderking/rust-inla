@@ -80,10 +80,14 @@ impl ConstraintSpec {
 /// Rank deficiency / number of sum-to-zero style constraints for a latent model.
 pub fn model_rank_deficiency(model: &str) -> usize {
     match model.to_ascii_lowercase().as_str() {
-        "rw1" | "besag" | "besag2" => 1,
+        "rw1" | "besag" | "besag2" | "bym2" => 1,
         "rw2" => 2,
+        // Intrinsic (non-cyclic) RW2D: kill constant + linear; cyclic uses k=1.
+        // Callers that know cyclic=true should request k=1 explicitly.
+        "rw2d" => 2,
         "seasonal" => 1, // sum-to-zero over the seasonal contrast (common default)
         "bym" => 1,      // spatial ICAR block only (caller embeds on that block)
+        "crw1" | "crw2" => 1,
         _ => 0,
     }
 }

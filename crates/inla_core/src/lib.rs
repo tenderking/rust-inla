@@ -34,7 +34,7 @@ pub use inla_math::{
     jacobi_eigen, laplace_newton_step, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize,
     ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place, matvec_csc, matvec_transpose_csc,
     nelder_mead as math_nelder_mead, predictor_variances_diag, scale_csc, scale_model_csc,
-    sparse_from_triplets, triplets_to_csc, with_thread_scratch, LdltScratch,
+    kronecker_csc, sparse_from_triplets, triplets_to_csc, with_thread_scratch, LdltScratch,
 };
 
 /// CSC helpers from [`inla_math::sparse`], plus [`ar1_precision_csc`] from [`inla_stats`]
@@ -115,7 +115,7 @@ pub use inla_stats::{
     LaplaceObs, Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs, Obs,
     PoissonObs, PriorFamily, PriorSpec, WeibullSurvivalObs, ZeroInflatedBinomialObs,
     ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision, ar1_precision_csc, arp_precision_csc,
-    augment_precision_csc, besag_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic,
+    augment_precision_csc, besag_precision_csc, bym2_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic,
     compute_hessian, compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
     eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
     eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,

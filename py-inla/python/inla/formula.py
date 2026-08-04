@@ -14,6 +14,63 @@ _F_CALL_RE = re.compile(
 )
 
 
+def _find_f_calls(rhs: str) -> list[tuple[str, str, str]]:
+    """Find `f(idx, ...)` calls with balanced parentheses.
+
+    Returns list of (full_match, idx, rest) where rest is the kwargs substring
+    including a leading comma when present.
+    """
+    out: list[tuple[str, str, str]] = []
+    i = 0
+    n = len(rhs)
+    while i < n:
+        m = re.search(r"f\s*\(", rhs[i:], re.IGNORECASE)
+        if not m:
+            break
+        start = i + m.start()
+        # position of '(' after f
+        paren = i + m.end() - 1
+        depth = 0
+        j = paren
+        while j < n:
+            ch = rhs[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    body = rhs[paren + 1 : j]
+                    # idx is first comma-separated token
+                    body_st = body.strip()
+                    if not body_st:
+                        break
+                    # split idx from rest at top-level comma
+                    idx = None
+                    rest = ""
+                    depth2 = 0
+                    cut = None
+                    for k, c in enumerate(body_st):
+                        if c in "([{":
+                            depth2 += 1
+                        elif c in ")]}":
+                            depth2 -= 1
+                        elif c == "," and depth2 == 0:
+                            cut = k
+                            break
+                    if cut is None:
+                        idx = body_st
+                        rest = ""
+                    else:
+                        idx = body_st[:cut].strip()
+                        rest = body_st[cut:]  # includes leading comma
+                    if idx and re.fullmatch(r"[A-Za-z_][\w.]*", idx):
+                        out.append((rhs[start : j + 1], idx, rest))
+                    break
+            j += 1
+        i = j + 1 if j < n else n
+    return out
+
+
 @dataclass
 class FTerm:
     index: str
@@ -61,6 +118,26 @@ def _parse_f_kwargs(rest: str) -> dict[str, Any]:
             # bare name → treat as string key into data (e.g. graph=adj_matrix)
             if isinstance(kw.value, ast.Name):
                 out[key] = kw.value.id
+            elif isinstance(kw.value, ast.Call) and isinstance(kw.value.func, ast.Name):
+                # Allow dict(model='ar1') / list(...) style constructors
+                fname = kw.value.func.id
+                if fname == "dict":
+                    d = {}
+                    for skw in kw.value.keywords:
+                        if skw.arg is None:
+                            continue
+                        try:
+                            d[skw.arg] = ast.literal_eval(skw.value)
+                        except Exception:
+                            if isinstance(skw.value, ast.Name):
+                                d[skw.arg] = skw.value.id
+                            else:
+                                raise ValueError(
+                                    f"unsupported f() argument: {key}=dict(...)"
+                                ) from None
+                    out[key] = d
+                else:
+                    raise ValueError(f"unsupported f() argument: {key}=...") from None
             else:
                 raise ValueError(f"unsupported f() argument: {key}=...") from None
     return out
@@ -82,9 +159,8 @@ def parse_formula(formula: str) -> ParsedFormula:
     f_terms: list[FTerm] = []
     stripped = rhs
 
-    for m in _F_CALL_RE.finditer(rhs):
-        idx = m.group("idx")
-        kw = _parse_f_kwargs(m.group("rest") or "")
+    for full, idx, rest in _find_f_calls(rhs):
+        kw = _parse_f_kwargs(rest or "")
         model = str(kw.pop("model", "iid")).lower()
         order = int(kw.pop("order", 0) or 0)
         graph = kw.pop("graph", None)
@@ -101,7 +177,7 @@ def parse_formula(formula: str) -> ParsedFormula:
                 kwargs=kw,
             )
         )
-        stripped = stripped.replace(m.group(0), " ")
+        stripped = stripped.replace(full, " ", 1)
 
     # Fixed-effects tokens
     intercept = True

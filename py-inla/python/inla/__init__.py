@@ -38,6 +38,7 @@ from inla._native import (
 from inla.api import InlaResult, _fit, fit
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
+from inla import spde as _spde
 
 
 class _InlaModule(types.ModuleType):
@@ -90,6 +91,7 @@ _mod.__dict__.update(
             "fgn_hurst_from_intern",
             "fgn_intern_from_hurst",
             "fgn_approx_latent_len",
+            "spde",
         ],
         "fit": fit,
         "InlaResult": InlaResult,
@@ -98,6 +100,7 @@ _mod.__dict__.update(
         "PyInferenceResult": PyInferenceResult,
         "parse_formula": parse_formula,
         "generic": _generic,
+        "spde": _spde,
         "define": define,
         "GenericModel": GenericModel,
         "Model": Model,

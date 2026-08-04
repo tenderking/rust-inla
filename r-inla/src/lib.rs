@@ -162,6 +162,23 @@ fn inla_rs_matern2d_precision_csc(
 }
 
 #[extendr]
+fn inla_rs_rw2d_precision_csc(
+    nrow: i32,
+    ncol: i32,
+    tau: f64,
+    cyclic: bool,
+    bvalue_zero: bool,
+) -> std::result::Result<Robj, Error> {
+    let nrow_u =
+        usize::try_from(nrow).map_err(|_| Error::Other("nrow must be non-negative".to_string()))?;
+    let ncol_u =
+        usize::try_from(ncol).map_err(|_| Error::Other("ncol must be non-negative".to_string()))?;
+    let csc = inla_core::rw2d_precision_csc(nrow_u, ncol_u, tau, cyclic, bvalue_zero)
+        .map_err(Error::Other)?;
+    csc_to_dgcmatrix(&csc)
+}
+
+#[extendr]
 fn inla_rs_besag_precision_csc(adj_list: List, tau: f64) -> std::result::Result<Robj, Error> {
     let mut adj = Vec::with_capacity(adj_list.len());
     for item in adj_list.values() {
@@ -194,6 +211,26 @@ fn inla_rs_bym_precision_csc(
         adj.push(nbs);
     }
     let csc = inla_core::bym_precision_csc(&adj, tau_spatial, tau_iid).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&csc)
+}
+
+#[extendr]
+fn inla_rs_bym2_precision_csc(
+    adj_list: List,
+    tau: f64,
+    phi: f64,
+) -> std::result::Result<Robj, Error> {
+    let mut adj = Vec::with_capacity(adj_list.len());
+    for item in adj_list.values() {
+        let nbs: Vec<usize> = item
+            .as_integer_vector()
+            .ok_or_else(|| Error::Other("adj_list must contain integer vectors".to_string()))?
+            .into_iter()
+            .map(|val| (val - 1) as usize)
+            .collect();
+        adj.push(nbs);
+    }
+    let csc = inla_core::bym2_precision_csc(&adj, tau, phi).map_err(Error::Other)?;
     csc_to_dgcmatrix(&csc)
 }
 
@@ -255,6 +292,29 @@ fn inla_rs_spde_precision_mesh_csc(
     let fem = mesh.assemble_fem_blocks();
     let csc = inla_core::spde::spde_precision_csc(&fem, kappa, tau).map_err(Error::Other)?;
     csc_to_dgcmatrix(&csc)
+}
+
+/// Export FEM mass (`c0` / C) and stiffness (`g1` / G) as `dgCMatrix`.
+///
+/// Analogous to classic INLA `spde$param.inla$M0` / `M1` (lumped-mass style `c0`
+/// is the mass matrix assembled by our fmesher).
+#[extendr]
+fn inla_rs_fem_blocks_mesh(
+    vertices_mat: Robj,
+    triangles_mat: Robj,
+) -> std::result::Result<List, Error> {
+    let mesh = parse_mesh2d_from_r(&vertices_mat, &triangles_mat)?;
+    let fem = mesh.assemble_fem_blocks();
+    let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
+    let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
+    let c0_m = csc_to_dgcmatrix(&c0)?;
+    let g1_m = csc_to_dgcmatrix(&g1)?;
+    Ok(list!(
+        c0 = c0_m,
+        g1 = g1_m,
+        n_vertices = mesh.vertices.len() as i32,
+        n_triangles = mesh.triangles.len() as i32
+    ))
 }
 
 fn parse_mesh2d_from_r(
@@ -943,7 +1003,7 @@ fn inla_rs_run_inla_structured(
     let mut adjs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(effect_types.len());
     for (ei, item) in adj_lists.values().enumerate() {
         let typ = effect_types[ei].to_lowercase();
-        if typ == "besag" {
+        if typ == "besag" || typ == "bym" || typ == "bym2" {
             let sub: List = item.try_into().map_err(|e| {
                 Error::Other(format!(
                     "adj_lists[{ei}] must be a list of integer vectors: {e}"
@@ -969,6 +1029,7 @@ fn inla_rs_run_inla_structured(
         .iter()
         .map(|&v| usize::try_from(v).unwrap_or(0))
         .collect();
+    let effect_orders_i: Vec<i32> = effect_orders.clone();
     let expected_theta: usize = effect_theta_lens_u.iter().sum();
     if initial_theta.len() != expected_theta {
         return Err(Error::Other(format!(
@@ -990,7 +1051,32 @@ fn inla_rs_run_inla_structured(
         let mut offset = 0usize;
         for (ei, typ) in effect_types.iter().enumerate() {
             let n_e = effect_ns_u[ei];
-            let k = inla_core::model_rank_deficiency(typ);
+            let mut k = inla_core::model_rank_deficiency(typ);
+            if typ.eq_ignore_ascii_case("rw2d") || typ.eq_ignore_ascii_case("matern2d") {
+                // effect_orders: ±nrow (negative ⇒ cyclic). matern2d is proper → k=0.
+                if typ.eq_ignore_ascii_case("rw2d") {
+                    let raw = effect_orders[ei];
+                    k = if raw < 0 { 1 } else { 2 };
+                } else {
+                    k = 0;
+                }
+            }
+            if typ.eq_ignore_ascii_case("bym") {
+                // Constrain spatial block only (first n = adj.len()).
+                let n_sp = adjs
+                    .get(ei)
+                    .and_then(|a| a.as_ref())
+                    .map(|a| a.len())
+                    .unwrap_or(n_e / 2);
+                let block = inla_core::sum_to_zero_constraint(n_sp, 1).map_err(Error::Other)?;
+                let embedded = block.embed(a_ncol_u, offset).map_err(Error::Other)?;
+                stacked = Some(match stacked {
+                    None => embedded,
+                    Some(prev) => prev.vstack(&embedded).map_err(Error::Other)?,
+                });
+                offset += n_e;
+                continue;
+            }
             if k > 0 {
                 let block = inla_core::sum_to_zero_constraint(n_e, k).map_err(Error::Other)?;
                 let embedded = block.embed(a_ncol_u, offset).map_err(Error::Other)?;
@@ -1049,6 +1135,74 @@ fn inla_rs_run_inla_structured(
                         q0
                     };
                     scale_csc_entries(&q0, tau)?
+                }
+                "rw2d" => {
+                    let tau = th.first().copied().unwrap_or(0.0).exp();
+                    // effect_orders encodes ±nrow (negative ⇒ cyclic); ncol = n_e / nrow.
+                    let raw = effect_orders_i[ei];
+                    let cyclic = raw < 0;
+                    let nrow = raw.unsigned_abs() as usize;
+                    if nrow == 0 || n_e % nrow != 0 {
+                        return Err(format!(
+                            "rw2d: effect_orders (±nrow)={raw} incompatible with n={n_e}"
+                        ));
+                    }
+                    let ncol = n_e / nrow;
+                    let q0 = inla_core::rw2d_precision_csc(nrow, ncol, 1.0, cyclic, false)?;
+                    scale_csc_entries(&q0, tau)?
+                }
+                "matern2d" => {
+                    if th.len() < 2 {
+                        return Err("matern2d needs theta=[log_prec, log_range]".into());
+                    }
+                    let prec = th[0].exp();
+                    let range = th[1].exp();
+                    let raw = effect_orders_i[ei];
+                    let cyclic = raw < 0;
+                    let nrow = raw.unsigned_abs() as usize;
+                    if nrow == 0 || n_e % nrow != 0 {
+                        return Err(format!(
+                            "matern2d: effect_orders (±nrow)={raw} incompatible with n={n_e}"
+                        ));
+                    }
+                    let ncol = n_e / nrow;
+                    inla_core::matern2d_precision_csc(nrow, ncol, 1, range, prec, cyclic)?
+                }
+                "bym" => {
+                    if th.len() < 2 {
+                        return Err("bym needs theta=[log_tau_spatial, log_tau_iid]".into());
+                    }
+                    let adj = adjs[ei]
+                        .as_ref()
+                        .ok_or_else(|| "bym missing adj".to_string())?;
+                    if adj.len() * 2 != n_e {
+                        return Err(format!(
+                            "bym adj length {} ⇒ latent {}, got n={}",
+                            adj.len(),
+                            adj.len() * 2,
+                            n_e
+                        ));
+                    }
+                    inla_core::bym_precision_csc(adj, th[0].exp(), th[1].exp())?
+                }
+                "bym2" => {
+                    if th.len() < 2 {
+                        return Err("bym2 needs theta=[log_tau, logit_phi]".into());
+                    }
+                    let adj = adjs[ei]
+                        .as_ref()
+                        .ok_or_else(|| "bym2 missing adj".to_string())?;
+                    if adj.len() != n_e {
+                        return Err(format!(
+                            "bym2 adj length {} != effect n {}",
+                            adj.len(),
+                            n_e
+                        ));
+                    }
+                    let tau = th[0].exp();
+                    let phi = 1.0 / (1.0 + (-th[1]).exp());
+                    let phi = phi.clamp(1e-6, 1.0 - 1e-6);
+                    inla_core::bym2_precision_csc(adj, tau, phi)?
                 }
                 "seasonal" => {
                     let tau = th.first().copied().unwrap_or(0.0).exp();
@@ -1305,9 +1459,12 @@ extendr_module! {
     fn inla_rs_iid_precision_csc;
     fn inla_rs_arp_precision_csc;
     fn inla_rs_matern2d_precision_csc;
+    fn inla_rs_rw2d_precision_csc;
     fn inla_rs_besag_precision_csc;
     fn inla_rs_bym_precision_csc;
+    fn inla_rs_bym2_precision_csc;
     fn inla_rs_spde_precision_mesh_csc;
+    fn inla_rs_fem_blocks_mesh;
     fn inla_rs_spde_projector_csc;
     fn inla_rs_run_spde;
     fn inla_rs_crw1_precision_csc;

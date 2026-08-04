@@ -37,7 +37,9 @@ pub use ldlt::{
     ldlt_diagonal_inverse, ldlt_factorize, ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place,
 };
 pub use scratch::{LdltScratch, with_thread_scratch};
-pub use sparse::{CscForR, CscMatrix, csc_for_r_dgcmatrix, sparse_from_triplets, triplets_to_csc};
+pub use sparse::{
+    CscForR, CscMatrix, csc_for_r_dgcmatrix, kronecker_csc, sparse_from_triplets, triplets_to_csc,
+};
 
 #[cfg(feature = "sparse-ldlt")]
 pub use dense_faer::selfadjoint_eigen;

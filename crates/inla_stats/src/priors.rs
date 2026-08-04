@@ -229,9 +229,22 @@ impl HyperPriorStack {
     pub fn default_for_effect(model: &str) -> Result<Self, String> {
         let m = model.to_ascii_lowercase();
         match m.as_str() {
-            "iid" | "rw1" | "rw2" | "besag" | "besag2" | "seasonal" | "bym" | "crw1" | "crw2" => {
-                Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)]))
-            }
+            "iid" | "rw1" | "rw2" | "rw2d" | "besag" | "besag2" | "seasonal" | "crw1"
+            | "crw2" => Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)])),
+            "bym" => Ok(Self::new(vec![
+                PriorSpec::pc_prec(1.0, 0.01),
+                PriorSpec::pc_prec(1.0, 0.01),
+            ])),
+            // θ = [log_tau, logit_phi]
+            "bym2" => Ok(Self::new(vec![
+                PriorSpec::pc_prec(1.0, 0.01),
+                PriorSpec::gaussian(0.0, 0.5),
+            ])),
+            // θ = [log_prec, log_range]
+            "matern2d" => Ok(Self::new(vec![
+                PriorSpec::pc_prec(1.0, 0.01),
+                PriorSpec::gaussian(0.0, 0.1),
+            ])),
             "ar1" => Ok(Self::new(vec![
                 PriorSpec::pc_prec(1.0, 0.01),
                 PriorSpec::pc_cor1(0.5, 0.75),

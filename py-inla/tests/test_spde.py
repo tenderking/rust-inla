@@ -27,6 +27,12 @@ def test_spde_projector_and_precision():
     q = core.spde_precision_matrix(vertices, triangles, kappa=1.0, tau=1.0)
     assert q.shape == (5, 5)
 
+    fem = core.fem_blocks_mesh(vertices, triangles)
+    assert fem["c0"].shape == (5, 5)
+    assert fem["g1"].shape == (5, 5)
+    assert fem["n_vertices"] == 5
+    assert fem["n_triangles"] == 4
+
     # Vertex observation → unit row of A
     a0 = core.spde_projector_matrix(vertices, triangles, [0.0], [0.0])
     row = np.asarray(a0.to_scipy().toarray()).ravel()

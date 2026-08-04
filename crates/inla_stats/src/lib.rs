@@ -17,7 +17,7 @@ pub mod spde;
 
 pub use ar1::{Ar1Precision, ar1_precision, ar1_precision_csc};
 pub use arp::arp_precision_csc;
-pub use besag::{besag_precision_csc, bym_precision_csc, read_graph_file};
+pub use besag::{besag_precision_csc, bym2_precision_csc, bym_precision_csc, read_graph_file};
 pub use crw::{crw1_precision_csc, crw2_precision_csc};
 pub use fgn::{
     fgn_approx_latent_len, fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern,
