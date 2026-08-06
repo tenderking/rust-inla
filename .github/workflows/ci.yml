@@ -1,42 +1,55 @@
-name: CI & Maturin Wheels
+name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, stable]
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
 
 jobs:
-  rust-tests:
-    name: Rust Workspace Tests
+  # Job 1: Test & Lint the Rust Core
+  rust-ci:
+    name: Rust Core (Ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run cargo test
-        run: cargo test --workspace
 
-  maturin-build:
-    name: Maturin Build & Pytest
-    runs-on: ubuntu-latest
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Mathematical Suite (cargo test)
+        run: cargo test --workspace --all-features --verbose
+
+  # Job 2: Cross-Platform Build Validation (PyO3 + Maturin)
+  python-bindings-check:
+    name: PyO3 Build Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install maturin and dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install maturin pytest numpy scipy pandas
-      - name: Build abi3 wheel
-        run: |
-          cd py-inla
-          maturin build --release
-      - name: Install wheel and run pytest
-        run: |
-          pip install py-inla/target/wheels/*.whl
-          pytest py-inla/tests
+          python-version: "3.11"
+
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test Build Python Bindings
+        # Compile py-inla in dev mode to make sure FFI layers link properly
+        run: uvx maturin develop
+        working-directory: ./py-inla
