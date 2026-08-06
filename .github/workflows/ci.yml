@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, stable]
+    branches: [main,master, stable]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   # Job 1: Test & Lint the Rust Core
