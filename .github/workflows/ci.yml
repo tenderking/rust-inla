@@ -5,6 +5,7 @@ on:
     branches: [main, master, stable]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 jobs:
   # Job 1: Test & Lint the Rust Core
