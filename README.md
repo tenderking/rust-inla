@@ -1,6 +1,19 @@
 # rust-inla
 
-A fast, memory-safe Rust implementation of the [Integrated Nested Laplace Approximation (INLA)](https://www.r-inla.org/) methodology. This project replaces the legacy C/Fortran backend of R-INLA with a pure-Rust engine that can be shared across both Python and R front-ends.
+## Modern Bayesian inference for demanding workloads
+
+`rust-inla` brings the power of [Integrated Nested Laplace Approximation (INLA)](https://www.r-inla.org/) to a modern, memory-safe Rust engine. It is built for power users who need fast approximate Bayesian inference, sparse models at scale, and the freedom to work from either Python or R—without being locked into a legacy backend.
+
+Designed as a high-performance replacement for the C/Fortran core of R-INLA, the project gives research teams and production developers a foundation they can extend, embed, and carry forward as their models evolve.
+
+### Why power users choose rust-inla
+
+- **Performance where it matters** — sparse factorisation, parallel CCD integration, and native Rust execution keep demanding inference workflows moving.
+- **One engine, two ecosystems** — use a shared computational core from Python or R, with native sparse-matrix handoffs instead of file-based glue.
+- **Built to extend** — a layered Cargo workspace separates meshing, numerical methods, statistical inference, and language bindings so advanced users can customise the right layer.
+- **Ready for the next model** — the stable `inla_core` facade and modular crates make it easier to add new latent structures, likelihoods, and front-end capabilities without redesigning the foundation.
+
+Whether you are prototyping spatial models, scaling time-series inference, or building a specialised Bayesian workflow, `rust-inla` is engineered to turn INLA methodology into a dependable platform for what comes next.
 
 ## Workspace Structure
 
@@ -22,14 +35,14 @@ Downstream crates should prefer `inla_core::…` for a stable surface, or depend
 
 - **Pure-Rust inference engine** — faer sparse/dense $LDL^T$, Nelder–Mead hyperparameter optimisation, and Laplace approximation with analytic gradients/Hessians
 - **Rayon-parallelised CCD integration** — the hyperparameter grid loop runs across CPU cores; large sparse factors can use faer Rayon as well
-- **Sparse matrix support** — `sprs` CSC + faer factorize; exports to `dgCMatrix` for R and SciPy for Python
-- **R bridge** — `extendr` exports precision matrices directly as native `dgCMatrix` S4 objects, bypassing file I/O
-- **Python bridge** — `PyO3` / Maturin exposes the same engine with zero-copy sparse matrix handoffs
-- **Model selection** — DIC, CPO, PIT, and marginal likelihoods with outlier detection heuristics
+- **Sparse by design** — `sprs` CSC and faer factorisation keep memory and computation focused on the structure of your model
+- **Native language bridges** — export precision matrices directly to R `dgCMatrix` and Python SciPy representations, bypassing file I/O
+- **Model-selection diagnostics** — DIC, CPO, PIT, and marginal likelihoods with outlier-detection heuristics
+- **A future-ready foundation** — the Rust core, stable facade, and decoupled bindings support continued growth without forcing users to abandon familiar R or Python workflows
 
 ## Supported Models
 
-Status is tracked in [`plan.md`](plan.md).
+The platform already covers a broad set of spatial, temporal, latent, and survival workflows, with active development focused on expanding that reach. Status is tracked in [`plan.md`](plan.md).
 
 ### Formula / inference (R `inla_rs`, Python `inla`)
 
