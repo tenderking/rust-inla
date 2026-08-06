@@ -407,6 +407,7 @@ fn run_inla_inference_py(
                 k,
                 a: a_vec,
                 e: e_vec,
+                method: Default::default(),
             };
             spec.validate().map_err(PyValueError::new_err)?;
             Some(spec)

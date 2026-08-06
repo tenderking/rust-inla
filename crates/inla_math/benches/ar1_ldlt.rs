@@ -1,5 +1,8 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use inla_math::{CscMatrix, Eval1D, laplace_newton_step, sparse_from_triplets};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use inla_math::{
+    CscMatrix, Eval1D, FaerCpuSolver, laplace_newton_step, laplace_newton_step_a_solver,
+    sparse_from_triplets,
+};
 
 /// Local AR(1) CSC for math-only benches (avoids depending on inla_stats).
 fn ar1_precision_csc(n: usize, rho: f64, tau: f64) -> Result<CscMatrix, String> {
@@ -26,7 +29,7 @@ fn bench_ar1_build(c: &mut Criterion) {
     let mut g = c.benchmark_group("ar1_build");
     for &n in &[100usize, 1_000, 5_000] {
         g.bench_with_input(BenchmarkId::new("sprs_csc", n), &n, |b, &n| {
-            b.iter(|| ar1_precision_csc(n, 0.7, 1.0).expect("ar1 csc"))
+            b.iter(|| black_box(ar1_precision_csc(n, 0.7, 1.0).expect("ar1 csc")))
         });
     }
     g.finish();
@@ -44,8 +47,26 @@ fn bench_laplace_ldlt(c: &mut Criterion) {
             };
             n
         ];
+        let x = vec![0.0; n];
         g.bench_with_input(BenchmarkId::new("pure_rust_step", n), &n, |b, _| {
-            b.iter(|| laplace_newton_step(&q, &evals, &vec![0.0; n]).expect("step"))
+            b.iter(|| {
+                black_box(laplace_newton_step(black_box(&q), black_box(&evals), black_box(&x)).expect("step"))
+            })
+        });
+        g.bench_with_input(BenchmarkId::new("solver_step", n), &n, |b, _| {
+            let mut solver = FaerCpuSolver::new();
+            b.iter(|| {
+                black_box(
+                    laplace_newton_step_a_solver(
+                        black_box(&q),
+                        black_box(&evals),
+                        None,
+                        black_box(&x),
+                        &mut solver,
+                    )
+                    .expect("solver step"),
+                )
+            })
         });
     }
     g.finish();

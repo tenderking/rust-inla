@@ -237,7 +237,7 @@ pub fn jacobi_eigen(
     #[cfg(feature = "sparse-ldlt")]
     {
         let _ = max_iter;
-        return crate::dense_faer::selfadjoint_eigen(matrix, m).map_err(|e| e.to_string());
+        crate::dense_faer::selfadjoint_eigen(matrix, m).map_err(|e| e.to_string())
     }
     #[cfg(not(feature = "sparse-ldlt"))]
     {

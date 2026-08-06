@@ -7,11 +7,13 @@ pub mod crw;
 pub mod fgn;
 pub mod hyper_opt;
 pub mod inference;
+pub mod latent;
 pub mod latent_models;
 pub mod marginals;
 pub mod matern2d;
 pub mod model_selection;
 pub mod priors;
+pub mod projection;
 pub mod rw2d;
 pub mod spde;
 
@@ -32,8 +34,9 @@ pub use inference::{
     eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
     eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
     eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
-    eval_prior_loggamma, find_latent_mode, find_latent_mode_a, run_inla_inference,
-    run_inla_inference_a, run_inla_inference_a_cancellable,
+    eval_prior_loggamma, find_latent_mode, find_latent_mode_a, find_latent_mode_a_with_solver,
+    run_inla_inference, run_inla_inference_a, run_inla_inference_a_cancellable,
+    run_inla_inference_model,
 };
 pub use latent_models::{
     fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,
@@ -53,8 +56,11 @@ pub use spde::{
     spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
 };
 
+pub use latent::{ClosureLatentModel, DynClosureLatentModel, LatentModel};
+pub use projection::{IdentityProjection, ProjectionMapper, SparseProjectionMapper};
+
 // Re-export math primitives commonly used with stats APIs.
 pub use inla_math::{
-    ConstraintSpec, CscMatrix, Eval1D, HARD_CONSTRAINT_KAPPA, augment_precision_csc,
+    ConstraintMethod, ConstraintSpec, CscMatrix, Eval1D, HARD_CONSTRAINT_KAPPA, augment_precision_csc,
     model_rank_deficiency, project_constraints, sum_to_zero_constraint,
 };

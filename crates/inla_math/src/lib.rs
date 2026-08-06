@@ -8,6 +8,7 @@ pub mod hyper_opt;
 pub mod integration;
 pub mod ldlt;
 pub mod scratch;
+pub mod solver;
 pub mod sparse;
 
 #[cfg(feature = "sparse-ldlt")]
@@ -20,8 +21,8 @@ pub use backend::{
     solve_in_place,
 };
 pub use constraints::{
-    ConstraintSpec, HARD_CONSTRAINT_KAPPA, augment_precision_csc, model_rank_deficiency,
-    project_constraints, sum_to_zero_constraint,
+    ConstraintMethod, ConstraintSpec, HARD_CONSTRAINT_KAPPA, augment_precision_csc,
+    model_rank_deficiency, project_constraints, sum_to_zero_constraint,
 };
 pub use design::{
     add_csc, at_diag_a, block_diag_csc, csc_from_triplets_0based, identity_csc, matvec_csc,
@@ -34,9 +35,11 @@ pub use hyper_opt::{
 pub use integration::{ccd_design, grid_design, invert_symmetric_matrix, jacobi_eigen};
 pub use ldlt::{
     DenseLdltFactor, Eval1D, LdltFactor, csc_to_dense, laplace_newton_step, laplace_newton_step_a,
-    ldlt_diagonal_inverse, ldlt_factorize, ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place,
+    laplace_newton_step_a_solver, laplace_newton_system_a, ldlt_diagonal_inverse, ldlt_factorize,
+    ldlt_factorize_dense, ldlt_solve, ldlt_solve_in_place,
 };
 pub use scratch::{LdltScratch, with_thread_scratch};
+pub use solver::{FaerCpuSolver, InlaSolver, SolverError};
 pub use sparse::{
     CscForR, CscMatrix, csc_for_r_dgcmatrix, kronecker_csc, sparse_from_triplets, triplets_to_csc,
 };

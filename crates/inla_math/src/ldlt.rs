@@ -338,6 +338,107 @@ fn laplace_newton_step_a_scratch(
     }
 }
 
+/// Build the Newton system `(Q − H) δ = g − Qx` without factorizing.
+///
+/// Returns `(q_post, rhs)` for use with [`crate::solver::InlaSolver`].
+pub fn laplace_newton_system_a(
+    q_prior: &CscMatrix,
+    evals: &[Eval1D],
+    a: Option<&CscMatrix>,
+    x: &[f64],
+) -> Result<(CscMatrix, Vec<f64>), MathError> {
+    if q_prior.rows() != q_prior.cols() {
+        return Err(MathError::NotSquare {
+            rows: q_prior.rows(),
+            cols: q_prior.cols(),
+        });
+    }
+    let n = q_prior.rows();
+    if x.len() != n {
+        return Err(MathError::DimensionMismatch {
+            context: "latent vector",
+            expected: n,
+            got: x.len(),
+        });
+    }
+
+    let qx = crate::design::matvec_csc(q_prior, x).map_err(MathError::Message)?;
+
+    match a {
+        None => {
+            if evals.len() != n {
+                return Err(MathError::DimensionMismatch {
+                    context: "eval vector",
+                    expected: n,
+                    got: evals.len(),
+                });
+            }
+            let mut tri = sprs::TriMatI::<f64, usize>::with_capacity((n, n), q_prior.nnz() + n);
+            for (col, colvec) in q_prior.outer_iterator().enumerate() {
+                for (row, &val) in colvec.iter() {
+                    tri.add_triplet(row, col, val);
+                }
+            }
+            for i in 0..n {
+                let h = -evals[i].hess;
+                if h != 0.0 {
+                    tri.add_triplet(i, i, h);
+                }
+            }
+            let q_post = tri.to_csc();
+            let rhs: Vec<f64> = evals
+                .iter()
+                .enumerate()
+                .map(|(i, e)| e.grad - qx[i])
+                .collect();
+            Ok((q_post, rhs))
+        }
+        Some(a_mat) => {
+            if a_mat.cols() != n {
+                return Err(MathError::DimensionMismatch {
+                    context: "A columns",
+                    expected: n,
+                    got: a_mat.cols(),
+                });
+            }
+            if a_mat.rows() != evals.len() {
+                return Err(MathError::DimensionMismatch {
+                    context: "eval vs A.nrows",
+                    expected: a_mat.rows(),
+                    got: evals.len(),
+                });
+            }
+            let neg_hess: Vec<f64> = evals.iter().map(|e| -e.hess).collect();
+            let like_prec = crate::design::at_diag_a(a_mat, &neg_hess).map_err(MathError::Message)?;
+            let q_post = crate::design::add_csc(q_prior, &like_prec).map_err(MathError::Message)?;
+            let g_eta: Vec<f64> = evals.iter().map(|e| e.grad).collect();
+            let mut rhs =
+                crate::design::matvec_transpose_csc(a_mat, &g_eta).map_err(MathError::Message)?;
+            for i in 0..n {
+                rhs[i] -= qx[i];
+            }
+            Ok((q_post, rhs))
+        }
+    }
+}
+
+/// One Newton step via [`crate::solver::InlaSolver`]. Leaves `Q_post` factored in `solver`.
+pub fn laplace_newton_step_a_solver(
+    q_prior: &CscMatrix,
+    evals: &[Eval1D],
+    a: Option<&CscMatrix>,
+    x: &[f64],
+    solver: &mut dyn crate::solver::InlaSolver,
+) -> Result<Vec<f64>, MathError> {
+    let (q_post, rhs) = laplace_newton_system_a(q_prior, evals, a, x)?;
+    solver
+        .factorize(&q_post)
+        .map_err(|e| MathError::Message(e.to_string()))?;
+    solver
+        .solve(&rhs)
+        .map_err(|e| MathError::Message(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,9 +1,9 @@
 use rayon::prelude::*;
 
 use inla_math::{
-    CscMatrix, ConstraintSpec, Eval1D, HARD_CONSTRAINT_KAPPA, LdltFactor, add_csc,
-    augment_precision_csc, ccd_design, grid_design, identity_csc, invert_symmetric_matrix,
-    jacobi_eigen, laplace_newton_step_a, ldlt_diagonal_inverse, ldlt_factorize, matvec_csc,
+    CscMatrix, ConstraintMethod, ConstraintSpec, Eval1D, FaerCpuSolver, HARD_CONSTRAINT_KAPPA,
+    InlaSolver, LdltFactor, add_csc, augment_precision_csc, ccd_design, grid_design, identity_csc,
+    invert_symmetric_matrix, jacobi_eigen, laplace_newton_step_a_solver, matvec_csc,
     predictor_variances_diag, project_constraints,
 };
 
@@ -582,6 +582,9 @@ fn latent_objective(
 }
 
 /// Mode of π(x | θ, y) with optional projector `A` (`η = A x`) and linear constraints.
+///
+/// Uses [`FaerCpuSolver`] internally; prefer [`find_latent_mode_a_with_solver`] to inject
+/// a custom [`InlaSolver`] (e.g. future GPU / sTiles backends).
 pub fn find_latent_mode_a(
     q_prior: &CscMatrix,
     obs: &[Obs],
@@ -590,6 +593,27 @@ pub fn find_latent_mode_a(
     max_iter: usize,
     tol: f64,
 ) -> Result<(Vec<f64>, LdltFactor, f64), String> {
+    let mut solver = FaerCpuSolver::new();
+    let (x, mlik) =
+        find_latent_mode_a_with_solver(q_prior, obs, a, constraints, max_iter, tol, &mut solver)?;
+    let factor = solver
+        .into_factor()
+        .ok_or_else(|| "Failed to factorize posterior precision".to_string())?;
+    Ok((x, factor, mlik))
+}
+
+/// Like [`find_latent_mode_a`], but threads an [`InlaSolver`] through Newton and prior log-det.
+///
+/// On success, `solver` holds the posterior precision factorization (for `diag_inv` / `log_abs_det`).
+pub fn find_latent_mode_a_with_solver(
+    q_prior: &CscMatrix,
+    obs: &[Obs],
+    a: Option<&CscMatrix>,
+    constraints: Option<&ConstraintSpec>,
+    max_iter: usize,
+    tol: f64,
+    solver: &mut dyn InlaSolver,
+) -> Result<(Vec<f64>, f64), String> {
     let n = q_prior.rows();
     if q_prior.cols() != n {
         return Err("prior precision must be square".to_string());
@@ -617,20 +641,38 @@ pub fn find_latent_mode_a(
                 c.n
             ));
         }
+        if c.method == ConstraintMethod::LagrangeElimination {
+            return Err(
+                "ConstraintMethod::LagrangeElimination is not yet implemented; use Augmented"
+                    .into(),
+            );
+        }
     }
 
     // Working prior: Q + κ AᵀA when constrained (R-INLA extraconstr-style).
     let q_aug;
     let q_work = match constraints {
         Some(c) => {
+            debug_assert_eq!(c.method, ConstraintMethod::Augmented);
             q_aug = augment_precision_csc(q_prior, c, HARD_CONSTRAINT_KAPPA)?;
             &q_aug
         }
         None => q_prior,
     };
 
+    // Prior log-det first (solver will be overwritten by Newton posterior factors).
+    let log_det_prior = if constraints.is_none() {
+        let eye = identity_csc(n, 1e-12).map_err(|e| e.to_string())?;
+        let q_jitter = add_csc(q_work, &eye).map_err(|e| e.to_string())?;
+        solver.factorize(&q_jitter).map_err(|e| e.to_string())?;
+        solver.log_abs_det().map_err(|e| e.to_string())?
+    } else {
+        solver.factorize(q_work).map_err(|e| e.to_string())?;
+        solver.log_abs_det().map_err(|e| e.to_string())?
+    };
+
     let mut x = vec![0.0; n];
-    let mut ldlt = None;
+    let mut converged = false;
 
     for iter in 0..max_iter {
         let eta = match a {
@@ -642,7 +684,8 @@ pub fn find_latent_mode_a(
             evals.push(eval_likelihood(eta[i], &obs[i])?);
         }
 
-        let (step, factor) = laplace_newton_step_a(q_work, &evals, a, &x).map_err(|e| e.to_string())?;
+        let step = laplace_newton_step_a_solver(q_work, &evals, a, &x, solver)
+            .map_err(|e| e.to_string())?;
         if step.iter().any(|s| !s.is_finite()) {
             return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
         }
@@ -681,7 +724,18 @@ pub fn find_latent_mode_a(
         }
 
         if max_diff < tol || max_step < tol {
-            ldlt = Some(factor);
+            // Recompute Newton system at the converged point so solver holds Q_post(x*).
+            let eta = match a {
+                None => x.clone(),
+                Some(a_mat) => matvec_csc(a_mat, &x)?,
+            };
+            let mut evals = Vec::with_capacity(obs.len());
+            for i in 0..obs.len() {
+                evals.push(eval_likelihood(eta[i], &obs[i])?);
+            }
+            let _ = laplace_newton_step_a_solver(q_work, &evals, a, &x, solver)
+                .map_err(|e| e.to_string())?;
+            converged = true;
             break;
         }
 
@@ -690,22 +744,15 @@ pub fn find_latent_mode_a(
         }
     }
 
+    if !converged {
+        return Err("Failed to factorize posterior precision".to_string());
+    }
+
     if let Some(c) = constraints {
         project_constraints(&mut x, c)?;
     }
 
-    let factor = ldlt.ok_or_else(|| "Failed to factorize posterior precision".to_string())?;
-    // Prefer sparse path for prior log-det (same sparsity as q_work).
-    let factor_prior = if constraints.is_none() {
-        let eye = identity_csc(n, 1e-12).map_err(|e| e.to_string())?;
-        let q_jitter = add_csc(q_work, &eye).map_err(|e| e.to_string())?;
-        ldlt_factorize(&q_jitter).map_err(|e| e.to_string())?
-    } else {
-        ldlt_factorize(q_work).map_err(|e| e.to_string())?
-    };
-
-    let log_det_prior = factor_prior.log_abs_det();
-    let log_det_post = factor.log_abs_det();
+    let log_det_post = solver.log_abs_det().map_err(|e| e.to_string())?;
 
     let mut q_x = vec![0.0; n];
     for (col, colvec) in q_work.outer_iterator().enumerate() {
@@ -726,7 +773,7 @@ pub fn find_latent_mode_a(
 
     let marginal_log_lik = log_lik - 0.5 * quad_prior + 0.5 * log_det_prior - 0.5 * log_det_post;
 
-    Ok((x, factor, marginal_log_lik))
+    Ok((x, marginal_log_lik))
 }
 
 #[derive(Debug, Clone)]
@@ -840,6 +887,88 @@ pub fn run_inla_inference_a_cancellable(
     let m = initial_theta.len();
     let n_obs = obs.len();
 
+    if m == 0 {
+        // Pure fixed-effects / no hyperparameters: single Laplace node (no NM/CCD).
+        let mut solver = FaerCpuSolver::new();
+        let q_prior = build_prior(&[])?;
+        let (x_star, marginal_log_lik) = find_latent_mode_a_with_solver(
+            &q_prior, obs, a, constraints, 200, 1e-5, &mut solver,
+        )?;
+        let variances = solver.diag_inv().map_err(|e| e.to_string())?;
+        let eta = match a {
+            None => x_star.clone(),
+            Some(a_mat) => inla_math::matvec_csc(a_mat, &x_star)?,
+        };
+        let eta_var = match a {
+            None => variances.clone(),
+            Some(a_mat) => predictor_variances_diag(a_mat, &variances)?,
+        };
+
+        // Single-node model selection (weight 1 at the Laplace mode).
+        let cond_eta = vec![eta.clone()];
+        let cond_eta_var = vec![eta_var.clone()];
+        let norm_weights = vec![1.0];
+        let dic_result = crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, 0)?;
+        let cpo_result =
+            crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?;
+
+        let mut marginals_latent = Vec::with_capacity(marginal_opts.latent_indices.len());
+        for &idx in &marginal_opts.latent_indices {
+            if idx >= x_star.len() {
+                return Err(format!(
+                    "latent marginal index {idx} out of range (n={})",
+                    x_star.len()
+                ));
+            }
+            marginals_latent.push(crate::marginals::gaussian_mixture_marginal(
+                &[x_star[idx]],
+                &[variances[idx]],
+                &norm_weights,
+                marginal_opts.n_points,
+                marginal_opts.n_sd,
+            )?);
+        }
+        let mut marginals_predictor = Vec::with_capacity(marginal_opts.predictor_indices.len());
+        for &idx in &marginal_opts.predictor_indices {
+            if idx >= n_obs {
+                return Err(format!(
+                    "predictor marginal index {idx} out of range (n_obs={n_obs})"
+                ));
+            }
+            marginals_predictor.push(crate::marginals::gaussian_mixture_marginal(
+                &[eta[idx]],
+                &[eta_var[idx]],
+                &norm_weights,
+                marginal_opts.n_points,
+                marginal_opts.n_sd,
+            )?);
+        }
+
+        return Ok(InferenceResult {
+            mode: Vec::new(),
+            hessian: Vec::new(),
+            latent_means: x_star,
+            latent_variances: variances,
+            predictor_means: eta,
+            predictor_variances: eta_var,
+            marginal_log_lik,
+            marginal_log_lik_gaussian: marginal_log_lik,
+            dic: dic_result.dic,
+            mean_deviance: dic_result.mean_deviance,
+            effective_params: dic_result.effective_params,
+            cpo: cpo_result.cpo,
+            pit: cpo_result.pit,
+            cpo_n_failures: cpo_result.n_failures,
+            theta_nodes: Vec::new(),
+            node_weights: Vec::new(),
+            internal_marginals_hyperpar: Vec::new(),
+            marginals_latent,
+            marginals_predictor,
+            marginals_latent_indices: marginal_opts.latent_indices.clone(),
+            marginals_predictor_indices: marginal_opts.predictor_indices.clone(),
+        });
+    }
+
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let config = crate::hyper_opt::ModelConfig {
@@ -898,11 +1027,11 @@ pub fn run_inla_inference_a_cancellable(
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("Operation cancelled by user".to_string());
         }
-        if let Some(cancel) = check_cancel {
-            if let Err(err) = cancel() {
-                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                return Err(err);
-            }
+        if let Some(cancel) = check_cancel
+            && let Err(err) = cancel()
+        {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(err);
         }
 
         let mut theta = mode.clone();
@@ -915,32 +1044,35 @@ pub fn run_inla_inference_a_cancellable(
         }
 
         let q_prior = build_prior(&theta)?;
-        let (x_star, ldlt, marginal_log_lik) =
-            match find_latent_mode_a(&q_prior, obs, a, constraints, 200, 1e-5) {
-                Ok(v) => v,
-                Err(_e) => {
-                    if let Some(cancel) = check_cancel {
-                        if let Err(err) = cancel() {
-                            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return Err(err);
-                        }
-                    }
-                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Err("Operation cancelled by user".to_string());
-                    }
-                    let n_lat = q_prior.rows();
-                    return Ok((
-                        theta,
-                        vec![0.0; n_lat],
-                        vec![1.0; n_lat],
-                        vec![0.0; n_obs],
-                        vec![1.0; n_obs],
-                        f64::NEG_INFINITY,
-                    ));
+        // Per-node solver factory: CCD Rayon workers must not share &mut InlaSolver.
+        let mut solver = FaerCpuSolver::new();
+        let (x_star, marginal_log_lik) = match find_latent_mode_a_with_solver(
+            &q_prior, obs, a, constraints, 200, 1e-5, &mut solver,
+        ) {
+            Ok(v) => v,
+            Err(_e) => {
+                if let Some(cancel) = check_cancel
+                    && let Err(err) = cancel()
+                {
+                    cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Err(err);
                 }
-            };
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("Operation cancelled by user".to_string());
+                }
+                let n_lat = q_prior.rows();
+                return Ok((
+                    theta,
+                    vec![0.0; n_lat],
+                    vec![1.0; n_lat],
+                    vec![0.0; n_obs],
+                    vec![1.0; n_obs],
+                    f64::NEG_INFINITY,
+                ));
+            }
+        };
 
-        let variances = ldlt_diagonal_inverse(&ldlt).map_err(|e| e.to_string())?;
+        let variances = solver.diag_inv().map_err(|e| e.to_string())?;
         let eta = match a {
             None => x_star.clone(),
             Some(a_mat) => matvec_csc(a_mat, &x_star)?,
@@ -1123,6 +1255,46 @@ pub fn run_inla_inference_a_cancellable(
         marginals_latent_indices: marginal_opts.latent_indices.clone(),
         marginals_predictor_indices: marginal_opts.predictor_indices.clone(),
     })
+}
+
+/// Trait-driven INLA entry point (`LatentModel` + optional `ProjectionMapper`).
+///
+/// Closure-based APIs (`run_inla_inference_a*`) remain available and wrap the same engine.
+pub fn run_inla_inference_model(
+    initial_theta: &[f64],
+    latent: &dyn crate::latent::LatentModel,
+    obs: &[Obs],
+    mapper: Option<&dyn crate::projection::ProjectionMapper>,
+    constraints: Option<&ConstraintSpec>,
+    strategy: &str,
+    step_or_f0: f64,
+    marginal_opts: &crate::marginals::MarginalOptions,
+    deterministic: bool,
+) -> Result<InferenceResult, String> {
+    if !initial_theta.is_empty() && initial_theta.len() != latent.num_hyperparameters() {
+        return Err(format!(
+            "initial_theta length {} != latent.num_hyperparameters() {}",
+            initial_theta.len(),
+            latent.num_hyperparameters()
+        ));
+    }
+    let build_prior = |theta: &[f64]| latent.build_precision(theta);
+    let log_prior_density = |theta: &[f64]| latent.log_prior_density(theta);
+    let a = mapper.and_then(|m| m.projection_matrix());
+    let constr = constraints.or_else(|| latent.constraints());
+    run_inla_inference_a_cancellable(
+        initial_theta,
+        &build_prior,
+        &log_prior_density,
+        obs,
+        a,
+        constr,
+        strategy,
+        step_or_f0,
+        marginal_opts,
+        deterministic,
+        None,
+    )
 }
 
 fn link_forward(eta: f64, link: Link) -> Result<(f64, f64, f64), String> {
@@ -1683,6 +1855,183 @@ mod tests {
             "sum of RW1 posterior means should be ~0, got {s}"
         );
         assert!(result.marginal_log_lik.is_finite());
+    }
+
+    #[test]
+    fn lagrange_elimination_not_implemented() {
+        use inla_math::sum_to_zero_constraint;
+        let n = 4usize;
+        let q = identity_csc(n, 1.0).unwrap();
+        let obs: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: i as f64,
+                    precision: 1.0,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+        let mut c = sum_to_zero_constraint(n, 1).unwrap();
+        c.method = ConstraintMethod::LagrangeElimination;
+        let err = find_latent_mode_a(&q, &obs, None, Some(&c), 50, 1e-5).unwrap_err();
+        assert!(
+            err.contains("LagrangeElimination"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_theta_single_node_dic_cpo() {
+        let n = 5usize;
+        let obs: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: 1.0 + 0.1 * i as f64,
+                    precision: 4.0,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+        // Fixed prior precision — no hyperparameters to integrate.
+        let build_prior = |_theta: &[f64]| -> Result<CscMatrix, String> { identity_csc(n, 1.0) };
+        let result = run_inla_inference_a(
+            &[],
+            &build_prior,
+            &|_| 0.0,
+            &obs,
+            None,
+            None,
+            "ccd",
+            1.0,
+            &crate::marginals::MarginalOptions::default(),
+            true,
+        )
+        .expect("zero-theta inference");
+        assert!(result.mode.is_empty());
+        assert!(result.dic.is_finite(), "dic={}", result.dic);
+        assert!(result.mean_deviance.is_finite());
+        assert_eq!(result.cpo.len(), n);
+        // Single-node CPO is computed (not the old NaN/all-None bypass).
+        assert!(
+            result.cpo.iter().any(|c| c.is_some()) || result.cpo_n_failures == n,
+            "expected CPO evaluation path to run"
+        );
+        assert!(result.marginal_log_lik.is_finite());
+    }
+
+    #[test]
+    fn trait_entry_point_matches_closure_api() {
+        use crate::latent::ClosureLatentModel;
+        use crate::projection::IdentityProjection;
+
+        let n = 4usize;
+        let obs: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: 0.5 + 0.2 * i as f64,
+                    precision: 2.0,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+
+        let latent = ClosureLatentModel::new(
+            |theta| {
+                let tau = theta[0].exp();
+                identity_csc(n, tau)
+            },
+            |theta| -0.5 * 0.1 * theta[0] * theta[0],
+            1,
+        );
+        let mapper = IdentityProjection::new(n).unwrap();
+        let via_trait = run_inla_inference_model(
+            &[0.0],
+            &latent,
+            &obs,
+            Some(&mapper),
+            None,
+            "ccd",
+            1.0,
+            &crate::marginals::MarginalOptions::default(),
+            true,
+        )
+        .expect("trait API");
+
+        let build_prior = |theta: &[f64]| -> Result<CscMatrix, String> {
+            let tau = theta[0].exp();
+            identity_csc(n, tau)
+        };
+        let via_closure = run_inla_inference_a(
+            &[0.0],
+            &build_prior,
+            &|theta| -0.5 * 0.1 * theta[0] * theta[0],
+            &obs,
+            None,
+            None,
+            "ccd",
+            1.0,
+            &crate::marginals::MarginalOptions::default(),
+            true,
+        )
+        .expect("closure API");
+
+        assert_eq!(via_trait.mode.len(), via_closure.mode.len());
+        assert!((via_trait.marginal_log_lik - via_closure.marginal_log_lik).abs() < 1e-8);
+        for i in 0..n {
+            assert!((via_trait.latent_means[i] - via_closure.latent_means[i]).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn mock_solver_used_by_mode_find() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingSolver {
+            inner: FaerCpuSolver,
+            factorize_calls: AtomicUsize,
+        }
+
+        impl InlaSolver for CountingSolver {
+            fn factorize(&mut self, q: &CscMatrix) -> Result<(), inla_math::SolverError> {
+                self.factorize_calls.fetch_add(1, Ordering::Relaxed);
+                self.inner.factorize(q)
+            }
+            fn solve(&mut self, rhs: &[f64]) -> Result<Vec<f64>, inla_math::SolverError> {
+                self.inner.solve(rhs)
+            }
+            fn diag_inv(&mut self) -> Result<Vec<f64>, inla_math::SolverError> {
+                self.inner.diag_inv()
+            }
+            fn log_abs_det(&self) -> Result<f64, inla_math::SolverError> {
+                self.inner.log_abs_det()
+            }
+        }
+
+        let n = 3usize;
+        let q = identity_csc(n, 2.0).unwrap();
+        let obs: Vec<Obs> = (0..n)
+            .map(|_| {
+                Obs::Gaussian(GaussianObs {
+                    y: 1.0,
+                    precision: 1.0,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+        let mut solver = CountingSolver {
+            inner: FaerCpuSolver::new(),
+            factorize_calls: AtomicUsize::new(0),
+        };
+        let (x, mlik) =
+            find_latent_mode_a_with_solver(&q, &obs, None, None, 50, 1e-6, &mut solver).unwrap();
+        assert!(mlik.is_finite());
+        assert!(x.iter().all(|v| v.is_finite()));
+        assert!(
+            solver.factorize_calls.load(Ordering::Relaxed) >= 2,
+            "expected prior + at least one Newton factorize"
+        );
+        let vars = solver.diag_inv().unwrap();
+        assert_eq!(vars.len(), n);
     }
 }
 

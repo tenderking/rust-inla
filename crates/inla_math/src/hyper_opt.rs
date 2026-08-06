@@ -207,10 +207,7 @@ pub fn compute_hessian_cancellable(
         Ok(-v)
     };
 
-    let g_mode = match eval_g(mode) {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
+    let g_mode = eval_g(mode)?;
 
     for i in 0..m {
         for j in 0..m {
@@ -220,14 +217,8 @@ pub fn compute_hessian_cancellable(
                 let mut theta_minus = mode.to_vec();
                 theta_minus[i] -= h;
 
-                let g_plus = match eval_g(&theta_plus) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
-                let g_minus = match eval_g(&theta_minus) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
+                let g_plus = eval_g(&theta_plus)?;
+                let g_minus = eval_g(&theta_minus)?;
 
                 let val = (g_plus - 2.0 * g_mode + g_minus) / (h * h);
                 hessian[i * m + j] = val;
@@ -248,22 +239,10 @@ pub fn compute_hessian_cancellable(
                 tp_mm[i] -= h;
                 tp_mm[j] -= h;
 
-                let g_pp = match eval_g(&tp_pp) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
-                let g_pm = match eval_g(&tp_pm) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
-                let g_mp = match eval_g(&tp_mp) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
-                let g_mm = match eval_g(&tp_mm) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
+                let g_pp = eval_g(&tp_pp)?;
+                let g_pm = eval_g(&tp_pm)?;
+                let g_mp = eval_g(&tp_mp)?;
+                let g_mm = eval_g(&tp_mm)?;
 
                 let val = (g_pp - g_pm - g_mp + g_mm) / (4.0 * h * h);
                 hessian[i * m + j] = val;

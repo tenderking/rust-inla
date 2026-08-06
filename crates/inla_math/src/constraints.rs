@@ -3,6 +3,16 @@
 use crate::sparse::CscMatrix;
 use sprs::TriMatI;
 
+/// Method used for applying hard linear constraints Ax = e.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConstraintMethod {
+    /// Q + κ AᵀA augmentation (κ = exp(15)), combined with post-hoc projection.
+    #[default]
+    Augmented,
+    /// Lagrange multiplier elimination inside factorization.
+    LagrangeElimination,
+}
+
 /// Linear constraints `A x = e` with `A` dense `k × n` (row-major).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstraintSpec {
@@ -11,6 +21,7 @@ pub struct ConstraintSpec {
     /// Row-major `k * n`
     pub a: Vec<f64>,
     pub e: Vec<f64>,
+    pub method: ConstraintMethod,
 }
 
 impl ConstraintSpec {
@@ -52,6 +63,7 @@ impl ConstraintSpec {
             k: self.k,
             a,
             e: self.e.clone(),
+            method: self.method,
         })
     }
 
@@ -73,6 +85,7 @@ impl ConstraintSpec {
             k,
             a,
             e,
+            method: self.method,
         })
     }
 }
@@ -132,6 +145,7 @@ pub fn sum_to_zero_constraint(n: usize, k: usize) -> Result<ConstraintSpec, Stri
         k,
         a,
         e: vec![0.0; k],
+        method: ConstraintMethod::default(),
     })
 }
 

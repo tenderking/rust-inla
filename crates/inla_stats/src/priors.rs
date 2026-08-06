@@ -456,7 +456,7 @@ fn pc_matern_log_dens(
     lambda2: f64,
     d: f64,
 ) -> Result<f64, String> {
-    if !(d > 0.0) {
+    if !d.is_finite() || d <= 0.0 {
         return Err(format!("pc.matern: d must be > 0, got {d}"));
     }
     let mut s = 0.0;
