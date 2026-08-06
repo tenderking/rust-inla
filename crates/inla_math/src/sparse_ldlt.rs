@@ -182,9 +182,8 @@ pub fn factorize_sparse(
     let len = symbolic.len_val();
     scratch.ensure_l_values(len);
     let mut l_values = vec![0.0; len];
-    let mut mem = MemBuffer::new(
-        symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default()),
-    );
+    let mut mem =
+        MemBuffer::new(symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default()));
     symbolic
         .factorize_numeric_ldlt(
             &mut l_values,
@@ -292,9 +291,8 @@ pub fn refactorize_numeric_arc(
     let par = par_for(n);
     let len = symbolic.len_val();
     let mut l_values = vec![0.0; len];
-    let mut mem = MemBuffer::new(
-        symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default()),
-    );
+    let mut mem =
+        MemBuffer::new(symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default()));
     symbolic
         .factorize_numeric_ldlt(
             &mut l_values,

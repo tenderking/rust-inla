@@ -18,11 +18,7 @@ pub enum PriorFamily {
     /// θ = logit((1+ρ)/2). R name: `pc.cor1` / `pc.rho1`.
     PcCor1 { u: f64, alpha: f64 },
     /// PC Matérn on (log range, log σ) after λ packing: param `(λ1, λ2, d)`.
-    PcMatern {
-        lambda1: f64,
-        lambda2: f64,
-        d: f64,
-    },
+    PcMatern { lambda1: f64, lambda2: f64, d: f64 },
     /// Gamma on τ = e^θ with **rate** `b` (R-INLA): mean = a/b.
     LogGamma { shape: f64, rate: f64 },
     /// Gaussian directly on θ: mean μ, precision τ (`τ=0` ⇒ flat).
@@ -117,10 +113,7 @@ impl PriorSpec {
             }
             other => return Err(format!("unknown prior '{other}' (from '{name}')")),
         };
-        Ok(Self {
-            name: key,
-            family,
-        })
+        Ok(Self { name: key, family })
     }
 
     pub fn theta_dim(&self) -> usize {
@@ -144,7 +137,9 @@ impl PriorSpec {
                 lambda1,
                 lambda2,
                 d,
-            } => Ok(pc_matern_log_dens(theta[0], theta[1], *lambda1, *lambda2, *d)?),
+            } => Ok(pc_matern_log_dens(
+                theta[0], theta[1], *lambda1, *lambda2, *d,
+            )?),
             PriorFamily::LogGamma { shape, rate } => {
                 Ok(loggamma_log_dens(theta[0], *shape, *rate)?)
             }
@@ -178,9 +173,7 @@ impl PriorSpec {
                 Ok(Eval1D { logp, grad, hess })
             }
             PriorFamily::LogGamma { shape, rate } => loggamma_eval(theta, *shape, *rate),
-            PriorFamily::Gaussian { mean, precision } => {
-                gaussian_eval(theta, *mean, *precision)
-            }
+            PriorFamily::Gaussian { mean, precision } => gaussian_eval(theta, *mean, *precision),
             PriorFamily::Flat => Ok(Eval1D {
                 logp: 0.0,
                 grad: 0.0,
@@ -229,8 +222,9 @@ impl HyperPriorStack {
     pub fn default_for_effect(model: &str) -> Result<Self, String> {
         let m = model.to_ascii_lowercase();
         match m.as_str() {
-            "iid" | "rw1" | "rw2" | "rw2d" | "besag" | "besag2" | "seasonal" | "crw1"
-            | "crw2" => Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)])),
+            "iid" | "rw1" | "rw2" | "rw2d" | "besag" | "besag2" | "seasonal" | "crw1" | "crw2" => {
+                Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)]))
+            }
             "bym" => Ok(Self::new(vec![
                 PriorSpec::pc_prec(1.0, 0.01),
                 PriorSpec::pc_prec(1.0, 0.01),
@@ -265,9 +259,7 @@ impl HyperPriorStack {
                 &[1.0, 1.0, 2.0],
             )?])),
             "fixed" => Ok(Self::new(vec![])),
-            other => Err(format!(
-                "no default hyperprior for effect type '{other}'"
-            )),
+            other => Err(format!("no default hyperprior for effect type '{other}'")),
         }
     }
 
@@ -383,7 +375,8 @@ fn pc_cor1_lambda(u: f64, alpha: f64) -> Result<f64, String> {
         ));
     }
     let fun = |lam: f64| -> f64 {
-        let ff = (1.0 - (-lam * (1.0 - u).sqrt()).exp()) / (1.0 - (-lam * std::f64::consts::SQRT_2).exp());
+        let ff = (1.0 - (-lam * (1.0 - u).sqrt()).exp())
+            / (1.0 - (-lam * std::f64::consts::SQRT_2).exp());
         let d = ff - alpha;
         d * d
     };
@@ -579,8 +572,8 @@ mod tests {
         let alpha = 0.01_f64;
         let lambda = -alpha.ln() / u;
         let theta = 0.5_f64;
-        let expect = lambda.ln() - std::f64::consts::LN_2 - lambda * (-0.5 * theta).exp()
-            - 0.5 * theta;
+        let expect =
+            lambda.ln() - std::f64::consts::LN_2 - lambda * (-0.5 * theta).exp() - 0.5 * theta;
         let got = PriorSpec::pc_prec(u, alpha).log_density(&[theta]).unwrap();
         approx(got, expect, 1e-12);
         let e = PriorSpec::pc_prec(u, alpha).eval1d(theta).unwrap();
@@ -653,7 +646,9 @@ mod tests {
         };
         let adj = vec![vec![1usize], vec![0, 2], vec![1, 3], vec![2]];
         let n = adj.len();
-        let y: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 0.5 } else { -0.3 }).collect();
+        let y: Vec<f64> = (0..n)
+            .map(|i| if i % 2 == 0 { 0.5 } else { -0.3 })
+            .collect();
         let obs: Vec<Obs> = y
             .iter()
             .map(|&yi| {

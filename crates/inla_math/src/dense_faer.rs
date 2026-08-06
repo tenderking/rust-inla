@@ -1,10 +1,10 @@
 //! Dense linear algebra via faer (SIMD / cache-blocked Cholesky, EVD).
 
+use faer::Par;
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::{ldlt, llt};
 use faer::linalg::evd::{self, ComputeEigenvectors};
 use faer::prelude::*;
-use faer::Par;
 
 use crate::error::MathError;
 use crate::ldlt::DenseLdltFactor;
@@ -107,12 +107,7 @@ pub fn invert_spd_cholesky(a: &[f64], n: usize) -> Result<Vec<f64>, MathError> {
 
     let mut inv = Mat::zeros(n, n);
     let mut mem_i = MemBuffer::new(llt::inverse::inverse_scratch::<f64>(n, par));
-    llt::inverse::inverse(
-        inv.as_mut(),
-        mat.as_ref(),
-        par,
-        MemStack::new(&mut mem_i),
-    );
+    llt::inverse::inverse(inv.as_mut(), mat.as_ref(), par, MemStack::new(&mut mem_i));
 
     let mut out = vec![0.0; n * n];
     for i in 0..n {

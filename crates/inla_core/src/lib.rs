@@ -28,15 +28,15 @@ pub use inla_fmesher::{
 // `math_compute_hessian` / `math_nelder_mead` are the generic math optimizers;
 // flat `compute_hessian` / `nelder_mead` below are the INLA wrappers from stats.
 pub use inla_math::{
-    CscForR, CscMatrix, DenseLdltFactor, Eval1D, FaerCpuSolver, InlaSolver, LdltFactor, MathError,
-    SolverError, add_csc, at_diag_a, block_diag_csc, ccd_design,
+    CscForR, CscMatrix, DenseLdltFactor, Eval1D, FaerCpuSolver, InlaSolver, LdltFactor,
+    LdltScratch, MathError, SolverError, add_csc, at_diag_a, block_diag_csc, ccd_design,
     compute_hessian as math_compute_hessian, csc_for_r_dgcmatrix, csc_from_triplets_0based,
-    csc_to_dense, grid_design, identity_csc, invert_symmetric_matrix, jacobi_eigen,
+    csc_to_dense, grid_design, identity_csc, invert_symmetric_matrix, jacobi_eigen, kronecker_csc,
     laplace_newton_step, laplace_newton_step_a, laplace_newton_step_a_solver,
-    laplace_newton_system_a, ldlt_diagonal_inverse, ldlt_factorize, ldlt_factorize_dense, ldlt_solve,
-    ldlt_solve_in_place, matvec_csc, matvec_transpose_csc, nelder_mead as math_nelder_mead,
-    predictor_variances_diag, scale_csc, scale_model_csc, kronecker_csc, sparse_from_triplets,
-    triplets_to_csc, with_thread_scratch, LdltScratch,
+    laplace_newton_system_a, ldlt_diagonal_inverse, ldlt_factorize, ldlt_factorize_dense,
+    ldlt_solve, ldlt_solve_in_place, matvec_csc, matvec_transpose_csc,
+    nelder_mead as math_nelder_mead, predictor_variances_diag, scale_csc, scale_model_csc,
+    sparse_from_triplets, triplets_to_csc, with_thread_scratch,
 };
 
 /// CSC helpers from [`inla_math::sparse`], plus [`ar1_precision_csc`] from [`inla_stats`]
@@ -112,12 +112,14 @@ pub mod mesh {
 
 // --- Stats flat re-exports (previous inla_core public API) ---
 pub use inla_stats::{
-    Ar1Precision, BinomialObs, ConstraintMethod, ConstraintSpec, CpoResult, DicResult, ExponentialSurvivalObs,
-    GammaPrior, GaussianObs, GaussianPrior, HARD_CONSTRAINT_KAPPA, HyperPriorStack, InferenceResult,
-    LaplaceObs, Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs, Obs,
-    PoissonObs, PriorFamily, PriorSpec, WeibullSurvivalObs, ZeroInflatedBinomialObs,
-    ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision, ar1_precision_csc, arp_precision_csc,
-    augment_precision_csc, besag_precision_csc, bym2_precision_csc, bym_precision_csc, compute_cpo_pit, compute_dic,
+    Ar1Precision, BinomialObs, ClosureLatentModel, ConstraintMethod, ConstraintSpec, CpoResult,
+    DicResult, DynClosureLatentModel, ExponentialSurvivalObs, GammaPrior, GaussianObs,
+    GaussianPrior, HARD_CONSTRAINT_KAPPA, HyperPriorStack, IdentityProjection, InferenceResult,
+    LaplaceObs, LatentModel, Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs,
+    Obs, PoissonObs, PriorFamily, PriorSpec, ProjectionMapper, SparseProjectionMapper,
+    WeibullSurvivalObs, ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType,
+    ar1_precision, ar1_precision_csc, arp_precision_csc, augment_precision_csc,
+    besag_precision_csc, bym_precision_csc, bym2_precision_csc, compute_cpo_pit, compute_dic,
     compute_hessian, compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
     eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
     eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
@@ -125,16 +127,14 @@ pub use inla_stats::{
     eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
     eval_prior_loggamma, evaluate_neg_log_posterior, fgn_approx_latent_len,
     fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern, fgn_intern_from_hurst,
-    fgn_precision_csc, find_latent_mode, find_latent_mode_a, gaussian_mixture_marginal,
-    hyperpar_marginals, iid_precision_csc, marginal_cdf, marginal_quantiles,
-    marginal_summary_quantiles, matern2d_precision_csc, model_rank_deficiency, nelder_mead,
-    project_constraints, read_graph_file, run_inla_inference, run_inla_inference_a,
+    fgn_precision_csc, find_latent_mode, find_latent_mode_a, find_latent_mode_a_with_solver,
+    gaussian_mixture_marginal, hyperpar_marginals, iid_precision_csc, marginal_cdf,
+    marginal_quantiles, marginal_summary_quantiles, matern2d_precision_csc, model_rank_deficiency,
+    nelder_mead, project_constraints, read_graph_file, run_inla_inference, run_inla_inference_a,
     run_inla_inference_a_cancellable, run_inla_inference_model, rw1_cyclic_precision_csc,
     rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc, rw2d_precision_csc,
     seasonal_precision_csc, spde_params_from_theta, spde_precision_csc, spde_projector_csc,
-    spde_projector_from_xy, sum_to_zero_constraint, two_diid_precision_csc, ClosureLatentModel,
-    DynClosureLatentModel, IdentityProjection, LatentModel, ProjectionMapper,
-    SparseProjectionMapper, find_latent_mode_a_with_solver,
+    spde_projector_from_xy, sum_to_zero_constraint, two_diid_precision_csc,
 };
 
 pub mod marginals {

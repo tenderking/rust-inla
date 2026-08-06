@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
 use inla_math::{
-    CscMatrix, ConstraintMethod, ConstraintSpec, Eval1D, FaerCpuSolver, HARD_CONSTRAINT_KAPPA,
+    ConstraintMethod, ConstraintSpec, CscMatrix, Eval1D, FaerCpuSolver, HARD_CONSTRAINT_KAPPA,
     InlaSolver, LdltFactor, add_csc, augment_precision_csc, ccd_design, grid_design, identity_csc,
     invert_symmetric_matrix, jacobi_eigen, laplace_newton_step_a_solver, matvec_csc,
     predictor_variances_diag, project_constraints,
@@ -891,9 +891,8 @@ pub fn run_inla_inference_a_cancellable(
         // Pure fixed-effects / no hyperparameters: single Laplace node (no NM/CCD).
         let mut solver = FaerCpuSolver::new();
         let q_prior = build_prior(&[])?;
-        let (x_star, marginal_log_lik) = find_latent_mode_a_with_solver(
-            &q_prior, obs, a, constraints, 200, 1e-5, &mut solver,
-        )?;
+        let (x_star, marginal_log_lik) =
+            find_latent_mode_a_with_solver(&q_prior, obs, a, constraints, 200, 1e-5, &mut solver)?;
         let variances = solver.diag_inv().map_err(|e| e.to_string())?;
         let eta = match a {
             None => x_star.clone(),
@@ -1023,70 +1022,77 @@ pub fn run_inla_inference_a_cancellable(
         }
     }
 
-    let eval_node = |z: &Vec<f64>| -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64), String> {
-        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("Operation cancelled by user".to_string());
-        }
-        if let Some(cancel) = check_cancel
-            && let Err(err) = cancel()
-        {
-            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-            return Err(err);
-        }
-
-        let mut theta = mode.clone();
-        for i in 0..m {
-            let mut diff = 0.0;
-            for j in 0..m {
-                diff += v[i * m + j] * lambdas[j].abs().sqrt() * z[j];
+    let eval_node =
+        |z: &Vec<f64>| -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64), String> {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Operation cancelled by user".to_string());
             }
-            theta[i] += diff;
-        }
-
-        let q_prior = build_prior(&theta)?;
-        // Per-node solver factory: CCD Rayon workers must not share &mut InlaSolver.
-        let mut solver = FaerCpuSolver::new();
-        let (x_star, marginal_log_lik) = match find_latent_mode_a_with_solver(
-            &q_prior, obs, a, constraints, 200, 1e-5, &mut solver,
-        ) {
-            Ok(v) => v,
-            Err(_e) => {
-                if let Some(cancel) = check_cancel
-                    && let Err(err) = cancel()
-                {
-                    cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                    return Err(err);
-                }
-                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err("Operation cancelled by user".to_string());
-                }
-                let n_lat = q_prior.rows();
-                return Ok((
-                    theta,
-                    vec![0.0; n_lat],
-                    vec![1.0; n_lat],
-                    vec![0.0; n_obs],
-                    vec![1.0; n_obs],
-                    f64::NEG_INFINITY,
-                ));
+            if let Some(cancel) = check_cancel
+                && let Err(err) = cancel()
+            {
+                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Err(err);
             }
-        };
 
-        let variances = solver.diag_inv().map_err(|e| e.to_string())?;
-        let eta = match a {
-            None => x_star.clone(),
-            Some(a_mat) => matvec_csc(a_mat, &x_star)?,
-        };
-        let eta_var = match a {
-            None => variances.clone(),
-            Some(a_mat) => predictor_variances_diag(a_mat, &variances)?,
-        };
+            let mut theta = mode.clone();
+            for i in 0..m {
+                let mut diff = 0.0;
+                for j in 0..m {
+                    diff += v[i * m + j] * lambdas[j].abs().sqrt() * z[j];
+                }
+                theta[i] += diff;
+            }
 
-        let log_prior = log_prior_density(&theta);
-        let log_post = marginal_log_lik + log_prior;
+            let q_prior = build_prior(&theta)?;
+            // Per-node solver factory: CCD Rayon workers must not share &mut InlaSolver.
+            let mut solver = FaerCpuSolver::new();
+            let (x_star, marginal_log_lik) = match find_latent_mode_a_with_solver(
+                &q_prior,
+                obs,
+                a,
+                constraints,
+                200,
+                1e-5,
+                &mut solver,
+            ) {
+                Ok(v) => v,
+                Err(_e) => {
+                    if let Some(cancel) = check_cancel
+                        && let Err(err) = cancel()
+                    {
+                        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return Err(err);
+                    }
+                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err("Operation cancelled by user".to_string());
+                    }
+                    let n_lat = q_prior.rows();
+                    return Ok((
+                        theta,
+                        vec![0.0; n_lat],
+                        vec![1.0; n_lat],
+                        vec![0.0; n_obs],
+                        vec![1.0; n_obs],
+                        f64::NEG_INFINITY,
+                    ));
+                }
+            };
 
-        Ok((theta, x_star, variances, eta, eta_var, log_post))
-    };
+            let variances = solver.diag_inv().map_err(|e| e.to_string())?;
+            let eta = match a {
+                None => x_star.clone(),
+                Some(a_mat) => matvec_csc(a_mat, &x_star)?,
+            };
+            let eta_var = match a {
+                None => variances.clone(),
+                Some(a_mat) => predictor_variances_diag(a_mat, &variances)?,
+            };
+
+            let log_prior = log_prior_density(&theta);
+            let log_post = marginal_log_lik + log_prior;
+
+            Ok((theta, x_star, variances, eta, eta_var, log_post))
+        };
 
     let results: Vec<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)> = if deterministic {
         z_points
@@ -1773,9 +1779,9 @@ mod tests {
         use inla_math::design::identity_csc;
         let n = 54usize;
         let ys = [
-            3., 5., 4., 2., 5., 6., 3., 4., 5., 3., 4., 6., 2., 5., 4., 3., 5., 4., 6., 3., 4.,
-            5., 3., 4., 5., 2., 6., 4., 3., 5., 4., 3., 5., 4., 6., 3., 4., 5., 3., 4., 5., 2.,
-            6., 4., 3., 5., 4., 3., 5., 4., 6., 3., 4., 5.,
+            3., 5., 4., 2., 5., 6., 3., 4., 5., 3., 4., 6., 2., 5., 4., 3., 5., 4., 6., 3., 4., 5.,
+            3., 4., 5., 2., 6., 4., 3., 5., 4., 3., 5., 4., 6., 3., 4., 5., 3., 4., 5., 2., 6., 4.,
+            3., 5., 4., 3., 5., 4., 6., 3., 4., 5.,
         ];
         let mut obs = Vec::new();
         for y in ys {

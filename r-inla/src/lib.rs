@@ -817,20 +817,15 @@ fn inla_rs_run_inla_inference(
 
     let constr = match inla_core::model_rank_deficiency(&model_type_str) {
         0 => None,
-        k => Some(
-            inla_core::sum_to_zero_constraint(n_latent, k).map_err(Error::Other)?,
-        ),
+        k => Some(inla_core::sum_to_zero_constraint(n_latent, k).map_err(Error::Other)?),
     };
 
     let prior_stack = match inla_core::HyperPriorStack::default_for_effect(&model_type_str) {
         Ok(s) => s,
         Err(_) => inla_core::HyperPriorStack::new(vec![inla_core::PriorSpec::gaussian(0.0, 0.1)]),
     };
-    let log_prior_density = move |theta: &[f64]| -> f64 {
-        prior_stack
-            .log_density(theta)
-            .unwrap_or(f64::NEG_INFINITY)
-    };
+    let log_prior_density =
+        move |theta: &[f64]| -> f64 { prior_stack.log_density(theta).unwrap_or(f64::NEG_INFINITY) };
 
     let result = inla_core::run_inla_inference_a(
         &initial_theta,
@@ -1193,11 +1188,7 @@ fn inla_rs_run_inla_structured(
                         .as_ref()
                         .ok_or_else(|| "bym2 missing adj".to_string())?;
                     if adj.len() != n_e {
-                        return Err(format!(
-                            "bym2 adj length {} != effect n {}",
-                            adj.len(),
-                            n_e
-                        ));
+                        return Err(format!("bym2 adj length {} != effect n {}", adj.len(), n_e));
                     }
                     let tau = th[0].exp();
                     let phi = 1.0 / (1.0 + (-th[1]).exp());
@@ -1345,11 +1336,7 @@ fn inla_rs_run_inla_structured(
             }
         }
         let stack = inla_core::HyperPriorStack::new(priors);
-        move |theta: &[f64]| -> f64 {
-            stack
-                .log_density(theta)
-                .unwrap_or(f64::NEG_INFINITY)
-        }
+        move |theta: &[f64]| -> f64 { stack.log_density(theta).unwrap_or(f64::NEG_INFINITY) }
     };
 
     let result = inla_core::run_inla_inference_a(
@@ -1415,7 +1402,10 @@ fn inla_rs_default_hyper_priors(model: &str) -> std::result::Result<List, Error>
     for (_, p) in &pairs {
         param_items.push(Robj::from(p.clone()));
     }
-    Ok(list!(names = names, params = List::from_values(param_items)))
+    Ok(list!(
+        names = names,
+        params = List::from_values(param_items)
+    ))
 }
 
 /// Sum log-density for a prior stack. `param_list` is a list of numeric vectors.

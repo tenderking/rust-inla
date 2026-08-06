@@ -72,29 +72,26 @@ impl InlaSolver for FaerCpuSolver {
     }
 
     fn solve(&mut self, rhs: &[f64]) -> Result<Vec<f64>, SolverError> {
-        let factor = self
-            .factor
-            .as_ref()
-            .ok_or_else(|| SolverError::SolveFailure("Factorization not computed yet".to_string()))?;
+        let factor = self.factor.as_ref().ok_or_else(|| {
+            SolverError::SolveFailure("Factorization not computed yet".to_string())
+        })?;
         let mut x = rhs.to_vec();
         crate::backend::DefaultBackend.solve_in_place(factor, &mut x, &mut self.scratch)?;
         Ok(x)
     }
 
     fn diag_inv(&mut self) -> Result<Vec<f64>, SolverError> {
-        let factor = self
-            .factor
-            .as_ref()
-            .ok_or_else(|| SolverError::SolveFailure("Factorization not computed yet".to_string()))?;
+        let factor = self.factor.as_ref().ok_or_else(|| {
+            SolverError::SolveFailure("Factorization not computed yet".to_string())
+        })?;
         let diag = crate::backend::DefaultBackend.diagonal_inverse(factor, &mut self.scratch)?;
         Ok(diag)
     }
 
     fn log_abs_det(&self) -> Result<f64, SolverError> {
-        let factor = self
-            .factor
-            .as_ref()
-            .ok_or_else(|| SolverError::SolveFailure("Factorization not computed yet".to_string()))?;
+        let factor = self.factor.as_ref().ok_or_else(|| {
+            SolverError::SolveFailure("Factorization not computed yet".to_string())
+        })?;
         Ok(factor.log_abs_det())
     }
 }

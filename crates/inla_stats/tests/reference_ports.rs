@@ -2,18 +2,18 @@
 //! These call `inla_stats::run_inla_inference`, not classic R-INLA.
 
 use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
+use inla_math::{csc_from_triplets_0based, kronecker_csc};
 use inla_stats::{
     BinomialObs, ExponentialSurvivalObs, GaussianObs, LaplaceObs, Link, MarginalOptions,
     NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
     ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision_csc, arp_precision_csc,
-    besag_precision_csc, bym2_precision_csc, bym_precision_csc, crw1_precision_csc,
+    besag_precision_csc, bym_precision_csc, bym2_precision_csc, crw1_precision_csc,
     crw2_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc, fgn_hurst_from_intern,
     fgn_precision_csc, iid_precision_csc, matern2d_precision_csc, run_inla_inference,
     run_inla_inference_a, rw1_precision_csc, rw2_precision_csc, rw2d_precision_csc,
     seasonal_precision_csc, spde_params_from_theta, spde_precision_csc, spde_projector_csc,
     sum_to_zero_constraint,
 };
-use inla_math::{csc_from_triplets_0based, kronecker_csc};
 
 fn log_prior_flatish(theta: &[f64]) -> f64 {
     theta.iter().map(|&v| -0.5 * 0.1 * v * v).sum()
@@ -299,12 +299,7 @@ fn port_besag_gaussian() {
 
 #[test]
 fn port_bym_gaussian() {
-    let adj = vec![
-        vec![1usize, 3],
-        vec![0, 2],
-        vec![1, 3],
-        vec![0, 2],
-    ];
+    let adj = vec![vec![1usize, 3], vec![0, 2], vec![1, 3], vec![0, 2]];
     let n = adj.len();
     let y: Vec<f64> = (0..n)
         .map(|i| if i % 2 == 0 { 0.4 } else { -0.2 })
@@ -346,12 +341,7 @@ fn port_bym_gaussian() {
 
 #[test]
 fn port_bym2_gaussian() {
-    let adj = vec![
-        vec![1usize, 3],
-        vec![0, 2],
-        vec![1, 3],
-        vec![0, 2],
-    ];
+    let adj = vec![vec![1usize, 3], vec![0, 2], vec![1, 3], vec![0, 2]];
     let n = adj.len();
     let y: Vec<f64> = (0..n)
         .map(|i| if i % 2 == 0 { 0.4 } else { -0.2 })
@@ -413,12 +403,7 @@ fn port_rw2d_gaussian() {
 #[test]
 fn port_group_besag_ar1_gaussian() {
     // Spatio-temporal: Q = Q_ar1 ⊗ Q_besag (main=space fastest).
-    let adj = vec![
-        vec![1usize, 3],
-        vec![0, 2],
-        vec![1, 3],
-        vec![0, 2],
-    ];
+    let adj = vec![vec![1usize, 3], vec![0, 2], vec![1, 3], vec![0, 2]];
     let n_space = adj.len();
     let n_time = 4usize;
     let n = n_space * n_time;
@@ -796,4 +781,3 @@ fn port_spde_gaussian() {
     .expect("spde");
     assert_finite_result(&result, n_latent, 2);
 }
-

@@ -132,7 +132,10 @@ mod tests {
     fn test_identity_projection_no_matrix() {
         let mapper = IdentityProjection::new(4).unwrap();
         assert!(mapper.projection_matrix().is_none());
-        assert_eq!(mapper.project(&[1.0, 2.0, 3.0, 4.0]).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            mapper.project(&[1.0, 2.0, 3.0, 4.0]).unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
         assert_eq!(
             mapper.predictor_variances(&[0.1, 0.2, 0.3, 0.4]).unwrap(),
             vec![0.1, 0.2, 0.3, 0.4]

@@ -1,5 +1,5 @@
 use crate::error::MathError;
-use crate::scratch::{with_thread_scratch, LdltScratch};
+use crate::scratch::{LdltScratch, with_thread_scratch};
 use crate::sparse::CscMatrix;
 
 #[cfg(feature = "sparse-ldlt")]
@@ -85,7 +85,10 @@ pub fn csc_to_dense(csc: &CscMatrix) -> Result<Vec<f64>, MathError> {
     Ok(a)
 }
 
-pub(crate) fn ldlt_factorize_dense_inner(a: &[f64], n: usize) -> Result<DenseLdltFactor, MathError> {
+pub(crate) fn ldlt_factorize_dense_inner(
+    a: &[f64],
+    n: usize,
+) -> Result<DenseLdltFactor, MathError> {
     #[cfg(feature = "sparse-ldlt")]
     {
         crate::dense_faer::ldlt_factorize(a, n)
@@ -98,7 +101,10 @@ pub(crate) fn ldlt_factorize_dense_inner(a: &[f64], n: usize) -> Result<DenseLdl
 
 /// Scalar fallback when the faer backend is disabled.
 #[cfg(not(feature = "sparse-ldlt"))]
-pub(crate) fn ldlt_factorize_dense_scalar(a: &[f64], n: usize) -> Result<DenseLdltFactor, MathError> {
+pub(crate) fn ldlt_factorize_dense_scalar(
+    a: &[f64],
+    n: usize,
+) -> Result<DenseLdltFactor, MathError> {
     if a.len() != n * n {
         return Err(MathError::DimensionMismatch {
             context: "dense LDLᵀ matrix length",
@@ -323,7 +329,8 @@ fn laplace_newton_step_a_scratch(
                 });
             }
             let neg_hess: Vec<f64> = evals.iter().map(|e| -e.hess).collect();
-            let like_prec = crate::design::at_diag_a(a_mat, &neg_hess).map_err(MathError::Message)?;
+            let like_prec =
+                crate::design::at_diag_a(a_mat, &neg_hess).map_err(MathError::Message)?;
             let q_post = crate::design::add_csc(q_prior, &like_prec).map_err(MathError::Message)?;
             let factor = backend.factorize(&q_post, scratch)?;
             let g_eta: Vec<f64> = evals.iter().map(|e| e.grad).collect();
@@ -409,7 +416,8 @@ pub fn laplace_newton_system_a(
                 });
             }
             let neg_hess: Vec<f64> = evals.iter().map(|e| -e.hess).collect();
-            let like_prec = crate::design::at_diag_a(a_mat, &neg_hess).map_err(MathError::Message)?;
+            let like_prec =
+                crate::design::at_diag_a(a_mat, &neg_hess).map_err(MathError::Message)?;
             let q_post = crate::design::add_csc(q_prior, &like_prec).map_err(MathError::Message)?;
             let g_eta: Vec<f64> = evals.iter().map(|e| e.grad).collect();
             let mut rhs =

@@ -47,7 +47,11 @@ pub fn nelder_mead_cancellable(
         }
 
         let mut idxs: Vec<usize> = (0..=m).collect();
-        idxs.sort_by(|&a, &b| f_vals[a].partial_cmp(&f_vals[b]).unwrap_or(std::cmp::Ordering::Equal));
+        idxs.sort_by(|&a, &b| {
+            f_vals[a]
+                .partial_cmp(&f_vals[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let mut sorted_vertices = vec![vec![0.0; m]; m + 1];
         let mut sorted_f = vec![0.0; m + 1];
@@ -253,4 +257,3 @@ pub fn compute_hessian_cancellable(
 
     Ok(hessian)
 }
-

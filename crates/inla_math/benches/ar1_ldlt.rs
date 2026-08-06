@@ -50,7 +50,10 @@ fn bench_laplace_ldlt(c: &mut Criterion) {
         let x = vec![0.0; n];
         g.bench_with_input(BenchmarkId::new("pure_rust_step", n), &n, |b, _| {
             b.iter(|| {
-                black_box(laplace_newton_step(black_box(&q), black_box(&evals), black_box(&x)).expect("step"))
+                black_box(
+                    laplace_newton_step(black_box(&q), black_box(&evals), black_box(&x))
+                        .expect("step"),
+                )
             })
         });
         g.bench_with_input(BenchmarkId::new("solver_step", n), &n, |b, _| {

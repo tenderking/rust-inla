@@ -78,9 +78,9 @@ impl LdltBackend for DenseBackend {
             #[cfg(feature = "sparse-ldlt")]
             LdltFactor::Sparse(f) => crate::sparse_ldlt::sparse_solve_in_place(f, x, _scratch),
             #[cfg(not(feature = "sparse-ldlt"))]
-            LdltFactor::Sparse(_) => Err(MathError::Message(
-                "sparse LDLᵀ backend not enabled".into(),
-            )),
+            LdltFactor::Sparse(_) => {
+                Err(MathError::Message("sparse LDLᵀ backend not enabled".into()))
+            }
         }
     }
 
@@ -94,9 +94,9 @@ impl LdltBackend for DenseBackend {
             #[cfg(feature = "sparse-ldlt")]
             LdltFactor::Sparse(f) => crate::sparse_ldlt::sparse_diagonal_inverse(f, scratch),
             #[cfg(not(feature = "sparse-ldlt"))]
-            LdltFactor::Sparse(_) => Err(MathError::Message(
-                "sparse LDLᵀ backend not enabled".into(),
-            )),
+            LdltFactor::Sparse(_) => {
+                Err(MathError::Message("sparse LDLᵀ backend not enabled".into()))
+            }
         }
     }
 }
@@ -157,16 +157,12 @@ pub fn factorize_csc(q: &CscMatrix) -> Result<LdltFactor, MathError> {
 
 /// Solve `factor x = b` in place using the default backend.
 pub fn solve_in_place(factor: &LdltFactor, x: &mut [f64]) -> Result<(), MathError> {
-    crate::scratch::with_thread_scratch(|scratch| {
-        DefaultBackend.solve_in_place(factor, x, scratch)
-    })
+    crate::scratch::with_thread_scratch(|scratch| DefaultBackend.solve_in_place(factor, x, scratch))
 }
 
 /// Diagonal of `Q⁻¹` given an LDLᵀ factor.
 pub fn diagonal_inverse(factor: &LdltFactor) -> Result<Vec<f64>, MathError> {
-    crate::scratch::with_thread_scratch(|scratch| {
-        DefaultBackend.diagonal_inverse(factor, scratch)
-    })
+    crate::scratch::with_thread_scratch(|scratch| DefaultBackend.diagonal_inverse(factor, scratch))
 }
 
 /// Convenience: dense factorize without an external scratch.

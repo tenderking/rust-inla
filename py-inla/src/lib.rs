@@ -1,8 +1,8 @@
-use inla_core::ar1_precision;
 use inla_core::MathError;
+use inla_core::ar1_precision;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::IntoPyObjectExt;
 use pyo3::types::PyDict;
 
 /// Map [`MathError`] into a Python exception.
@@ -16,7 +16,9 @@ fn math_error_to_py(py: Python<'_>, err: MathError) -> PyErr {
             if let Ok(linalg) = np.getattr("linalg") {
                 if let Ok(exc) = linalg.getattr("LinAlgError") {
                     return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
-                        PyValueError::new_err(err.to_string()).into_bound_py_any(py).unwrap()
+                        PyValueError::new_err(err.to_string())
+                            .into_bound_py_any(py)
+                            .unwrap()
                     }));
                 }
             }
@@ -25,7 +27,9 @@ fn math_error_to_py(py: Python<'_>, err: MathError) -> PyErr {
             if let Ok(linalg) = sp.getattr("linalg") {
                 if let Ok(exc) = linalg.getattr("LinAlgError") {
                     return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
-                        PyValueError::new_err(err.to_string()).into_bound_py_any(py).unwrap()
+                        PyValueError::new_err(err.to_string())
+                            .into_bound_py_any(py)
+                            .unwrap()
                     }));
                 }
             }
@@ -53,7 +57,6 @@ fn string_error_to_py(py: Python<'_>, err: String) -> PyErr {
     }
     PyValueError::new_err(err)
 }
-
 
 /// Computes a 1D AR1 precision matrix and returns sparse triplets (i, j, x)
 /// in 1-based format (compatible with R sparse matrices).
@@ -312,8 +315,7 @@ pub struct PyInferenceResult {
 #[pyfunction]
 #[pyo3(signature = (n, rho, tau=1.0))]
 fn ar1_precision_matrix_csc(n: usize, rho: f64, tau: f64) -> PyResult<PyCscMatrix> {
-    let csc =
-        inla_core::sparse::ar1_precision_csc(n, rho, tau).map_err(PyValueError::new_err)?;
+    let csc = inla_core::sparse::ar1_precision_csc(n, rho, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -321,8 +323,7 @@ fn ar1_precision_matrix_csc(n: usize, rho: f64, tau: f64) -> PyResult<PyCscMatri
 #[pyfunction]
 #[pyo3(signature = (n, tau=1.0))]
 fn rw1_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::latent_models::rw1_precision_csc(n, tau)
-        .map_err(PyValueError::new_err)?;
+    let csc = inla_core::latent_models::rw1_precision_csc(n, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -330,8 +331,7 @@ fn rw1_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 #[pyfunction]
 #[pyo3(signature = (n, tau=1.0))]
 fn rw2_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::latent_models::rw2_precision_csc(n, tau)
-        .map_err(PyValueError::new_err)?;
+    let csc = inla_core::latent_models::rw2_precision_csc(n, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -339,8 +339,7 @@ fn rw2_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 #[pyfunction]
 #[pyo3(signature = (n, tau=1.0))]
 fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::latent_models::iid_precision_csc(n, tau)
-        .map_err(PyValueError::new_err)?;
+    let csc = inla_core::latent_models::iid_precision_csc(n, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -433,7 +432,8 @@ fn run_inla_inference_py(
                 Err(e) => {
                     let mut lock = store1.lock().unwrap();
                     if lock.is_none() {
-                        let py_err = if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                        let py_err = if e
+                            .is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
                             || e.to_string().contains("KeyboardInterrupt")
                         {
                             pyo3::exceptions::PyKeyboardInterrupt::new_err(())
@@ -460,7 +460,8 @@ fn run_inla_inference_py(
                 Err(e) => {
                     let mut lock = store2.lock().unwrap();
                     if lock.is_none() {
-                        let py_err = if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                        let py_err = if e
+                            .is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
                             || e.to_string().contains("KeyboardInterrupt")
                         {
                             pyo3::exceptions::PyKeyboardInterrupt::new_err(())
@@ -793,8 +794,8 @@ fn bym_precision_matrix(
     tau_spatial: f64,
     tau_iid: f64,
 ) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::bym_precision_csc(&adj, tau_spatial, tau_iid)
-        .map_err(PyValueError::new_err)?;
+    let csc =
+        inla_core::bym_precision_csc(&adj, tau_spatial, tau_iid).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -864,8 +865,8 @@ fn seasonal_precision_matrix(
     tau: f64,
     cyclic: bool,
 ) -> PyResult<PyCscMatrix> {
-    let csc = inla_core::seasonal_precision_csc(n, season, tau, cyclic)
-        .map_err(PyValueError::new_err)?;
+    let csc =
+        inla_core::seasonal_precision_csc(n, season, tau, cyclic).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
 
@@ -1013,7 +1014,8 @@ fn crw2_precision_matrix(positions: Vec<f64>, tau: f64, layout: &str) -> PyResul
 /// Evaluate a named prior on internal θ: `log π(θ | prior, param)`.
 #[pyfunction]
 fn prior_log_density(name: &str, param: Vec<f64>, theta: Vec<f64>) -> PyResult<f64> {
-    let spec = inla_core::PriorSpec::from_name_params(name, &param).map_err(PyValueError::new_err)?;
+    let spec =
+        inla_core::PriorSpec::from_name_params(name, &param).map_err(PyValueError::new_err)?;
     spec.log_density(&theta).map_err(PyValueError::new_err)
 }
 

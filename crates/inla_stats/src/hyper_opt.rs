@@ -21,7 +21,14 @@ pub fn evaluate_neg_log_posterior(theta: &[f64], config: &ModelConfig) -> Result
         cancel()?;
     }
     let q_prior = (config.build_prior)(theta)?;
-    match find_latent_mode_a(&q_prior, config.obs, config.a, config.constraints, 200, 1e-5) {
+    match find_latent_mode_a(
+        &q_prior,
+        config.obs,
+        config.a,
+        config.constraints,
+        200,
+        1e-5,
+    ) {
         Ok((_x_star, _factor, marginal_log_lik)) => {
             let log_prior = (config.log_prior_density)(theta);
             Ok(-(marginal_log_lik + log_prior))
@@ -49,7 +56,9 @@ pub fn nelder_mead(
         max_iter,
         tol,
         &|theta| evaluate_neg_log_posterior(theta, config),
-        config.check_cancel.map(|c| c as &dyn Fn() -> Result<(), String>),
+        config
+            .check_cancel
+            .map(|c| c as &dyn Fn() -> Result<(), String>),
     )
 }
 
@@ -58,6 +67,8 @@ pub fn compute_hessian(mode: &[f64], config: &ModelConfig, h: f64) -> Result<Vec
         mode,
         &|theta| evaluate_neg_log_posterior(theta, config),
         h,
-        config.check_cancel.map(|c| c as &dyn Fn() -> Result<(), String>),
+        config
+            .check_cancel
+            .map(|c| c as &dyn Fn() -> Result<(), String>),
     )
 }
