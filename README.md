@@ -114,9 +114,7 @@ source("r-inla/R/inla_rs.R")
 inla_rs_ar1_precision_csc(n = 100L, rho = 0.7, tau = 1.0)
 ```
 
-### C FFI bindings (`inla_sys`)
 
-Pre-generated bindings are used by default. To regenerate from the `gmrflib` headers:
 
 ```bash
 cargo build -p inla_sys --features generate-bindings
