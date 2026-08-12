@@ -795,6 +795,12 @@ pub struct InferenceResult {
     pub mean_deviance: f64,
     /// Effective number of parameters p_D = D̄ − D(θ*)
     pub effective_params: f64,
+    /// WAIC = −2 (lppd − p_waic)
+    pub waic: f64,
+    /// Log pointwise predictive density used in WAIC
+    pub waic_lppd: f64,
+    /// WAIC effective number of parameters p_waic
+    pub waic_effective_params: f64,
     /// CPO_i = π(y_i | y_{-i}), None when computation fails
     pub cpo: Vec<Option<f64>>,
     /// PIT_i = Pr(y^new_i ≤ y_i | y_{-i}), None when fails or unsupported family
@@ -908,6 +914,7 @@ pub fn run_inla_inference_a_cancellable(
         let cond_eta_var = vec![eta_var.clone()];
         let norm_weights = vec![1.0];
         let dic_result = crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, 0)?;
+        let waic_result = crate::model_selection::compute_waic(obs, &cond_eta, &norm_weights)?;
         let cpo_result =
             crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?;
 
@@ -955,6 +962,9 @@ pub fn run_inla_inference_a_cancellable(
             dic: dic_result.dic,
             mean_deviance: dic_result.mean_deviance,
             effective_params: dic_result.effective_params,
+            waic: waic_result.waic,
+            waic_lppd: waic_result.lppd,
+            waic_effective_params: waic_result.effective_params,
             cpo: cpo_result.cpo,
             pit: cpo_result.pit,
             cpo_n_failures: cpo_result.n_failures,
@@ -981,7 +991,15 @@ pub fn run_inla_inference_a_cancellable(
 
     let mode = crate::hyper_opt::nelder_mead(initial_theta, 0.1, 200, 1e-6, &config)?;
 
-    let hessian = crate::hyper_opt::compute_hessian(&mode, &config, 1e-4)?;
+    // Adaptive FD step: a tiny absolute h yields exploding curvature for sharp
+    // precision posteriors (especially intrinsic lattice models). Scale with the
+    // mode's magnitude but keep the original floor, since raising it makes nearly
+    // flat directions (e.g. Kronecker space⊗time models) look singular.
+    let hess_h = mode
+        .iter()
+        .map(|t| 0.05 * t.abs())
+        .fold(1e-4, f64::max);
+    let hessian = crate::hyper_opt::compute_hessian(&mode, &config, hess_h)?;
 
     let neg_hessian = hessian.iter().map(|&x| -x).collect::<Vec<_>>();
     let sigma = invert_symmetric_matrix(&neg_hessian, m)?;
@@ -1187,6 +1205,7 @@ pub fn run_inla_inference_a_cancellable(
 
     let dic_result =
         crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, mode_index)?;
+    let waic_result = crate::model_selection::compute_waic(obs, &cond_eta, &norm_weights)?;
 
     let cpo_result =
         crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?;
@@ -1250,6 +1269,9 @@ pub fn run_inla_inference_a_cancellable(
         dic: dic_result.dic,
         mean_deviance: dic_result.mean_deviance,
         effective_params: dic_result.effective_params,
+        waic: waic_result.waic,
+        waic_lppd: waic_result.lppd,
+        waic_effective_params: waic_result.effective_params,
         cpo: cpo_result.cpo,
         pit: cpo_result.pit,
         cpo_n_failures: cpo_result.n_failures,

@@ -129,7 +129,81 @@ pub fn compute_dic(
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 3. CPO / PIT
+// 3. WAIC
+// ────────────────────────────────────────────────────────────────────
+
+/// Result of a WAIC computation (Gelman et al. form on the deviance scale).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaicResult {
+    /// WAIC = −2 (lppd − p_waic)
+    pub waic: f64,
+    /// Log pointwise predictive density Σ_i log Σ_k w_k π(y_i | η_k)
+    pub lppd: f64,
+    /// Effective number of parameters Σ_i Var_k[log π(y_i | η_k)]
+    pub effective_params: f64,
+}
+
+/// Compute WAIC from CCD (or single-node) integration results.
+///
+/// Uses the weighted sample over hyperparameter nodes:
+/// - `lppd_i = log Σ_k w_k exp(ℓ_ik)`
+/// - `p_waic_i = Σ_k w_k (ℓ_ik − E[ℓ_i])²`
+/// - `WAIC = −2 (Σ_i lppd_i − Σ_i p_waic_i)`
+pub fn compute_waic(
+    obs: &[Obs],
+    cond_predictors: &[Vec<f64>],
+    norm_weights: &[f64],
+) -> Result<WaicResult, String> {
+    let n = obs.len();
+    let k_total = cond_predictors.len();
+    if norm_weights.len() != k_total {
+        return Err("norm_weights length must match cond_predictors length".to_string());
+    }
+    for pred in cond_predictors {
+        if pred.len() != n {
+            return Err("each cond_predictors entry must have length n".to_string());
+        }
+    }
+
+    let mut lppd = 0.0;
+    let mut p_waic = 0.0;
+    for i in 0..n {
+        let mut log_liks = Vec::with_capacity(k_total);
+        for pred in cond_predictors {
+            log_liks.push(eval_likelihood(pred[i], &obs[i])?.logp);
+        }
+        let max_ll = log_liks
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut sum_w_exp = 0.0;
+        let mut mean_ll = 0.0;
+        for (k, &ll) in log_liks.iter().enumerate() {
+            let w = norm_weights[k];
+            sum_w_exp += w * (ll - max_ll).exp();
+            mean_ll += w * ll;
+        }
+        if !(sum_w_exp.is_finite() && sum_w_exp > 0.0) {
+            return Err(format!("WAIC: non-finite predictive density at obs {i}"));
+        }
+        lppd += max_ll + sum_w_exp.ln();
+        let mut var_ll = 0.0;
+        for (k, &ll) in log_liks.iter().enumerate() {
+            let d = ll - mean_ll;
+            var_ll += norm_weights[k] * d * d;
+        }
+        p_waic += var_ll;
+    }
+
+    Ok(WaicResult {
+        waic: -2.0 * (lppd - p_waic),
+        lppd,
+        effective_params: p_waic,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
+// 4. CPO / PIT
 // ────────────────────────────────────────────────────────────────────
 
 /// Result of CPO/PIT computation for all observations.
@@ -525,6 +599,29 @@ mod tests {
         );
         // DIC = D̄ + p_D = D̄ + (D̄ − D(θ*)) = 2·D̄ − D(θ*)
         approx(dic.dic, dic.mean_deviance + dic.effective_params, 1e-12);
+    }
+
+    #[test]
+    fn waic_sanity_gaussian() {
+        let obs = vec![
+            Obs::Gaussian(GaussianObs {
+                y: 1.0,
+                precision: 2.0,
+                link: Link::Identity,
+            }),
+            Obs::Gaussian(GaussianObs {
+                y: 2.0,
+                precision: 2.0,
+                link: Link::Identity,
+            }),
+        ];
+        let modes = vec![vec![1.0, 2.0], vec![1.1, 1.9]];
+        let weights = vec![0.6, 0.4];
+        let waic = compute_waic(&obs, &modes, &weights).unwrap();
+        assert!(waic.waic.is_finite());
+        assert!(waic.lppd.is_finite());
+        assert!(waic.effective_params >= 0.0);
+        approx(waic.waic, -2.0 * (waic.lppd - waic.effective_params), 1e-12);
     }
 
     // --- CPO failure detection ---
