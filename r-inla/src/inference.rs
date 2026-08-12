@@ -1,12 +1,26 @@
 //! Observation builders and INLA inference entry points for R.
 
-use crate::convert::{marginals_to_r_list, parse_adj_list_1based, scale_csc_entries};
+use crate::convert::{marginals_to_r_list, parse_adj_list_1based};
 use extendr_api::prelude::*;
+
+/// Canonicalize likelihood family strings (R-INLA aliases → internal names).
+fn canonicalize_family(family: &str) -> String {
+    match family.trim().to_lowercase().as_str() {
+        "exponential.surv" | "exponential_surv" => "exponential_survival".into(),
+        "weibull.surv" | "weibull_surv" => "weibull_survival".into(),
+        "negbin" | "nbinomial" => "negative_binomial".into(),
+        "zip" | "zeroinflatedpoisson0" => "zero_inflated_poisson".into(),
+        "zib" | "zeroinflatedbinomial0" => "zero_inflated_binomial".into(),
+        "cbinomial" => "binomial".into(),
+        other => other.to_string(),
+    }
+}
 
 fn parse_link(link: &str, family: &str) -> std::result::Result<inla_core::Link, Error> {
     let link = link.trim().to_lowercase();
+    let family = canonicalize_family(family);
     if link.is_empty() || link == "default" {
-        return Ok(match family {
+        return Ok(match family.as_str() {
             "gaussian" | "laplace" => inla_core::Link::Identity,
             "poisson"
             | "nbinomial"
@@ -67,7 +81,7 @@ fn build_observations(
     shape: f64,
 ) -> std::result::Result<Vec<inla_core::Obs>, Error> {
     let n = y_obs.len();
-    let fam = family.trim().to_lowercase();
+    let fam = canonicalize_family(family);
     let inflation_ty = match inflation.trim().to_lowercase().as_str() {
         "type1" | "1" => inla_core::ZeroInflationType::Type1,
         _ => inla_core::ZeroInflationType::Type0,
@@ -91,7 +105,7 @@ fn build_observations(
                 link,
             }),
             "binomial" => inla_core::Obs::Binomial(inla_core::BinomialObs { y, n: nt[i], link }),
-            "nbinomial" | "negative_binomial" => {
+            "negative_binomial" => {
                 inla_core::Obs::NegativeBinomial(inla_core::NegativeBinomialObs {
                     y,
                     exposure: e[i],
@@ -99,7 +113,7 @@ fn build_observations(
                     link,
                 })
             }
-            "zeroinflatedpoisson0" | "zero_inflated_poisson" => {
+            "zero_inflated_poisson" => {
                 inla_core::Obs::ZeroInflatedPoisson(inla_core::ZeroInflatedPoissonObs {
                     y,
                     exposure: e[i],
@@ -117,7 +131,7 @@ fn build_observations(
                     inflation: inla_core::ZeroInflationType::Type1,
                 })
             }
-            "zeroinflatedbinomial0" | "zero_inflated_binomial" => {
+            "zero_inflated_binomial" => {
                 inla_core::Obs::ZeroInflatedBinomial(inla_core::ZeroInflatedBinomialObs {
                     y,
                     n: nt[i],
@@ -195,7 +209,7 @@ fn inla_rs_run_inla_inference(
 ) -> std::result::Result<List, Error> {
     let n = y_obs.len();
     let model_type_str = model_type.to_lowercase();
-    let family_str = family.trim().to_lowercase();
+    let family_str = canonicalize_family(family);
     let use_fgn_approx = model_type_str == "fgn" && order > 0;
     let order_usize = if use_fgn_approx {
         usize::try_from(order)
@@ -364,6 +378,9 @@ fn inla_rs_run_inla_inference(
         dic = result.dic,
         mean_deviance = result.mean_deviance,
         effective_params = result.effective_params,
+        waic = result.waic,
+        waic_lppd = result.waic_lppd,
+        waic_effective_params = result.waic_effective_params,
         hurst = hurst_est,
         order = order
     ))
@@ -433,7 +450,7 @@ fn inla_rs_run_inla_structured(
     let a = inla_core::csc_from_triplets_0based(a_nrow_u, a_ncol_u, &rows, &cols, &a_x)
         .map_err(Error::Other)?;
 
-    let family_str = family.trim().to_lowercase();
+    let family_str = canonicalize_family(family);
     let link_ty = parse_link(link, &family_str)?;
     let obs = build_observations(
         &family_str,
@@ -478,10 +495,6 @@ fn inla_rs_run_inla_structured(
         .iter()
         .map(|&v| usize::try_from(v).unwrap_or(0))
         .collect();
-    let effect_orders_u: Vec<usize> = effect_orders
-        .iter()
-        .map(|&v| usize::try_from(v).unwrap_or(0))
-        .collect();
     let effect_orders_i: Vec<i32> = effect_orders.clone();
     let expected_theta: usize = effect_theta_lens_u.iter().sum();
     if initial_theta.len() != expected_theta {
@@ -498,302 +511,48 @@ fn inla_rs_run_inla_structured(
         )));
     }
 
-    // Hard sum-to-zero on intrinsic random fields (before moving effect_* into build_prior).
-    let constr_opt = {
-        let mut stacked: Option<inla_core::ConstraintSpec> = None;
-        let mut offset = 0usize;
-        for (ei, typ) in effect_types.iter().enumerate() {
-            let n_e = effect_ns_u[ei];
-            let mut k = inla_core::model_rank_deficiency(typ);
-            if typ.eq_ignore_ascii_case("rw2d") || typ.eq_ignore_ascii_case("matern2d") {
-                // effect_orders: ±nrow (negative ⇒ cyclic). matern2d is proper → k=0.
-                if typ.eq_ignore_ascii_case("rw2d") {
-                    let raw = effect_orders[ei];
-                    k = if raw < 0 { 1 } else { 2 };
-                } else {
-                    k = 0;
-                }
-            }
-            if typ.eq_ignore_ascii_case("bym") {
-                // Constrain spatial block only (first n = adj.len()).
-                let n_sp = adjs
-                    .get(ei)
-                    .and_then(|a| a.as_ref())
-                    .map(|a| a.len())
-                    .unwrap_or(n_e / 2);
-                let block = inla_core::sum_to_zero_constraint(n_sp, 1).map_err(Error::Other)?;
-                let embedded = block.embed(a_ncol_u, offset).map_err(Error::Other)?;
-                stacked = Some(match stacked {
-                    None => embedded,
-                    Some(prev) => prev.vstack(&embedded).map_err(Error::Other)?,
-                });
-                offset += n_e;
-                continue;
-            }
-            if k > 0 {
-                let block = inla_core::sum_to_zero_constraint(n_e, k).map_err(Error::Other)?;
-                let embedded = block.embed(a_ncol_u, offset).map_err(Error::Other)?;
-                stacked = Some(match stacked {
-                    None => embedded,
-                    Some(prev) => prev.vstack(&embedded).map_err(Error::Other)?,
-                });
-            }
-            offset += n_e;
-        }
-        stacked
-    };
-
-    let build_prior = move |theta: &[f64]| -> std::result::Result<inla_core::CscMatrix, String> {
-        let mut blocks = Vec::with_capacity(effect_types_owned.len());
-        let mut off = 0usize;
-        for ei in 0..effect_types_owned.len() {
+    let effects: Vec<inla_core::StructuredEffect> = (0..effect_types_owned.len())
+        .map(|ei| {
             let typ = effect_types_owned[ei].to_lowercase();
-            let n_e = effect_ns_u[ei];
-            let tlen = effect_theta_lens_u[ei];
-            let th = if tlen == 0 {
-                &[][..]
+            let raw_order = effect_orders_i[ei];
+            let (nrow, ncol, cyclic) = if typ == "rw2d" || typ == "matern2d" {
+                let cyclic = raw_order < 0;
+                let nrow = raw_order.unsigned_abs() as usize;
+                let ncol = if nrow > 0 && effect_ns_u[ei].is_multiple_of(nrow) {
+                    effect_ns_u[ei] / nrow
+                } else {
+                    0
+                };
+                (nrow, ncol, cyclic)
             } else {
-                &theta[off..off + tlen]
+                (0, 0, false)
             };
-            off += tlen;
+            inla_core::StructuredEffect {
+                model: typ,
+                n: effect_ns_u[ei],
+                scale_model: effect_scales_b[ei],
+                theta_len: effect_theta_lens_u[ei],
+                order: raw_order,
+                adj: adjs[ei].clone(),
+                positions: None,
+                crw2_layout: "simple".into(),
+                nrow,
+                ncol,
+                cyclic,
+                matern_nu: 1,
+            }
+        })
+        .collect();
 
-            let q = match typ.as_str() {
-                "fixed" => inla_core::identity_csc(n_e, fixed_prec)?,
-                "iid" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let q0 = inla_core::iid_precision_csc(n_e, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "rw1" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let q0 = inla_core::rw1_precision_csc(n_e, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "rw2" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let q0 = inla_core::rw2_precision_csc(n_e, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "rw2d" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    // effect_orders encodes ±nrow (negative ⇒ cyclic); ncol = n_e / nrow.
-                    let raw = effect_orders_i[ei];
-                    let cyclic = raw < 0;
-                    let nrow = raw.unsigned_abs() as usize;
-                    if nrow == 0 || !n_e.is_multiple_of(nrow) {
-                        return Err(format!(
-                            "rw2d: effect_orders (±nrow)={raw} incompatible with n={n_e}"
-                        ));
-                    }
-                    let ncol = n_e / nrow;
-                    let q0 = inla_core::rw2d_precision_csc(nrow, ncol, 1.0, cyclic, false)?;
-                    scale_csc_entries(&q0, tau)?
-                }
-                "matern2d" => {
-                    if th.len() < 2 {
-                        return Err("matern2d needs theta=[log_prec, log_range]".into());
-                    }
-                    let prec = th[0].exp();
-                    let range = th[1].exp();
-                    let raw = effect_orders_i[ei];
-                    let cyclic = raw < 0;
-                    let nrow = raw.unsigned_abs() as usize;
-                    if nrow == 0 || !n_e.is_multiple_of(nrow) {
-                        return Err(format!(
-                            "matern2d: effect_orders (±nrow)={raw} incompatible with n={n_e}"
-                        ));
-                    }
-                    let ncol = n_e / nrow;
-                    inla_core::matern2d_precision_csc(nrow, ncol, 1, range, prec, cyclic)?
-                }
-                "bym" => {
-                    if th.len() < 2 {
-                        return Err("bym needs theta=[log_tau_spatial, log_tau_iid]".into());
-                    }
-                    let adj = adjs[ei]
-                        .as_ref()
-                        .ok_or_else(|| "bym missing adj".to_string())?;
-                    if adj.len() * 2 != n_e {
-                        return Err(format!(
-                            "bym adj length {} ⇒ latent {}, got n={}",
-                            adj.len(),
-                            adj.len() * 2,
-                            n_e
-                        ));
-                    }
-                    inla_core::bym_precision_csc(adj, th[0].exp(), th[1].exp())?
-                }
-                "bym2" => {
-                    if th.len() < 2 {
-                        return Err("bym2 needs theta=[log_tau, logit_phi]".into());
-                    }
-                    let adj = adjs[ei]
-                        .as_ref()
-                        .ok_or_else(|| "bym2 missing adj".to_string())?;
-                    if adj.len() != n_e {
-                        return Err(format!("bym2 adj length {} != effect n {}", adj.len(), n_e));
-                    }
-                    let tau = th[0].exp();
-                    let phi = 1.0 / (1.0 + (-th[1]).exp());
-                    let phi = phi.clamp(1e-6, 1.0 - 1e-6);
-                    inla_core::bym2_precision_csc(adj, tau, phi)?
-                }
-                "seasonal" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let season = if effect_orders_u[ei] > 0 {
-                        effect_orders_u[ei]
-                    } else {
-                        4
-                    };
-                    let q0 = inla_core::seasonal_precision_csc(n_e, season, 1.0, true)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "ar1" => {
-                    if th.len() < 2 {
-                        return Err("ar1 needs theta=[log_tau, logit_rho]".into());
-                    }
-                    let tau = th[0].exp();
-                    let rho = 2.0 / (1.0 + (-th[1]).exp()) - 1.0;
-                    let q0 = inla_core::ar1_precision_csc(n_e, rho, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "ar" | "arp" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let pacf: Vec<f64> = if th.len() > 1 {
-                        th[1..].iter().map(|&v| (v * 0.5).tanh()).collect()
-                    } else {
-                        vec![0.0]
-                    };
-                    let q0 = inla_core::arp_precision_csc(n_e, &pacf, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "crw1" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let positions: Vec<f64> = (0..n_e).map(|i| i as f64).collect();
-                    let q0 = inla_core::crw1_precision_csc(&positions, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "crw2" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let positions: Vec<f64> = (0..n_e).map(|i| i as f64).collect();
-                    let q0 = inla_core::crw2_precision_csc(&positions, 1.0, "simple")?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "besag" => {
-                    let tau = th.first().copied().unwrap_or(0.0).exp();
-                    let adj = adjs[ei]
-                        .as_ref()
-                        .ok_or_else(|| "besag missing adj".to_string())?;
-                    if adj.len() != n_e {
-                        return Err(format!(
-                            "besag adj length {} != effect n {}",
-                            adj.len(),
-                            n_e
-                        ));
-                    }
-                    // Scale the τ=1 structure first; then apply τ (otherwise
-                    // scale.model cancels the precision hyperparameter).
-                    let q0 = inla_core::besag_precision_csc(adj, 1.0)?;
-                    let q0 = if effect_scales_b[ei] {
-                        inla_core::scale_model_csc(&q0)?
-                    } else {
-                        q0
-                    };
-                    scale_csc_entries(&q0, tau)?
-                }
-                "fgn" => {
-                    let order = effect_orders_u[ei];
-                    if order == 3 || order == 4 {
-                        if th.len() < 2 {
-                            return Err("fgn approx needs [log_tau, H_intern]".into());
-                        }
-                        let tau = th[0].exp();
-                        let hurst = inla_core::fgn_hurst_from_intern(th[1]);
-                        let n_time = n_e / (order + 1);
-                        let q0 =
-                            inla_core::fgn_approx_precision_csc(n_time, hurst, 1.0, order, 1e8)?;
-                        let q0 = if effect_scales_b[ei] {
-                            inla_core::scale_model_csc(&q0)?
-                        } else {
-                            q0
-                        };
-                        scale_csc_entries(&q0, tau)?
-                    } else {
-                        if th.len() < 2 {
-                            return Err("fgn needs [log_tau, logit_H]".into());
-                        }
-                        let tau = th[0].exp();
-                        let hurst = 1.0 / (1.0 + (-th[1]).exp());
-                        let q0 = inla_core::fgn_precision_csc(n_e, hurst, 1.0)?;
-                        let q0 = if effect_scales_b[ei] {
-                            inla_core::scale_model_csc(&q0)?
-                        } else {
-                            q0
-                        };
-                        scale_csc_entries(&q0, tau)?
-                    }
-                }
-                other => return Err(format!("unsupported effect type: {other}")),
-            };
-            let _ = effect_scales_b[ei]; // scaling already applied above for random effects
-            blocks.push(q);
-        }
-        inla_core::block_diag_csc(&blocks)
+    let constr_opt = inla_core::structured_constraints(&effects).map_err(Error::Other)?;
+
+    let effects_for_q = effects.clone();
+    let build_prior = move |theta: &[f64]| -> std::result::Result<inla_core::CscMatrix, String> {
+        inla_core::build_structured_precision(&effects_for_q, theta, fixed_prec)
     };
 
     let log_prior_density = {
-        let mut priors = Vec::new();
-        for typ in &effect_types {
-            let m = typ.to_lowercase();
-            if m == "fixed" {
-                continue;
-            }
-            match inla_core::HyperPriorStack::default_for_effect(&m) {
-                Ok(s) => priors.extend(s.priors),
-                Err(_) => priors.push(inla_core::PriorSpec::gaussian(0.0, 0.1)),
-            }
-        }
-        let stack = inla_core::HyperPriorStack::new(priors);
+        let stack = inla_core::structured_prior_stack(&effects);
         move |theta: &[f64]| -> f64 { stack.log_density(theta).unwrap_or(f64::NEG_INFINITY) }
     };
 
@@ -825,6 +584,65 @@ fn inla_rs_run_inla_structured(
         dic = result.dic,
         mean_deviance = result.mean_deviance,
         effective_params = result.effective_params,
+        waic = result.waic,
+        waic_lppd = result.waic_lppd,
+        waic_effective_params = result.waic_effective_params,
+        cpo_n_failures = result.cpo_n_failures as i32,
+        node_weights = result.node_weights,
+        internal_marginals_hyperpar = internal_marginals_hyperpar
+    ))
+}
+
+/// Gaussian + single AR(1) via [`inla_core::ModelSpec`] → [`resolve`] → plan runner.
+#[extendr]
+fn inla_rs_run_gaussian_ar1_plan(
+    y_obs: Vec<f64>,
+    name: &str,
+    obs_precision: f64,
+    strategy: &str,
+    step_or_f0: f64,
+    initial_theta: Vec<f64>,
+) -> std::result::Result<List, Error> {
+    let n = y_obs.len();
+    let initial = if initial_theta.is_empty() {
+        None
+    } else {
+        Some(initial_theta)
+    };
+    let spec = inla_core::ModelSpec {
+        likelihood: inla_core::LikelihoodSpec::Gaussian {
+            precision: Some(obs_precision),
+        },
+        effects: vec![inla_core::LatentEffectSpec::Ar1 {
+            name: name.to_string(),
+            n,
+            priors: None,
+        }],
+        computation: inla_core::ComputationSpec {
+            strategy: Some(strategy.to_string()),
+            step_or_f0: Some(step_or_f0),
+        },
+        initial_theta: initial,
+    };
+    let plan = inla_core::resolve(spec).map_err(|e| Error::Other(e.0))?;
+    let result =
+        inla_core::run_gaussian_ar1_plan(&plan, &y_obs).map_err(|e| Error::Other(e.0))?;
+    let internal_marginals_hyperpar = marginals_to_r_list(&result.internal_marginals_hyperpar)?;
+    Ok(list!(
+        mode = result.mode,
+        hessian = result.hessian,
+        latent_means = result.latent_means,
+        latent_variances = result.latent_variances,
+        predictor_means = result.predictor_means,
+        predictor_variances = result.predictor_variances,
+        marginal_log_lik = result.marginal_log_lik,
+        marginal_log_lik_gaussian = result.marginal_log_lik_gaussian,
+        dic = result.dic,
+        mean_deviance = result.mean_deviance,
+        effective_params = result.effective_params,
+        waic = result.waic,
+        waic_lppd = result.waic_lppd,
+        waic_effective_params = result.waic_effective_params,
         cpo_n_failures = result.cpo_n_failures as i32,
         node_weights = result.node_weights,
         internal_marginals_hyperpar = internal_marginals_hyperpar
@@ -835,4 +653,5 @@ extendr_module! {
     mod inference;
     fn inla_rs_run_inla_inference;
     fn inla_rs_run_inla_structured;
+    fn inla_rs_run_gaussian_ar1_plan;
 }

@@ -345,6 +345,28 @@ inla_rs_run_inla_structured <- function(
   )
 }
 
+#' Gaussian + single AR(1) via Rust ModelSpec / ModelPlan (identity η = x).
+inla_rs_run_gaussian_ar1_plan <- function(
+    y_obs,
+    name = "time",
+    obs_precision = 100.0,
+    strategy = "ccd",
+    step_or_f0 = 1.0,
+    initial_theta = NULL) {
+  if (is.null(initial_theta)) {
+    initial_theta <- numeric(0)
+  }
+  .Call(
+    "wrap__inla_rs_run_gaussian_ar1_plan",
+    as.numeric(y_obs),
+    as.character(name)[1],
+    as.numeric(obs_precision)[1],
+    as.character(strategy)[1],
+    as.numeric(step_or_f0)[1],
+    as.numeric(initial_theta)
+  )
+}
+
 inla_rs_scale_model_csc <- function(adj_list, tau = 1) {
   .Call("wrap__inla_rs_scale_model_csc", adj_list, as.numeric(tau))
 }
@@ -374,6 +396,19 @@ inla_rs_hyper_prior_stack_log_density <- function(names, params, theta) {
 #' Bin a continuous covariate into `n` groups (R-INLA `inla.group` style).
 #'
 #' Returns integer group indices in `1..n` (or `1..n_unique` when `n` is NULL).
+#' Classic-INLA style survival response helper.
+#'
+#' Returns a two-column data frame; use with `family = "exponential.surv"` (etc.)
+#' and pass `event = dat$event` (or keep an `event` column in `data`).
+inla_rs_surv <- function(time, event) {
+  data.frame(time = as.numeric(time), event = as.numeric(event))
+}
+
+# Alias matching classic INLA spelling when this package is sourced alone.
+if (!exists("inla.surv", mode = "function", inherits = TRUE)) {
+  inla.surv <- inla_rs_surv
+}
+
 inla_rs_group <- function(x, n = NULL, method = c("quantile", "cut")) {
   method <- match.arg(method)
   x <- as.numeric(x)
@@ -457,61 +492,78 @@ inla_rs_scale_model <- function(adj_list, tau = 1) {
   lapply(graph, as.integer)
 }
 
-# Models accepted by `f()` in [inla_rs] (must match Rust structured path).
-.inla_rs_supported_f_models <- c(
-  "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "bym", "bym2",
-  "fgn", "seasonal", "crw1", "crw2", "matern2d", "rgeneric"
-)
+# Models accepted by `f()` in [inla_rs]; the Rust registry is the source of truth.
+.inla_rs_supported_f_models <- function() {
+  inla_rs_supported_models()
+}
+
+#' Per-model metadata from the shared Rust registry.
+#' @export
+inla_rs_model_metadata <- function(model, order = 0L, group_model = "", cyclic = FALSE) {
+  .Call(
+    "wrap__inla_rs_model_metadata",
+    as.character(model)[1],
+    as.integer(order)[1],
+    as.character(group_model)[1],
+    as.logical(cyclic)[1]
+  )
+}
+
+#' Latent model names accepted by `f()`.
+#' @export
+inla_rs_supported_models <- function() {
+  .Call("wrap__inla_rs_supported_models")
+}
+
+#' Validate a named list of engine controls and fill Rust-side defaults.
+#' @export
+inla_rs_resolve_compute_options <- function(controls = list()) {
+  .Call("wrap__inla_rs_resolve_compute_options", controls)
+}
+
+#' Validate + default engine controls in Rust, so R and Python agree on names.
+.inla_rs_resolve_controls <- function(control.compute = NULL, strategy = "ccd",
+                                      step_or_f0 = 1.0, fixed_prec = 1e-4,
+                                      deterministic = FALSE) {
+  bag <- list(
+    strategy = as.character(strategy)[1],
+    step_or_f0 = as.numeric(step_or_f0)[1],
+    fixed_prec = as.numeric(fixed_prec)[1],
+    deterministic = as.logical(deterministic)[1]
+  )
+  if (!is.null(control.compute)) {
+    if (is.null(names(control.compute)) || any(!nzchar(names(control.compute)))) {
+      stop("control.compute must be a named list", call. = FALSE)
+    }
+    for (nm in names(control.compute)) {
+      v <- control.compute[[nm]]
+      if (is.null(v)) next
+      bag[[nm]] <- v
+    }
+  }
+  inla_rs_resolve_compute_options(bag)
+}
+
+# Cached wrapper: metadata is looked up per theta node during optimization.
+.inla_rs_meta_cache <- new.env(parent = emptyenv())
+
+.inla_rs_model_meta <- function(model, order = 0L, group_model = NULL, cyclic = FALSE) {
+  model <- tolower(model)
+  gm <- if (is.null(group_model)) "" else tolower(group_model)
+  key <- paste(model, as.integer(order), gm, isTRUE(cyclic), sep = "|")
+  hit <- .inla_rs_meta_cache[[key]]
+  if (!is.null(hit)) return(hit)
+  meta <- inla_rs_model_metadata(model, as.integer(order), gm, isTRUE(cyclic))
+  assign(key, meta, envir = .inla_rs_meta_cache)
+  meta
+}
 
 .inla_rs_effect_theta_len <- function(model, order = 0L, group_model = NULL) {
-  model <- tolower(model)
-  if (model %in% c("iid", "rw1", "rw2", "rw2d", "besag", "seasonal", "crw1", "crw2")) {
-    main <- 1L
-  } else if (model %in% c("ar1", "fgn", "bym", "bym2", "matern2d", "spde")) {
-    main <- 2L
-  } else if (model %in% c("ar", "arp")) {
-    p <- if (order > 0L) as.integer(order) else 2L
-    main <- 1L + p
-  } else if (model == "fixed") {
-    main <- 0L
-  } else if (model == "rgeneric") {
-    main <- if (order > 0L) as.integer(order) else 1L
-  } else {
-    stop("Unknown model '", model, "'", call. = FALSE)
-  }
-  if (is.null(group_model) || !nzchar(group_model)) return(main)
-  g <- tolower(group_model)
-  if (g %in% c("iid", "rw1", "rw2")) return(main + 1L)
-  if (g == "ar1") return(main + 2L)
-  stop("Unsupported control.group model '", group_model, "'", call. = FALSE)
+  as.integer(.inla_rs_model_meta(model, order, group_model)$theta_len)
 }
 
 .inla_rs_default_theta <- function(model, order = 0L, group_model = NULL) {
-  model <- tolower(model)
-  if (model == "fgn" && order > 0L) {
-    main <- c(1.0, 2.0)
-  } else if (model %in% c("ar1", "fgn", "matern2d", "spde")) {
-    main <- c(0.0, 0.0)
-  } else if (model == "bym") {
-    main <- c(1.0, 1.0)
-  } else if (model == "bym2") {
-    main <- c(1.0, 0.0)
-  } else if (model %in% c("ar", "arp")) {
-    p <- if (order > 0L) as.integer(order) else 2L
-    main <- rep(0.0, 1L + p)
-  } else if (model == "fixed") {
-    main <- numeric(0)
-  } else if (model == "rgeneric") {
-    n_th <- if (order > 0L) as.integer(order) else 1L
-    main <- rep(0.0, n_th)
-  } else {
-    main <- c(0.0)
-  }
-  if (is.null(group_model) || !nzchar(group_model)) return(main)
-  g <- tolower(group_model)
-  if (g %in% c("iid", "rw1", "rw2")) return(c(main, 0.0))
-  if (g == "ar1") return(c(main, 0.0, 0.0))
-  stop("Unsupported control.group model '", group_model, "'", call. = FALSE)
+  as.numeric(.inla_rs_model_meta(model, order, group_model)$default_theta)
 }
 
 #' Define an R-callback generic latent model (Python ``inla.define`` analogue).
@@ -574,18 +626,50 @@ inla_rs <- function(
     adj_list = NULL,
     fixed_prec = 1e-4,
     deterministic = FALSE,
+    control.compute = NULL,
     ...) {
+  # Rust owns control names, defaults and validation (shared with Python).
+  .controls <- .inla_rs_resolve_controls(
+    control.compute,
+    strategy = strategy,
+    step_or_f0 = step_or_f0,
+    fixed_prec = fixed_prec,
+    deterministic = deterministic
+  )
+  strategy <- .controls$strategy
+  step_or_f0 <- .controls$step_or_f0
+  fixed_prec <- .controls$fixed_prec
+  deterministic <- .controls$deterministic
+
   supported <- c(
-    "gaussian", "poisson", "binomial", "nbinomial", "negative_binomial",
-    "zeroinflatedpoisson0", "zeroinflatedpoisson1", "zero_inflated_poisson",
-    "zeroinflatedbinomial0", "zeroinflatedbinomial1", "zero_inflated_binomial",
-    "laplace", "exponential", "exponential_survival", "weibull", "weibull_survival"
+    "gaussian", "poisson", "binomial", "nbinomial", "negative_binomial", "negbin",
+    "cbinomial",
+    "zeroinflatedpoisson0", "zeroinflatedpoisson1", "zero_inflated_poisson", "zip",
+    "zeroinflatedbinomial0", "zeroinflatedbinomial1", "zero_inflated_binomial", "zib",
+    "laplace", "exponential", "exponential_survival", "exponential.surv", "exponential_surv",
+    "weibull", "weibull_survival", "weibull.surv", "weibull_surv"
   )
   fam <- tolower(as.character(family)[1])
   if (!(fam %in% supported)) {
     stop("Unsupported family '", family, "'. Supported: ", paste(supported, collapse = ", "),
          call. = FALSE)
   }
+  # Canonical aliases (also accepted in Rust canonicalize_family)
+  fam <- switch(
+    fam,
+    "exponential.surv" = "exponential_survival",
+    "exponential_surv" = "exponential_survival",
+    "weibull.surv" = "weibull_survival",
+    "weibull_surv" = "weibull_survival",
+    "negbin" = "negative_binomial",
+    "nbinomial" = "negative_binomial",
+    "zip" = "zero_inflated_poisson",
+    "zeroinflatedpoisson0" = "zero_inflated_poisson",
+    "zib" = "zero_inflated_binomial",
+    "zeroinflatedbinomial0" = "zero_inflated_binomial",
+    "cbinomial" = "binomial",
+    fam
+  )
 
   data <- as.data.frame(data)
   if (is.null(event) && fam %in% c("exponential", "exponential_survival", "weibull", "weibull_survival")) {
@@ -599,11 +683,16 @@ inla_rs <- function(
 
   f_env <- new.env(parent = parent.frame())
   f_env$f <- function(x, model = "iid", order = 0L, graph = NULL,
-                      scale.model = FALSE, values = NULL, initial = NULL,
+                      scale.model = NULL, values = NULL, initial = NULL,
                       group = NULL, control.group = NULL, ...) {
+    model_chr <- as.character(model)[1]
+    # The shared Rust registry owns the scale.model default (intrinsic models).
+    if (is.null(scale.model)) {
+      scale.model <- isTRUE(.inla_rs_model_meta(model_chr)$default_scale_model)
+    }
     list(
       name = deparse(substitute(x)),
-      model = as.character(model)[1],
+      model = model_chr,
       order = as.integer(order)[1],
       graph = graph,
       scale.model = isTRUE(scale.model),
@@ -650,6 +739,48 @@ inla_rs <- function(
     }
   }
 
+  # ModelPlan fast path: gaussian + single AR1 + no fixed effects + identity index
+  if (identical(fam, "gaussian") &&
+      length(f_structs) == 1L &&
+      ncol(X) == 0L &&
+      identical(tolower(f_structs[[1]]$model), "ar1") &&
+      is.null(f_structs[[1]]$group)) {
+    fs <- f_structs[[1]]
+    idx_name <- fs$name
+    if (!grepl("^inla\\.group\\(", idx_name) &&
+        !grepl("^inla_rs_group\\(", idx_name) &&
+        is.null(fs$values) &&
+        !is.null(data[[idx_name]])) {
+      idx <- as.integer(data[[idx_name]])
+      id0 <- seq_len(n_obs) - 1L
+      id1 <- seq_len(n_obs)
+      if (!any(is.na(idx)) &&
+          (identical(idx, id0) || identical(idx, id1))) {
+        init <- if (is.null(initial_theta)) {
+          if (!is.null(fs$initial)) as.numeric(fs$initial) else numeric(0)
+        } else {
+          as.numeric(initial_theta)
+        }
+        raw <- inla_rs_run_gaussian_ar1_plan(
+          y_obs = y,
+          name = idx_name,
+          obs_precision = obs_precision,
+          strategy = strategy,
+          step_or_f0 = step_or_f0,
+          initial_theta = init
+        )
+        return(.inla_rs_attach_summaries(
+          raw,
+          effect_types = "ar1",
+          effect_ns = as.integer(n_obs),
+          effect_orders = 0L,
+          effect_names = idx_name,
+          fixed_names = character(0)
+        ))
+      }
+    }
+  }
+
   # Build latent blocks and A triplets (0-based)
   a_i <- integer(0)
   a_j <- integer(0)
@@ -671,9 +802,10 @@ inla_rs <- function(
 
   for (fs in f_structs) {
     model <- tolower(fs$model)
-    if (!(model %in% .inla_rs_supported_f_models)) {
+    supported <- .inla_rs_supported_f_models()
+    if (!(model %in% supported)) {
       stop("Unsupported f() model '", fs$model, "'. Supported: ",
-           paste(.inla_rs_supported_f_models, collapse = ", "), call. = FALSE)
+           paste(supported, collapse = ", "), call. = FALSE)
     }
     idx_name <- fs$name
     # Support inla.group(...) captured as name string — evaluate index from data
@@ -752,7 +884,15 @@ inla_rs <- function(
       zcol <- match(idx, lev) - 1L
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
       graph <- NULL
-      order_enc <- as.integer(order)
+      order_enc <- if (identical(model, "seasonal")) {
+        # Rust reads the season length out of `order` for seasonal blocks.
+        s <- fs$args$season
+        if (is.null(s)) s <- fs$args$s
+        if (is.null(s)) s <- if (order > 0L) order else 4L
+        as.integer(s)[1]
+      } else {
+        as.integer(order)
+      }
     }
 
     effect_types <- c(effect_types, model)
@@ -865,6 +1005,77 @@ inla_rs <- function(
   )
 }
 
+#' Labels / transform kinds for each internal θ component, in optim order.
+#'
+#' Delegates to the shared Rust registry so R and Python label θ identically.
+.inla_rs_hyper_labels <- function(effect_types, effect_names, effect_orders = NULL,
+                                  effect_group_models = NULL) {
+  kinds <- character(0)
+  labels <- character(0)
+  for (i in seq_along(effect_types)) {
+    typ <- tolower(effect_types[i])
+    if (typ == "fixed") next
+    nm <- if (i <= length(effect_names) && nzchar(effect_names[i])) {
+      effect_names[i]
+    } else {
+      typ
+    }
+    ord <- if (!is.null(effect_orders) && length(effect_orders) >= i) {
+      as.integer(effect_orders[i])
+    } else {
+      0L
+    }
+    gm <- if (!is.null(effect_group_models) && length(effect_group_models) >= i) {
+      effect_group_models[[i]]
+    } else {
+      NULL
+    }
+    meta <- .inla_rs_model_meta(typ, ord, gm)
+    kinds <- c(kinds, as.character(meta$hyper_transforms))
+    labels <- c(labels, paste(as.character(meta$hyper_labels), "for", nm))
+  }
+  list(kind = kinds, label = labels)
+}
+
+#' Transform a scalar hyper summary from internal θ to natural scale.
+.inla_rs_transform_hyper <- function(kind, stats) {
+  # stats: named mean, sd, q025, q50, q975, mode (internal)
+  tr_vals <- function(x) {
+    switch(
+      kind,
+      "exp" = exp(x),
+      "rho" = 2 / (1 + exp(-x)) - 1,
+      "phi" = 1 / (1 + exp(-x)),
+      x
+    )
+  }
+  out <- stats
+  out["mode"] <- tr_vals(stats[["mode"]])
+  out["mean"] <- tr_vals(stats[["mean"]])
+  out["q025"] <- tr_vals(stats[["q025"]])
+  out["q50"] <- tr_vals(stats[["q50"]])
+  out["q975"] <- tr_vals(stats[["q975"]])
+  # Delta-method sd on natural scale when transform is differentiable
+  if (kind == "exp" && is.finite(stats[["sd"]])) {
+    out["sd"] <- exp(stats[["mean"]]) * stats[["sd"]]
+  } else if (kind == "rho" && is.finite(stats[["sd"]])) {
+    r <- out["mean"]
+    out["sd"] <- 0.5 * (1 - r * r) * stats[["sd"]]
+  } else if (kind == "phi" && is.finite(stats[["sd"]])) {
+    p <- out["mean"]
+    out["sd"] <- p * (1 - p) * stats[["sd"]]
+  } else {
+    out["sd"] <- stats[["sd"]]
+  }
+  # Keep quantile order after monotonic transforms
+  if (kind %in% c("exp", "rho", "phi")) {
+    qs <- sort(c(out["q025"], out["q975"]))
+    out["q025"] <- qs[1]
+    out["q975"] <- qs[2]
+  }
+  out
+}
+
 #' Build Gaussian interim summary tables + class `"inla_rs"`.
 .inla_rs_attach_summaries <- function(raw, effect_types, effect_ns, effect_orders = NULL,
                                     effect_names, fixed_names) {
@@ -951,7 +1162,8 @@ inla_rs <- function(
       }
     }
   }
-  summary.hyperpar <- if (m > 0L) {
+  # Internal-scale table (θ as optimized)
+  summary.hyperpar.internal <- if (m > 0L) {
     data.frame(
       mean = hyp_mean,
       sd = hyp_sd,
@@ -966,12 +1178,56 @@ inla_rs <- function(
     NULL
   }
 
+  # Natural-scale table (Precision / Range / Rho / …) matching classic INLA summaries
+  hyp_meta <- .inla_rs_hyper_labels(effect_types, effect_names, effect_orders)
+  summary.hyperpar <- if (m > 0L && length(hyp_meta$kind) == m) {
+    nat_mean <- hyp_mean
+    nat_sd <- hyp_sd
+    nat_q025 <- hyp_q025
+    nat_q50 <- hyp_q50
+    nat_q975 <- hyp_q975
+    nat_mode <- mode
+    for (j in seq_len(m)) {
+      tr <- .inla_rs_transform_hyper(hyp_meta$kind[j], c(
+        mean = hyp_mean[j], sd = hyp_sd[j],
+        q025 = hyp_q025[j], q50 = hyp_q50[j], q975 = hyp_q975[j],
+        mode = mode[j]
+      ))
+      nat_mean[j] <- tr["mean"]
+      nat_sd[j] <- tr["sd"]
+      nat_q025[j] <- tr["q025"]
+      nat_q50[j] <- tr["q50"]
+      nat_q975[j] <- tr["q975"]
+      nat_mode[j] <- tr["mode"]
+    }
+    data.frame(
+      mean = nat_mean,
+      sd = nat_sd,
+      `0.025quant` = nat_q025,
+      `0.5quant` = nat_q50,
+      `0.975quant` = nat_q975,
+      mode = nat_mode,
+      check.names = FALSE,
+      row.names = hyp_meta$label
+    )
+  } else {
+    summary.hyperpar.internal
+  }
+
   out <- raw
   out$summary.random <- summary.random
   out$summary.fixed <- summary.fixed
   out$summary.linear.predictor <- summary.linear.predictor
   out$summary.hyperpar <- summary.hyperpar
+  out$summary.hyperpar.internal <- summary.hyperpar.internal
   out$internal.marginals.hyperpar <- im
+  out$waic <- if (!is.null(raw$waic)) as.numeric(raw$waic) else NA_real_
+  out$waic_lppd <- if (!is.null(raw$waic_lppd)) as.numeric(raw$waic_lppd) else NA_real_
+  out$waic_effective_params <- if (!is.null(raw$waic_effective_params)) {
+    as.numeric(raw$waic_effective_params)
+  } else {
+    NA_real_
+  }
   out$effects <- list(
     types = effect_types,
     ns = as.integer(effect_ns),

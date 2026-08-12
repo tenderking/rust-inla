@@ -7,6 +7,7 @@ mod inference;
 mod mesh;
 mod precision;
 mod priors;
+mod registry;
 
 use extendr_api::prelude::*;
 
@@ -16,4 +17,5 @@ extendr_module! {
     use mesh;
     use inference;
     use priors;
+    use registry;
 }

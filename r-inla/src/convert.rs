@@ -42,13 +42,6 @@ pub(crate) fn parse_adj_list_1based(adj_list: &List) -> std::result::Result<Vec<
     Ok(adj)
 }
 
-pub(crate) fn scale_csc_entries(
-    q: &inla_core::CscMatrix,
-    scale: f64,
-) -> std::result::Result<inla_core::CscMatrix, String> {
-    inla_core::scale_csc(q, scale)
-}
-
 pub(crate) fn marginal_to_r_matrix(m: &inla_core::Marginal1D) -> std::result::Result<Robj, Error> {
     let n = m.x.len();
     let mut data = Vec::with_capacity(n * 2);
