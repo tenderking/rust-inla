@@ -172,10 +172,7 @@ pub fn compute_waic(
         for pred in cond_predictors {
             log_liks.push(eval_likelihood(pred[i], &obs[i])?.logp);
         }
-        let max_ll = log_liks
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let max_ll = log_liks.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let mut sum_w_exp = 0.0;
         let mut mean_ll = 0.0;
         for (k, &ll) in log_liks.iter().enumerate() {

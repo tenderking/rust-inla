@@ -52,22 +52,20 @@ pub use marginals::{
 };
 pub use matern2d::matern2d_precision_csc;
 pub use model_selection::{
-    CpoResult, DicResult, WaicResult, compute_cpo_pit, compute_dic, compute_marginal_log_lik_gaussian,
-    compute_waic,
+    CpoResult, DicResult, WaicResult, compute_cpo_pit, compute_dic,
+    compute_marginal_log_lik_gaussian, compute_waic,
 };
-pub use options::{
-    ComputeOptions, IndexSelection, OptionValue, resolve_compute_options,
-};
+pub use options::{ComputeOptions, IndexSelection, OptionValue, resolve_compute_options};
 pub use plan::{
     ComputationPlan, ComputationSpec, HyperSlotPlan, HyperTransformKind, LatentBlockLayout,
     LatentEffectPlan, LatentEffectSpec, LatentLayout, LikelihoodPlan, LikelihoodSpec, ModelPlan,
     ModelSpec, PlanError, resolve, run_gaussian_ar1_plan,
 };
+pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use registry::{
     HyperSlotMeta, ModelMeta, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, model_metadata,
     rank_deficiency,
 };
-pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use rw2d::rw2d_precision_csc;
 pub use spde::{
     spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,

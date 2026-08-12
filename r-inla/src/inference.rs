@@ -625,8 +625,7 @@ fn inla_rs_run_gaussian_ar1_plan(
         initial_theta: initial,
     };
     let plan = inla_core::resolve(spec).map_err(|e| Error::Other(e.0))?;
-    let result =
-        inla_core::run_gaussian_ar1_plan(&plan, &y_obs).map_err(|e| Error::Other(e.0))?;
+    let result = inla_core::run_gaussian_ar1_plan(&plan, &y_obs).map_err(|e| Error::Other(e.0))?;
     let internal_marginals_hyperpar = marginals_to_r_list(&result.internal_marginals_hyperpar)?;
     Ok(list!(
         mode = result.mode,

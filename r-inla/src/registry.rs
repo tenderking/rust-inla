@@ -22,7 +22,11 @@ fn inla_rs_model_metadata(
     };
     let meta = inla_core::model_metadata(model, order_u, group, cyclic).map_err(Error::Other)?;
 
-    let internal: Vec<String> = meta.hyper.iter().map(|h| h.internal_label.clone()).collect();
+    let internal: Vec<String> = meta
+        .hyper
+        .iter()
+        .map(|h| h.internal_label.clone())
+        .collect();
     let labels: Vec<String> = meta.hyper.iter().map(|h| h.label.clone()).collect();
     let transforms: Vec<String> = meta
         .hyper

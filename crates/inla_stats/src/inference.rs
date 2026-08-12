@@ -995,10 +995,7 @@ pub fn run_inla_inference_a_cancellable(
     // precision posteriors (especially intrinsic lattice models). Scale with the
     // mode's magnitude but keep the original floor, since raising it makes nearly
     // flat directions (e.g. Kronecker space⊗time models) look singular.
-    let hess_h = mode
-        .iter()
-        .map(|t| 0.05 * t.abs())
-        .fold(1e-4, f64::max);
+    let hess_h = mode.iter().map(|t| 0.05 * t.abs()).fold(1e-4, f64::max);
     let hessian = crate::hyper_opt::compute_hessian(&mode, &config, hess_h)?;
 
     let neg_hessian = hessian.iter().map(|&x| -x).collect::<Vec<_>>();

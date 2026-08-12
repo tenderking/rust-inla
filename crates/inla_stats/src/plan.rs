@@ -341,9 +341,7 @@ fn resolve_effect(spec: LatentEffectSpec) -> Result<LatentEffectPlan, PlanError>
                 None => HyperPriorStack::default_for_effect("ar1")?,
                 Some(pairs) => {
                     if pairs.len() != 2 {
-                        return Err(
-                            "AR1 priors override must have 2 slots (prec, rho)".into(),
-                        );
+                        return Err("AR1 priors override must have 2 slots (prec, rho)".into());
                     }
                     let mut specs = Vec::with_capacity(2);
                     for (nm, param) in &pairs {
@@ -383,16 +381,11 @@ fn resolve_effect(spec: LatentEffectSpec) -> Result<LatentEffectPlan, PlanError>
 /// Run inference for a v1 plan: one AR(1) + Gaussian observations, η = x.
 ///
 /// `y.len()` must equal the AR(1) length. Observation buffers stay outside the plan.
-pub fn run_gaussian_ar1_plan(
-    plan: &ModelPlan,
-    y: &[f64],
-) -> Result<InferenceResult, PlanError> {
+pub fn run_gaussian_ar1_plan(plan: &ModelPlan, y: &[f64]) -> Result<InferenceResult, PlanError> {
     let (n, _name) = match plan.effects.as_slice() {
         [LatentEffectPlan::Ar1 { n, name, .. }] => (*n, name.as_str()),
         _ => {
-            return Err(
-                "run_gaussian_ar1_plan: plan must contain exactly one AR1 effect".into(),
-            );
+            return Err("run_gaussian_ar1_plan: plan must contain exactly one AR1 effect".into());
         }
     };
     if y.len() != n {

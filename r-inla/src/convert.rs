@@ -28,7 +28,9 @@ pub(crate) fn csc_to_dgcmatrix(
     Ok(m.into())
 }
 
-pub(crate) fn parse_adj_list_1based(adj_list: &List) -> std::result::Result<Vec<Vec<usize>>, Error> {
+pub(crate) fn parse_adj_list_1based(
+    adj_list: &List,
+) -> std::result::Result<Vec<Vec<usize>>, Error> {
     let mut adj = Vec::with_capacity(adj_list.len());
     for item in adj_list.values() {
         let nbs: Vec<usize> = item
@@ -53,7 +55,9 @@ pub(crate) fn marginal_to_r_matrix(m: &inla_core::Marginal1D) -> std::result::Re
     Ok(mat)
 }
 
-pub(crate) fn marginals_to_r_list(ms: &[inla_core::Marginal1D]) -> std::result::Result<List, Error> {
+pub(crate) fn marginals_to_r_list(
+    ms: &[inla_core::Marginal1D],
+) -> std::result::Result<List, Error> {
     let mut items: Vec<Robj> = Vec::with_capacity(ms.len());
     for m in ms {
         items.push(marginal_to_r_matrix(m)?);

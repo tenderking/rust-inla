@@ -624,7 +624,10 @@ fn model_metadata(
     )?;
     d.set_item(
         "hyper_labels",
-        meta.hyper.iter().map(|h| h.label.clone()).collect::<Vec<String>>(),
+        meta.hyper
+            .iter()
+            .map(|h| h.label.clone())
+            .collect::<Vec<String>>(),
     )?;
     d.set_item(
         "hyper_transforms",
@@ -727,7 +730,9 @@ fn structured_constraints_py(
     }
 }
 
-fn parse_structured_effects(effects: &[Bound<'_, PyDict>]) -> PyResult<Vec<inla_core::StructuredEffect>> {
+fn parse_structured_effects(
+    effects: &[Bound<'_, PyDict>],
+) -> PyResult<Vec<inla_core::StructuredEffect>> {
     let mut out = Vec::with_capacity(effects.len());
     for d in effects {
         let model: String = d
@@ -777,10 +782,8 @@ fn parse_structured_effects(effects: &[Bound<'_, PyDict>]) -> PyResult<Vec<inla_
             .map(|v| v.extract())
             .transpose()?
             .unwrap_or_else(|| "simple".to_string());
-        let positions: Option<Vec<f64>> = d
-            .get_item("positions")?
-            .map(|v| v.extract())
-            .transpose()?;
+        let positions: Option<Vec<f64>> =
+            d.get_item("positions")?.map(|v| v.extract()).transpose()?;
         let adj: Option<Vec<Vec<usize>>> = d.get_item("adj")?.map(|v| v.extract()).transpose()?;
         out.push(inla_core::StructuredEffect {
             model,

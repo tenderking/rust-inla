@@ -215,16 +215,12 @@ mod tests {
 
     #[test]
     fn dotted_and_underscored_keys_agree() {
-        let dotted = resolve_compute_options(&[(
-            "return.marginals.random".into(),
-            OptionValue::Bool(true),
-        )])
-        .unwrap();
-        let under = resolve_compute_options(&[(
-            "return_marginals_latent".into(),
-            OptionValue::Bool(true),
-        )])
-        .unwrap();
+        let dotted =
+            resolve_compute_options(&[("return.marginals.random".into(), OptionValue::Bool(true))])
+                .unwrap();
+        let under =
+            resolve_compute_options(&[("return_marginals_latent".into(), OptionValue::Bool(true))])
+                .unwrap();
         assert_eq!(dotted, under);
         assert_eq!(dotted.return_marginals_latent, IndexSelection::All);
     }

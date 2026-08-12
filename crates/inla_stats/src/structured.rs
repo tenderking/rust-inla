@@ -217,10 +217,7 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
                 .as_ref()
                 .ok_or_else(|| "besag missing adj".to_string())?;
             if adj.len() != n_e {
-                return Err(format!(
-                    "besag adj length {} != effect n {n_e}",
-                    adj.len()
-                ));
+                return Err(format!("besag adj length {} != effect n {n_e}", adj.len()));
             }
             let q0 = maybe_scale(besag_precision_csc(adj, 1.0)?, effect.scale_model)?;
             apply_tau(&q0, tau)
@@ -319,7 +316,9 @@ pub fn structured_prior_stack(effects: &[StructuredEffect]) -> HyperPriorStack {
 }
 
 /// Hard linear constraints for intrinsic / BYM / rw2d blocks.
-pub fn structured_constraints(effects: &[StructuredEffect]) -> Result<Option<ConstraintSpec>, String> {
+pub fn structured_constraints(
+    effects: &[StructuredEffect],
+) -> Result<Option<ConstraintSpec>, String> {
     let full_n: usize = effects.iter().map(|e| e.n).sum();
     let mut stacked: Option<ConstraintSpec> = None;
     let mut offset = 0usize;
@@ -353,11 +352,7 @@ pub fn structured_constraints(effects: &[StructuredEffect]) -> Result<Option<Con
             continue;
         }
         if typ == "bym" {
-            let n_sp = effect
-                .adj
-                .as_ref()
-                .map(|a| a.len())
-                .unwrap_or(n_e / 2);
+            let n_sp = effect.adj.as_ref().map(|a| a.len()).unwrap_or(n_e / 2);
             let block = sum_to_zero_constraint(n_sp, 1)?;
             let embedded = block.embed(full_n, offset)?;
             stacked = Some(match stacked {

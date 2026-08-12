@@ -128,7 +128,11 @@ pub fn model_metadata(
         }
         "bym2" => {
             hyper.push(prec_slot());
-            hyper.push(HyperSlotMeta::new("logit_phi", "Phi", HyperTransformKind::Phi));
+            hyper.push(HyperSlotMeta::new(
+                "logit_phi",
+                "Phi",
+                HyperTransformKind::Phi,
+            ));
             default_theta.extend_from_slice(&[1.0, 0.0]);
         }
         "matern2d" => {
@@ -322,8 +326,18 @@ mod tests {
 
     #[test]
     fn rw2d_cyclic_reduces_rank() {
-        assert_eq!(model_metadata("rw2d", 0, None, false).unwrap().rank_deficiency, 3);
-        assert_eq!(model_metadata("rw2d", 0, None, true).unwrap().rank_deficiency, 1);
+        assert_eq!(
+            model_metadata("rw2d", 0, None, false)
+                .unwrap()
+                .rank_deficiency,
+            3
+        );
+        assert_eq!(
+            model_metadata("rw2d", 0, None, true)
+                .unwrap()
+                .rank_deficiency,
+            1
+        );
     }
 
     #[test]
@@ -345,10 +359,26 @@ mod tests {
 
     #[test]
     fn intrinsic_models_scale_by_default() {
-        assert!(model_metadata("rw2", 0, None, false).unwrap().default_scale_model);
-        assert!(model_metadata("besag", 0, None, false).unwrap().default_scale_model);
-        assert!(!model_metadata("ar1", 0, None, false).unwrap().default_scale_model);
-        assert!(!model_metadata("iid", 0, None, false).unwrap().default_scale_model);
+        assert!(
+            model_metadata("rw2", 0, None, false)
+                .unwrap()
+                .default_scale_model
+        );
+        assert!(
+            model_metadata("besag", 0, None, false)
+                .unwrap()
+                .default_scale_model
+        );
+        assert!(
+            !model_metadata("ar1", 0, None, false)
+                .unwrap()
+                .default_scale_model
+        );
+        assert!(
+            !model_metadata("iid", 0, None, false)
+                .unwrap()
+                .default_scale_model
+        );
     }
 
     #[test]
