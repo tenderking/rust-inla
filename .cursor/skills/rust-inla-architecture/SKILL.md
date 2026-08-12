@@ -71,4 +71,5 @@ maps for custom θ stay on the host; built-in models use the registry transforms
 
 - Adding a latent: skill `add-latent-model`
 - How to test: skill `verify-inla`
-- Status / deferred: `plan.md`
+- Architecture: `ARCHITECTURE.md`
+- Roadmap / deferred: GitHub Issues (`./scripts/seed-roadmap-issues.sh`)

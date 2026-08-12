@@ -1,0 +1,36 @@
+name: Feature or bug
+description: Report a gap, bug, or enhancement for rust-inla
+title: ""
+labels: []
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine
+        - r-binding
+        - python-binding
+        - performance
+        - docs / CI
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What should change, and why.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist of done-when items (optional but helpful).
+      value: |
+        - [ ]
+  - type: markdown
+    attributes:
+      value: |
+        Architecture: see `ARCHITECTURE.md`. Prefer keeping statistical defaults and θ→Q in Rust.
