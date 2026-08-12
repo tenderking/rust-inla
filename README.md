@@ -1,72 +1,84 @@
 # rust-inla
 
-## Modern Bayesian inference for demanding workloads
+**Status: experimental (0.1).** A Rust engine for
+[Integrated Nested Laplace Approximation (INLA)](https://www.r-inla.org/) with
+Python and R bindings. Useful today for sparse GMRF-style models and for
+prototyping; **not** a drop-in replacement for classic R-INLA, and not yet a
+stable public API.
 
-`rust-inla` brings the power of [Integrated Nested Laplace Approximation (INLA)](https://www.r-inla.org/) to a modern, memory-safe Rust engine. It is built for power users who need fast approximate Bayesian inference, sparse models at scale, and the freedom to work from either Python or R—without being locked into a legacy backend.
+Roadmap and known gaps: [GitHub Issues](https://github.com/tenderking/rust-inla/issues).
+Design boundaries: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-Designed as a high-performance replacement for the C/Fortran core of R-INLA, the project gives research teams and production developers a foundation they can extend, embed, and carry forward as their models evolve.
+## Why this project
 
-### Why power users choose rust-inla
+- **One engine, two front-ends** — shared Rust core with native sparse-matrix
+  handoffs to R (`dgCMatrix`) and Python (SciPy), without file-based glue.
+- **Layered workspace** — meshing, numerics, inference, and bindings are
+  separate crates so you can extend the right layer.
+- **Modern Rust stack** — faer sparse/dense LDLᵀ, Rayon-parallel CCD
+  integration, and a registry-driven model surface shared by R and Python.
 
-- **Performance where it matters** — sparse factorisation, parallel CCD integration, and native Rust execution keep demanding inference workflows moving.
-- **One engine, two ecosystems** — use a shared computational core from Python or R, with native sparse-matrix handoffs instead of file-based glue.
-- **Built to extend** — a layered Cargo workspace separates meshing, numerical methods, statistical inference, and language bindings so advanced users can customise the right layer.
-- **Ready for the next model** — the stable `inla_core` facade and modular crates make it easier to add new latent structures, likelihoods, and front-end capabilities without redesigning the foundation.
-
-Whether you are prototyping spatial models, scaling time-series inference, or building a specialised Bayesian workflow, `rust-inla` is engineered to turn INLA methodology into a dependable platform for what comes next.
-
-## Workspace Structure
-
-The repository is a Cargo workspace mirroring the classic R-INLA split (fmesher / gmrflib / inference):
+## Workspace
 
 | Crate | Description |
 |---|---|
 | `crates/inla_fmesher` | Mesh generation, topology, point location, FEM block assembly |
-| `crates/inla_math` | Sparse CSC, LDLT, design helpers, CCD/grid, Nelder–Mead (gmrflib-like) |
-| `crates/inla_stats` | Likelihoods, latent GMRFs, INLA inference, DIC/CPO/PIT |
-| `crates/inla_core` | Thin facade re-exporting the three crates (stable API for bindings) |
-| `crates/inla_sys` | Optional legacy C FFI bindings to `gmrflib` via `bindgen` |
-| `py-inla` | Python front-end via `PyO3` / `Maturin` |
-| `r-inla` | R front-end via `extendr` |
+| `crates/inla_math` | Sparse CSC, LDLT, design helpers, CCD/grid, Nelder–Mead |
+| `crates/inla_stats` | Likelihoods, latent GMRFs, INLA inference, DIC/CPO/PIT/WAIC |
+| `crates/inla_core` | Facade re-exporting the three crates (preferred by bindings) |
+| `crates/inla_sys` | Optional legacy `gmrflib` FFI via bindgen (needs local gmrflib) |
+| `py-inla` | Python front-end (`PyO3` / Maturin); import name `inla` |
+| `r-inla` | R front-end (`extendr`); load via `source` + dynload for now |
 
-Downstream crates should prefer `inla_core::…` for a stable surface, or depend on `inla_math` / `inla_fmesher` / `inla_stats` directly when iterating on one layer.
+Prefer `inla_core::…` from bindings, or depend on a leaf crate when iterating
+on one layer.
 
-## Features
+## Features (today)
 
-- **Pure-Rust inference engine** — faer sparse/dense $LDL^T$, Nelder–Mead hyperparameter optimisation, and Laplace approximation with analytic gradients/Hessians
-- **Rayon-parallelised CCD integration** — the hyperparameter grid loop runs across CPU cores; large sparse factors can use faer Rayon as well
-- **Sparse by design** — `sprs` CSC and faer factorisation keep memory and computation focused on the structure of your model
-- **Native language bridges** — export precision matrices directly to R `dgCMatrix` and Python SciPy representations, bypassing file I/O
-- **Model-selection diagnostics** — DIC, CPO, PIT, and marginal likelihoods with outlier-detection heuristics
-- **A future-ready foundation** — the Rust core, stable facade, and decoupled bindings support continued growth without forcing users to abandon familiar R or Python workflows
+- Pure-Rust inference: faer LDLᵀ, Nelder–Mead hyperparameters, Laplace
+  approximation
+- Sparse CSC + Rayon CCD integration
+- Model-selection diagnostics: DIC, CPO, PIT, WAIC, marginal likelihood
+- Shared model registry / options bag / structured Q so R and Python do not
+  drift apart
 
-## Supported Models
-
-The platform already covers a broad set of spatial, temporal, latent, and survival workflows, with active development focused on expanding that reach. Status is tracked in [`plan.md`](plan.md).
+## Supported models
 
 ### Formula / inference (R `inla_rs`, Python `inla`)
 
-**Latent `f()` models:** `iid`, `rw1`, `rw2`, `rw2d`, `ar1`, `ar` / `arp`, `besag`, `bym`, `bym2`, `fgn`, `seasonal`, `crw1`, `crw2` (`simple`/`pairs`/`block` in Python), `matern2d`, `spde` (Python formula; R dedicated API)
+**Latent `f()` models:** `iid`, `rw1`, `rw2`, `rw2d`, `ar1`, `ar` / `arp`,
+`besag`, `bym`, `bym2`, `fgn`, `seasonal`, `crw1`, `crw2` (`simple` / `pairs` /
+`block` in Python), `matern2d`, `spde` (Python formula; R dedicated API)
 
-**SPDE (dedicated API):** triangular mesh → FEM `Q(κ,τ)` + barycentric projector `A`; R `inla_rs_spde(...)`, Python `f(model='spde', ...)` or `spde_precision_matrix` / `spde_projector_matrix`. θ = `[log τ, log κ]`.
+**SPDE:** triangular mesh → FEM `Q(κ,τ)` + barycentric projector `A`; R
+`inla_rs_spde(...)`, Python `f(model='spde', ...)` or matrix helpers.
+θ = `[log τ, log κ]`.
 
-**Families:** Gaussian, Poisson, Binomial, Negative Binomial, Zero-inflated Poisson/Binomial, Laplace, Exponential / Weibull survival (right-censoring via `event`; R auto-reads `data$event` when omitted)
+**Families:** Gaussian, Poisson, Binomial, Negative Binomial, zero-inflated
+Poisson/Binomial, Laplace, Exponential / Weibull survival (right-censoring via
+`event`; R can auto-read `data$event`)
 
-### Still partial / deferred
+### Known gaps
 
-**SPDE in multi-effect R formulas** — Python `f(model='spde')` works; R still uses dedicated `inla_rs_spde(...)`  
-**CRW2 `layout="block"`** — Q + Python formula; R structured still defaults to `"simple"`  
-**copy** — shared latent with β scaling not started
+Tracked as issues (seed with `./scripts/seed-roadmap-issues.sh` if empty):
 
-## Building
+- Formula `copy=` / shared latent with free β
+- R `rgeneric` callbacks during hyperparameter optimisation
+- R multi-effect `f(model="spde")` (Python formula works; R uses `inla_rs_spde`)
+- R CRW2 layouts beyond `simple`
+- Sparse/banded factor path for large FGN approx and other sparse GMRFs
+
+## Building and testing
 
 ```bash
-# Check all crates compile
-cargo check --workspace
-
-# Run all tests
-cargo test --workspace
+# Core workspace (matches CI; excludes R binding and optional gmrflib FFI)
+cargo check --workspace --exclude r-inla
+cargo test --workspace --exclude r-inla --exclude inla_sys
+cargo clippy --workspace --exclude r-inla --exclude inla_sys --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for smoke tests and PR expectations.
 
 ### Python (`py-inla`)
 
@@ -76,45 +88,36 @@ pip install maturin
 maturin develop --release
 ```
 
-High-level R-parity API — one frontend:
-
 ```python
 import inla
 
-# `~` or `<-` both work as the response separator
 result = inla(
     formula="successes <- covariate_x + f(spatial_idx, model='besag')",
     family="cbinomial",  # alias of binomial
-    data={..., "adj_matrix": adj},  # DataFrame.to_dict(orient="series") works
-    Ntrials=np.column_stack([y, n]),  # cbind(k, n) parity
+    data={..., "adj_matrix": adj},
+    Ntrials=np.column_stack([y, n]),
 )
-print(result.latent_means[0])  # intercept (fixed effects first)
-
-# Custom latent model (R inla.rgeneric.define)
-model = inla.generic.define(
-    n=20,
-    Q=lambda theta: ...,  # precision matrix
-    n_theta=1,
-)
-result = inla("y ~ -1 + f(idx, model='rgeneric')", data=..., rgeneric=model)
+print(result.latent_means[0])
 ```
-
-Matrix constructors (``ar1_precision_matrix_csc``, …) remain for simulation / custom ``Q``.
 
 ### R (`r-inla`)
 
+Not a CRAN package yet—build the shared library and load it:
+
 ```bash
 cargo build -p r-inla --release
+# or: make smoke-r
 ```
 
-Then in R:
 ```r
 source("r-inla/R/inla_rs.R")
 .inla_rs_dynload("target/release/libinla_rs.so")
 inla_rs_ar1_precision_csc(n = 100L, rho = 0.7, tau = 1.0)
 ```
 
+### Optional `inla_sys` (legacy gmrflib)
 
+Only needed if you are regenerating C bindings against a local `gmrflib` tree:
 
 ```bash
 cargo build -p inla_sys --features generate-bindings
@@ -122,4 +125,8 @@ cargo build -p inla_sys --features generate-bindings
 
 ## License
 
-See [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
+
+Upstream reference scripts under [`reference/r-inla-tests/`](reference/r-inla-tests/)
+are curated from [hrue/r-inla-testing](https://github.com/hrue/r-inla-testing)
+for scenario ideas only; they are not part of rust-inla CI.

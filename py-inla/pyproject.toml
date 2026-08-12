@@ -7,6 +7,8 @@ name = "inla"
 requires-python = ">=3.8"
 version = "0.1.0"
 description = "Fast approximate Bayesian inference using INLA, written in Rust"
+license = "Apache-2.0"
+urls = { Repository = "https://github.com/tenderking/rust-inla" }
 dependencies = ["numpy", "scipy"]
 
 [project.optional-dependencies]

@@ -1,6 +1,8 @@
 [package]
 name = "inla_core"
 version = "0.1.0"
+license = "Apache-2.0"
+repository = "https://github.com/tenderking/rust-inla"
 edition = "2024"
 description = "Facade re-exporting inla_fmesher + inla_math + inla_stats (legacy monolith API)"
 

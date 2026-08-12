@@ -1,6 +1,8 @@
 [package]
 name = "inla_math"
 version = "0.1.0"
+license = "Apache-2.0"
+repository = "https://github.com/tenderking/rust-inla"
 edition = "2024"
 description = "Sparse linear algebra, LDLT, optimization, and design-matrix helpers (gmrflib-like)"
 

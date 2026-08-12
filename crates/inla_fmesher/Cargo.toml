@@ -1,6 +1,8 @@
 [package]
 name = "inla_fmesher"
 version = "0.1.0"
+license = "Apache-2.0"
+repository = "https://github.com/tenderking/rust-inla"
 edition = "2024"
 description = "Mesh generation, topology, point location, and FEM block assembly (legacy fmesher)"
 

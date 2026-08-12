@@ -14,8 +14,9 @@ These are **reference scenarios**, not CI tests for rust-inla.
   comparing hyperparameter recovery, mlik/DIC/CPO, and latent models.
 
 Re-implement interesting cases as Rust unit/integration tests
-(`crates/inla_core/tests/reference_ports.rs`) or `r-inla/smoke.sh`
-checks. Progress checklist: [`plan.md`](../../plan.md).
+(`crates/inla_stats/tests/reference_ports.rs`) or `r-inla/smoke.sh`
+checks. Architecture: [`ARCHITECTURE.md`](../../ARCHITECTURE.md). Open
+feature work: [GitHub Issues](https://github.com/tenderking/rust-inla/issues).
 
 ## Included directories
 
