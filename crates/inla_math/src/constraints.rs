@@ -95,9 +95,9 @@ pub fn model_rank_deficiency(model: &str) -> usize {
     match model.to_ascii_lowercase().as_str() {
         "rw1" | "besag" | "besag2" | "bym2" => 1,
         "rw2" => 2,
-        // Intrinsic (non-cyclic) RW2D: kill constant + linear; cyclic uses k=1.
-        // Callers that know cyclic=true should request k=1 explicitly.
-        "rw2d" => 2,
+        // Intrinsic (non-cyclic) RW2D: kill the discrete plane (const + row + col);
+        // cyclic uses k=1. Callers that know cyclic=true should request k=1 explicitly.
+        "rw2d" => 3,
         "seasonal" => 1, // sum-to-zero over the seasonal contrast (common default)
         "bym" => 1,      // spatial ICAR block only (caller embeds on that block)
         "crw1" | "crw2" => 1,
@@ -139,6 +139,120 @@ pub fn sum_to_zero_constraint(n: usize, k: usize) -> Result<ConstraintSpec, Stri
         for c in 0..n {
             a[n + c] /= scale;
         }
+    }
+    Ok(ConstraintSpec {
+        n,
+        k,
+        a,
+        e: vec![0.0; k],
+        method: ConstraintMethod::default(),
+    })
+}
+
+/// Orthonormal basis of the seasonal null space for period `season`.
+///
+/// The seasonal model penalizes every window sum `x_i + … + x_{i+s-1}`, so its
+/// null space is the `s-1` dimensional space of period-`s` patterns summing to
+/// zero over one period — not the 1-dimensional constant space. Constraining
+/// only the constant leaves `Q` singular.
+pub fn seasonal_constraint(n: usize, season: usize) -> Result<ConstraintSpec, String> {
+    if n == 0 {
+        return Err("seasonal_constraint: n must be > 0".into());
+    }
+    if season < 2 {
+        return Err("seasonal_constraint: season must be >= 2".into());
+    }
+    if season > n {
+        return Err(format!(
+            "seasonal_constraint: season {season} exceeds field length {n}"
+        ));
+    }
+    let k = season - 1;
+    // Raw contrast rows: +1 on phase 0, -1 on phase j, repeated over the field.
+    let mut rows: Vec<Vec<f64>> = Vec::with_capacity(k);
+    for j in 1..season {
+        let mut row = vec![0.0; n];
+        for (i, slot) in row.iter_mut().enumerate() {
+            let phase = i % season;
+            if phase == 0 {
+                *slot = 1.0;
+            } else if phase == j {
+                *slot = -1.0;
+            }
+        }
+        rows.push(row);
+    }
+
+    // Gram-Schmidt: the raw contrasts are independent but not orthogonal.
+    let mut basis: Vec<Vec<f64>> = Vec::with_capacity(k);
+    for mut row in rows {
+        for b in &basis {
+            let dot: f64 = row.iter().zip(b).map(|(x, y)| x * y).sum();
+            for (x, y) in row.iter_mut().zip(b) {
+                *x -= dot * y;
+            }
+        }
+        let norm: f64 = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm < 1e-10 {
+            return Err(format!(
+                "seasonal_constraint: degenerate contrast for season {season}, n {n}"
+            ));
+        }
+        for x in row.iter_mut() {
+            *x /= norm;
+        }
+        basis.push(row);
+    }
+
+    let mut a = Vec::with_capacity(k * n);
+    for row in &basis {
+        a.extend_from_slice(row);
+    }
+    Ok(ConstraintSpec {
+        n,
+        k,
+        a,
+        e: vec![0.0; k],
+        method: ConstraintMethod::default(),
+    })
+}
+
+/// Plane constraints for a regular lattice stored column-major (`node = j * nrow + i`).
+///
+/// Non-cyclic intrinsic RW2D has a 3D null space (constant + row linear + column linear).
+/// Cyclic RW2D uses only the constant (`sum_to_zero_constraint(n, 1)`).
+pub fn plane_constraint_2d(nrow: usize, ncol: usize) -> Result<ConstraintSpec, String> {
+    if nrow == 0 || ncol == 0 {
+        return Err("plane_constraint_2d: nrow and ncol must be > 0".into());
+    }
+    let n = nrow * ncol;
+    let k = 3usize;
+    let mut a = vec![0.0; k * n];
+    let inv_sqrt_n = 1.0 / (n as f64).sqrt();
+    let mean_i = (nrow - 1) as f64 / 2.0;
+    let mean_j = (ncol - 1) as f64 / 2.0;
+    let mut ss_i = 0.0;
+    let mut ss_j = 0.0;
+    for j in 0..ncol {
+        for i in 0..nrow {
+            let node = j * nrow + i;
+            a[node] = inv_sqrt_n;
+            let vi = i as f64 - mean_i;
+            let vj = j as f64 - mean_j;
+            a[n + node] = vi;
+            a[2 * n + node] = vj;
+            ss_i += vi * vi;
+            ss_j += vj * vj;
+        }
+    }
+    let scale_i = ss_i.sqrt();
+    let scale_j = ss_j.sqrt();
+    if scale_i < 1e-14 || scale_j < 1e-14 {
+        return Err("plane_constraint_2d: degenerate row/col trend".into());
+    }
+    for node in 0..n {
+        a[n + node] /= scale_i;
+        a[2 * n + node] /= scale_j;
     }
     Ok(ConstraintSpec {
         n,
@@ -313,5 +427,35 @@ mod tests {
         // Diagonal should grow by κ/n
         let expect = 1.0 + HARD_CONSTRAINT_KAPPA / 4.0;
         assert!((d[0] - expect).abs() < 1e-6);
+    }
+
+    #[test]
+    fn plane_2d_kills_const_row_col_trends() {
+        let nrow = 4usize;
+        let ncol = 5usize;
+        let c = plane_constraint_2d(nrow, ncol).unwrap();
+        assert_eq!(c.k, 3);
+        let mut x = vec![0.0; nrow * ncol];
+        for j in 0..ncol {
+            for i in 0..nrow {
+                x[j * nrow + i] = 1.0 + 0.3 * i as f64 + 0.7 * j as f64;
+            }
+        }
+        project_constraints(&mut x, &c).unwrap();
+        let s: f64 = x.iter().sum();
+        let mean_i = (nrow - 1) as f64 / 2.0;
+        let mean_j = (ncol - 1) as f64 / 2.0;
+        let mut row_mom = 0.0;
+        let mut col_mom = 0.0;
+        for j in 0..ncol {
+            for i in 0..nrow {
+                let v = x[j * nrow + i];
+                row_mom += (i as f64 - mean_i) * v;
+                col_mom += (j as f64 - mean_j) * v;
+            }
+        }
+        assert!(s.abs() < 1e-9, "sum={s}");
+        assert!(row_mom.abs() < 1e-9, "row_mom={row_mom}");
+        assert!(col_mom.abs() < 1e-9, "col_mom={col_mom}");
     }
 }

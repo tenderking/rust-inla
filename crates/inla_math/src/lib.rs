@@ -22,7 +22,8 @@ pub use backend::{
 };
 pub use constraints::{
     ConstraintMethod, ConstraintSpec, HARD_CONSTRAINT_KAPPA, augment_precision_csc,
-    model_rank_deficiency, project_constraints, sum_to_zero_constraint,
+    model_rank_deficiency, plane_constraint_2d, project_constraints, seasonal_constraint,
+    sum_to_zero_constraint,
 };
 pub use design::{
     add_csc, at_diag_a, block_diag_csc, csc_from_triplets_0based, identity_csc, matvec_csc,
