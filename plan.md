@@ -9,9 +9,86 @@ Engine layout (bindings consume [`inla_core`](crates/inla_core/) as a facade):
 | Crate | Role |
 |-------|------|
 | `inla_math` | CSC, faer sparse/dense LDLᵀ, CCD/grid, design, constraints |
-| `inla_stats` | Likelihoods, GMRFs, INLA inference, DIC/CPO/PIT |
+| `inla_stats` | Likelihoods, GMRFs, INLA inference, DIC/CPO/PIT/WAIC |
 | `inla_fmesher` | Mesh / FEM / barycentric projector |
 | `r-inla` / `py-inla` | R (`extendr`) and Python (`PyO3`) front-ends |
+
+## Boundary responsibilities (Rust IR vs language skins)
+
+Shared model semantics and a flat **execution plan** (effects, priors, constraints,
+observation family, optional projector `A`) live in Rust. R and Python only
+parse host formulas / data frames into that plan and reshape results for local
+conventions. Heavy numeric buffers (CSC triples, `y`, design columns) cross FFI
+as borrowed arrays—not JSON.
+
+| Concern | Rust (`inla_*`) | Python (`py-inla`) | R (`r-inla`) |
+| ---------------------------------- | -------- | -------------- | ----------------- |
+| Likelihood / GMRF / constraint validation | **Rust** | delegate | delegate |
+| Hyperparameter internal ↔ natural maps (`from.theta`) | **Rust** | delegate | delegate |
+| Model / prior / `scale.model` defaults | **Rust** | delegate | delegate |
+| LDLᵀ, CCD/grid, Laplace, DIC/CPO/PIT/WAIC | **Rust** | delegate | delegate |
+| Latent stack layout (block offsets / names) | **Rust** | delegate | delegate |
+| Built-in `Q(θ)` + rank deficiency | **Rust** | delegate | delegate |
+| `rgeneric` / `inla.define` `Q` callbacks | invoke via FFI | **Python callback** | **R callback** |
+| `None` / missing → omit optional fields | — | **PyO3** | — |
+| `NULL` / `NA` handling | — | — | **extendr** |
+| NumPy / SciPy CSC conversion | — | **PyO3 layer** | — |
+| R vector / `data.frame` / `dgCMatrix` conversion | — | — | **extendr layer** |
+| Python exceptions | — | **PyO3** | — |
+| R `stop` / conditions | — | — | **extendr** |
+| `f()` / formula / method conventions | — | **Python** (`formula.py`, `api.py`) | **R** (`inla_rs`, S3 summary/plot) |
+| pandas integration | — | **Python** | — |
+| tidyverse / formula-data ergonomics | — | — | **R** |
+
+Target: adapters stay thin; if R and Python disagree numerically for the same
+plan, the bug belongs in Rust (or the plan each adapter emitted).
+
+### Option A: Spec / Plan IR in `inla_stats`
+
+Plan types live in [`crates/inla_stats/src/plan.rs`](crates/inla_stats/src/plan.rs)
+and are re-exported by `inla_core` (facade). This avoids a `core ↔ stats` cycle.
+
+```text
+R / Python skins
+    → ModelSpec          (language-neutral request; Option = use default)
+    → resolve()          (validate + statistical/engine defaults)
+    → ModelPlan          (executable IR + LatentLayout + hyper transforms)
+    → inla_stats engine  (e.g. run_gaussian_ar1_plan for the v1 slice)
+         → inla_math / inla_fmesher
+```
+
+- **v1 slice:** one `Ar1` effect + fixed-precision Gaussian, η = x.
+- Bindings fast-path when formula is `y ~ -1 + f(idx, model='ar1')` with
+  identity index (`0..n-1` or `1..n`): `py-inla` → `run_gaussian_ar1_plan`,
+  `r-inla` → `inla_rs_run_gaussian_ar1_plan`.
+- **Shared structured θ→Q:** [`crates/inla_stats/src/structured.rs`](crates/inla_stats/src/structured.rs)
+  (`build_structured_precision` / `structured_constraints`). R structured runner and
+  Python `build_prior` (non-rgeneric / non-group / non-spde) both call this so model
+  `match` arms are not duplicated in each binding.
+- No formula / `PyObject` / `SEXP` in `ModelSpec` or `ModelPlan`.
+- Binding/API defaults stay in R/Python; statistical + engine defaults in `resolve`.
+
+### The three anti-drift mechanisms
+
+1. **Model registry** —
+   [`crates/inla_stats/src/registry.rs`](crates/inla_stats/src/registry.rs).
+   `model_metadata(model, order, group_model, cyclic)` returns θ-length, default
+   θ, rank deficiency, `scale.model` default, per-θ labels + natural-scale
+   transforms, and default priors. R (`.inla_rs_model_meta`) and Python
+   (`_model_meta`) both cache-wrap it; neither keeps a local table, so a new
+   model needs no binding edits.
+2. **Named option bag** —
+   [`crates/inla_stats/src/options.rs`](crates/inla_stats/src/options.rs).
+   Skins pass a `list`/`dict` to `resolve_compute_options`, which canonicalizes
+   R dots and Python underscores, fills defaults and *rejects unknown keys*. A
+   new control is one Rust field plus an optional alias, not a new positional
+   FFI argument.
+3. **Cross-language conformance test** —
+   [`py-inla/tests/test_cross_language_conformance.py`](py-inla/tests/test_cross_language_conformance.py)
+   with the R driver in `py-inla/tests/conformance/fit_models.R`. The same five
+   models are fitted in both languages and θ, mlik, DIC, WAIC, hyperparameter
+   labels/mean/sd and random-effect means are compared elementwise. Skips when
+   `Rscript` or `target/release/libinla_rs.so` is missing.
 
 ## Legend
 
