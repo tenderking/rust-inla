@@ -154,20 +154,11 @@ impl LatentEffectPlan {
 }
 
 /// Engine / integration knobs as requested.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ComputationSpec {
     /// `"ccd"` or `"grid"` (and future strategies).
     pub strategy: Option<String>,
     pub step_or_f0: Option<f64>,
-}
-
-impl Default for ComputationSpec {
-    fn default() -> Self {
-        Self {
-            strategy: None,
-            step_or_f0: None,
-        }
-    }
 }
 
 /// Resolved computation settings.

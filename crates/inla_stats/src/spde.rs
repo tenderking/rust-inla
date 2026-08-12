@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(a.rows(), 1);
         assert_eq!(a.cols(), 3);
         assert!((*a.get(0, 0).unwrap_or(&0.0) - 1.0).abs() < 1e-12);
-        assert!(a.get(0, 1).map(|v| *v).unwrap_or(0.0).abs() < 1e-12);
+        assert!(a.get(0, 1).copied().unwrap_or(0.0).abs() < 1e-12);
     }
 
     #[test]

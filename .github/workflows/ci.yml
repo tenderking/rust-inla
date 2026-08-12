@@ -28,10 +28,11 @@ jobs:
 
       - name: Run Clippy
         # r-inla needs a local R install (extendr); covered later by an R smoke job.
-        run: cargo clippy --workspace --exclude r-inla --all-targets -- -D warnings
+        # inla_sys --all-features enables bindgen against a local gmrflib tree.
+        run: cargo clippy --workspace --exclude r-inla --exclude inla_sys --all-targets -- -D warnings
 
       - name: Run Mathematical Suite (cargo test)
-        run: cargo test --workspace --exclude r-inla --all-features --verbose
+        run: cargo test --workspace --exclude r-inla --exclude inla_sys --all-features --verbose
 
   # Job 2: Cross-Platform Build Validation (PyO3 + Maturin)
   python-bindings-check:

@@ -12,27 +12,25 @@ use pyo3::types::PyDict;
 fn math_error_to_py(py: Python<'_>, err: MathError) -> PyErr {
     if err.is_linalg() {
         let msg = err.to_string();
-        if let Ok(np) = py.import("numpy") {
-            if let Ok(linalg) = np.getattr("linalg") {
-                if let Ok(exc) = linalg.getattr("LinAlgError") {
-                    return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
-                        PyValueError::new_err(err.to_string())
-                            .into_bound_py_any(py)
-                            .unwrap()
-                    }));
-                }
-            }
+        if let Ok(np) = py.import("numpy")
+            && let Ok(linalg) = np.getattr("linalg")
+            && let Ok(exc) = linalg.getattr("LinAlgError")
+        {
+            return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
+                PyValueError::new_err(err.to_string())
+                    .into_bound_py_any(py)
+                    .unwrap()
+            }));
         }
-        if let Ok(sp) = py.import("scipy") {
-            if let Ok(linalg) = sp.getattr("linalg") {
-                if let Ok(exc) = linalg.getattr("LinAlgError") {
-                    return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
-                        PyValueError::new_err(err.to_string())
-                            .into_bound_py_any(py)
-                            .unwrap()
-                    }));
-                }
-            }
+        if let Ok(sp) = py.import("scipy")
+            && let Ok(linalg) = sp.getattr("linalg")
+            && let Ok(exc) = linalg.getattr("LinAlgError")
+        {
+            return PyErr::from_value(exc.call1((msg,)).unwrap_or_else(|_| {
+                PyValueError::new_err(err.to_string())
+                    .into_bound_py_any(py)
+                    .unwrap()
+            }));
         }
         return PyValueError::new_err(msg);
     }
@@ -529,9 +527,7 @@ fn run_inla_inference_py(
         )
     });
 
-    if let Err(err) = py.check_signals() {
-        return Err(err);
-    }
+    py.check_signals()?;
     if let Some(err) = py_err_store.lock().unwrap().take() {
         if err.to_string().contains("KeyboardInterrupt") {
             return Err(pyo3::exceptions::PyKeyboardInterrupt::new_err(()));

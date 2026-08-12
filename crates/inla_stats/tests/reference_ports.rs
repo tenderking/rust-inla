@@ -161,7 +161,7 @@ fn port_fgn_approx_order4_gaussian() {
             })
         })
         .collect();
-    obs.extend(std::iter::repeat(Obs::None).take(n_lat - n));
+    obs.extend(std::iter::repeat_n(Obs::None, n_lat - n));
 
     let build_prior = |theta: &[f64]| {
         let tau = theta[0].exp().clamp(1e-3, 1e4);
