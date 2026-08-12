@@ -110,17 +110,40 @@ pub mod mesh {
     pub use inla_fmesher::{MeshSummary, read_mesh_summary};
 }
 
+/// Structured multi-effect θ→Q — [`inla_stats::structured`].
+pub mod structured {
+    pub use inla_stats::structured::*;
+}
+
+/// Per-model metadata registry — [`inla_stats::registry`].
+pub mod registry {
+    pub use inla_stats::registry::*;
+}
+
+/// Named control/option bag — [`inla_stats::options`].
+pub mod options {
+    pub use inla_stats::options::*;
+}
+
+/// Language-neutral ModelSpec / ModelPlan IR — [`inla_stats::plan`].
+pub mod plan {
+    pub use inla_stats::plan::*;
+}
+
 // --- Stats flat re-exports (previous inla_core public API) ---
 pub use inla_stats::{
-    Ar1Precision, BinomialObs, ClosureLatentModel, ConstraintMethod, ConstraintSpec, CpoResult,
-    DicResult, DynClosureLatentModel, ExponentialSurvivalObs, GammaPrior, GaussianObs,
-    GaussianPrior, HARD_CONSTRAINT_KAPPA, HyperPriorStack, IdentityProjection, InferenceResult,
-    LaplaceObs, LatentModel, Link, Marginal1D, MarginalOptions, ModelConfig, NegativeBinomialObs,
-    Obs, PoissonObs, PriorFamily, PriorSpec, ProjectionMapper, SparseProjectionMapper,
-    WeibullSurvivalObs, ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType,
-    ar1_precision, ar1_precision_csc, arp_precision_csc, augment_precision_csc,
-    besag_precision_csc, bym_precision_csc, bym2_precision_csc, compute_cpo_pit, compute_dic,
-    compute_hessian, compute_marginal_log_lik_gaussian, crw1_precision_csc, crw2_precision_csc,
+    Ar1Precision, BinomialObs, ClosureLatentModel, ComputationPlan, ComputationSpec,
+    ConstraintMethod, ConstraintSpec, CpoResult, DicResult, DynClosureLatentModel,
+    ExponentialSurvivalObs, GammaPrior, GaussianObs, GaussianPrior, HARD_CONSTRAINT_KAPPA,
+    HyperPriorStack, HyperSlotPlan, HyperTransformKind, IdentityProjection, InferenceResult,
+    LaplaceObs, LatentBlockLayout, LatentEffectPlan, LatentEffectSpec, LatentLayout, LatentModel,
+    LikelihoodPlan, LikelihoodSpec, Link, Marginal1D, MarginalOptions, ModelConfig, ModelPlan,
+    ModelSpec, NegativeBinomialObs, Obs, PlanError, PoissonObs, PriorFamily, PriorSpec,
+    ProjectionMapper, SparseProjectionMapper, WaicResult, WeibullSurvivalObs,
+    ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision,
+    ar1_precision_csc, arp_precision_csc, augment_precision_csc, besag_precision_csc,
+    bym_precision_csc, bym2_precision_csc, compute_cpo_pit, compute_dic, compute_hessian,
+    compute_marginal_log_lik_gaussian, compute_waic, crw1_precision_csc, crw2_precision_csc,
     eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
     eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
     eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
@@ -130,11 +153,15 @@ pub use inla_stats::{
     fgn_precision_csc, find_latent_mode, find_latent_mode_a, find_latent_mode_a_with_solver,
     gaussian_mixture_marginal, hyperpar_marginals, iid_precision_csc, marginal_cdf,
     marginal_quantiles, marginal_summary_quantiles, matern2d_precision_csc, model_rank_deficiency,
-    nelder_mead, project_constraints, read_graph_file, run_inla_inference, run_inla_inference_a,
+    nelder_mead, plane_constraint_2d, project_constraints, read_graph_file, resolve,
+    run_gaussian_ar1_plan, run_inla_inference, run_inla_inference_a,
     run_inla_inference_a_cancellable, run_inla_inference_model, rw1_cyclic_precision_csc,
     rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc, rw2d_precision_csc,
-    seasonal_precision_csc, spde_params_from_theta, spde_precision_csc, spde_projector_csc,
-    spde_projector_from_xy, sum_to_zero_constraint, two_diid_precision_csc,
+    seasonal_constraint, seasonal_precision_csc, spde_params_from_theta, spde_precision_csc, spde_projector_csc,
+    spde_projector_from_xy, structured_constraints, structured_prior_stack,
+    sum_to_zero_constraint, two_diid_precision_csc, ComputeOptions, HyperSlotMeta, IndexSelection,
+    ModelMeta, OptionValue, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, StructuredEffect,
+    build_structured_precision, model_metadata, resolve_compute_options,
 };
 
 pub mod marginals {

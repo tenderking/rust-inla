@@ -383,7 +383,7 @@ fn port_rw2d_gaussian() {
         .collect();
     let obs = gaussian_obs(&y, 30.0);
     let build_prior = |theta: &[f64]| rw2d_precision_csc(nrow, ncol, theta[0].exp(), false, false);
-    let constr = sum_to_zero_constraint(n, 2).unwrap();
+    let constr = inla_stats::plane_constraint_2d(nrow, ncol).unwrap();
     let result = run_inla_inference_a(
         &[0.0],
         &build_prior,

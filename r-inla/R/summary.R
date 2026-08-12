@@ -31,6 +31,11 @@ summary.inla_rs <- function(object, digits = 3L, ...) {
         mean.deviance = object$mean_deviance,
         p.eff = object$effective_params
       ),
+      waic = c(
+        waic = object$waic,
+        lppd = object$waic_lppd,
+        p.eff = object$waic_effective_params
+      ),
       digits = digits
     ),
     class = "summary.inla_rs"
@@ -55,7 +60,7 @@ print.summary.inla_rs <- function(x, ...) {
     }
   }
   if (!is.null(x$hyperpar)) {
-    cat("Hyperparameters (internal scale):\n")
+    cat("Model hyperparameters:\n")
     print(round(x$hyperpar, dig))
     cat("\n")
   }
@@ -67,6 +72,11 @@ print.summary.inla_rs <- function(x, ...) {
   if (!is.null(x$dic) && all(is.finite(x$dic))) {
     cat("DIC:\n")
     print(round(x$dic, dig))
+    cat("\n")
+  }
+  if (!is.null(x$waic) && all(is.finite(x$waic))) {
+    cat("WAIC:\n")
+    print(round(x$waic, dig))
   }
   invisible(x)
 }

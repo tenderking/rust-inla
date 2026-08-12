@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 
 _F_CALL_RE = re.compile(
@@ -77,7 +77,8 @@ class FTerm:
     model: str = "iid"
     order: int = 0
     graph: Any = None
-    scale_model: bool = False
+    #: ``None`` means "use the registry default for this model".
+    scale_model: Optional[bool] = None
     initial: Any = None
     kwargs: dict = field(default_factory=dict)
 
@@ -164,7 +165,8 @@ def parse_formula(formula: str) -> ParsedFormula:
         model = str(kw.pop("model", "iid")).lower()
         order = int(kw.pop("order", 0) or 0)
         graph = kw.pop("graph", None)
-        scale_model = bool(kw.pop("scale_model", False))
+        raw_scale = kw.pop("scale_model", None)
+        scale_model = None if raw_scale is None else bool(raw_scale)
         initial = kw.pop("initial", None)
         f_terms.append(
             FTerm(

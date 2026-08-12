@@ -280,6 +280,15 @@ pub struct PyInferenceResult {
     /// Effective number of parameters (pD).
     #[pyo3(get)]
     pub effective_params: f64,
+    /// Watanabe-Akaike Information Criterion.
+    #[pyo3(get)]
+    pub waic: f64,
+    /// Log pointwise predictive density used in WAIC.
+    #[pyo3(get)]
+    pub waic_lppd: f64,
+    /// WAIC effective number of parameters (p_waic).
+    #[pyo3(get)]
+    pub waic_effective_params: f64,
     /// Conditional Predictive Ordinates (CPO) for outlier detection.
     /// Elements can be None if the CPO computation failed for that observation.
     #[pyo3(get)]
@@ -533,7 +542,11 @@ fn run_inla_inference_py(
     let result = result.map_err(|msg| string_error_to_py(py, msg))?;
 
     // 5. Build and return the wrapped result
-    Ok(PyInferenceResult {
+    Ok(inference_result_to_py(result))
+}
+
+fn inference_result_to_py(result: inla_core::InferenceResult) -> PyInferenceResult {
+    PyInferenceResult {
         mode: result.mode,
         hessian: result.hessian,
         latent_means: result.latent_means,
@@ -545,6 +558,9 @@ fn run_inla_inference_py(
         dic: result.dic,
         mean_deviance: result.mean_deviance,
         effective_params: result.effective_params,
+        waic: result.waic,
+        waic_lppd: result.waic_lppd,
+        waic_effective_params: result.waic_effective_params,
         cpo: result.cpo,
         pit: result.pit,
         cpo_n_failures: result.cpo_n_failures,
@@ -562,7 +578,270 @@ fn run_inla_inference_py(
             .map(to_py_marginal)
             .collect(),
         marginals_predictor_indices: result.marginals_predictor_indices,
-    })
+    }
+}
+
+/// Orthonormal (constant, row-trend, col-trend) constraint rows for an intrinsic lattice.
+///
+/// Returns `(a, e)` with `a` row-major of shape `(3, nrow * ncol)`.
+#[pyfunction]
+fn plane_constraint_2d(nrow: usize, ncol: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    let c = inla_core::plane_constraint_2d(nrow, ncol).map_err(PyValueError::new_err)?;
+    Ok((c.a, c.e))
+}
+
+/// Orthonormal basis of the seasonal null space (`season - 1` rows).
+#[pyfunction]
+fn seasonal_constraint(n: usize, season: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    let c = inla_core::seasonal_constraint(n, season).map_err(PyValueError::new_err)?;
+    Ok((c.a, c.e))
+}
+
+/// Per-model metadata: θ length, defaults, rank deficiency, hyper labels/transforms.
+#[pyfunction]
+#[pyo3(signature = (model, order=0, group_model=None, cyclic=false))]
+fn model_metadata(
+    py: Python<'_>,
+    model: &str,
+    order: usize,
+    group_model: Option<&str>,
+    cyclic: bool,
+) -> PyResult<Py<PyDict>> {
+    let meta = inla_core::model_metadata(model, order, group_model, cyclic)
+        .map_err(PyValueError::new_err)?;
+    let d = PyDict::new(py);
+    d.set_item("model", meta.model)?;
+    d.set_item("theta_len", meta.theta_len)?;
+    d.set_item("default_theta", meta.default_theta)?;
+    d.set_item("rank_deficiency", meta.rank_deficiency)?;
+    d.set_item("default_scale_model", meta.default_scale_model)?;
+    d.set_item(
+        "hyper_internal",
+        meta.hyper
+            .iter()
+            .map(|h| h.internal_label.clone())
+            .collect::<Vec<String>>(),
+    )?;
+    d.set_item(
+        "hyper_labels",
+        meta.hyper.iter().map(|h| h.label.clone()).collect::<Vec<String>>(),
+    )?;
+    d.set_item(
+        "hyper_transforms",
+        meta.hyper
+            .iter()
+            .map(|h| h.transform_tag().to_string())
+            .collect::<Vec<String>>(),
+    )?;
+    d.set_item("default_priors", meta.default_priors)?;
+    Ok(d.into())
+}
+
+/// Latent model names accepted by the structured path.
+#[pyfunction]
+fn supported_models() -> Vec<String> {
+    inla_core::SUPPORTED_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Validate + fill defaults for a control dict. Unknown keys raise.
+#[pyfunction]
+fn resolve_compute_options(py: Python<'_>, controls: &Bound<'_, PyDict>) -> PyResult<Py<PyDict>> {
+    let mut pairs: Vec<(String, inla_core::OptionValue)> = Vec::new();
+    for (key, value) in controls.iter() {
+        let name: String = key.extract()?;
+        pairs.push((name.clone(), py_to_option_value(&name, &value)?));
+    }
+    let opts = inla_core::resolve_compute_options(&pairs).map_err(PyValueError::new_err)?;
+
+    let d = PyDict::new(py);
+    d.set_item("strategy", opts.strategy)?;
+    d.set_item("step_or_f0", opts.step_or_f0)?;
+    d.set_item("deterministic", opts.deterministic)?;
+    d.set_item("fixed_prec", opts.fixed_prec)?;
+    d.set_item("dic", opts.dic)?;
+    d.set_item("waic", opts.waic)?;
+    d.set_item("cpo", opts.cpo)?;
+    d.set_item(
+        "return_marginals_latent",
+        selection_to_py(py, &opts.return_marginals_latent)?,
+    )?;
+    d.set_item(
+        "return_marginals_predictor",
+        selection_to_py(py, &opts.return_marginals_predictor)?,
+    )?;
+    Ok(d.into())
+}
+
+fn selection_to_py(py: Python<'_>, sel: &inla_core::IndexSelection) -> PyResult<PyObject> {
+    match sel {
+        inla_core::IndexSelection::None => false.into_py_any(py),
+        inla_core::IndexSelection::All => true.into_py_any(py),
+        inla_core::IndexSelection::Some(idx) => idx.clone().into_py_any(py),
+    }
+}
+
+fn py_to_option_value(name: &str, value: &Bound<'_, PyAny>) -> PyResult<inla_core::OptionValue> {
+    if value.is_instance_of::<pyo3::types::PyBool>() {
+        return Ok(inla_core::OptionValue::Bool(value.extract()?));
+    }
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(inla_core::OptionValue::Text(s));
+    }
+    if let Ok(v) = value.extract::<f64>() {
+        return Ok(inla_core::OptionValue::Num(v));
+    }
+    if let Ok(v) = value.extract::<Vec<f64>>() {
+        return Ok(inla_core::OptionValue::Nums(v));
+    }
+    Err(PyValueError::new_err(format!(
+        "control '{name}': unsupported type (use bool, number, string, or sequence of numbers)"
+    )))
+}
+
+/// Build block-diagonal Q from structured effect metadata (shared with R).
+#[pyfunction(name = "build_structured_precision")]
+#[pyo3(signature = (effects, theta, fixed_prec=1e-4))]
+fn build_structured_precision_py(
+    effects: Vec<Bound<'_, PyDict>>,
+    theta: Vec<f64>,
+    fixed_prec: f64,
+) -> PyResult<PyCscMatrix> {
+    let parsed = parse_structured_effects(&effects)?;
+    let csc = inla_core::build_structured_precision(&parsed, &theta, fixed_prec)
+        .map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Linear constraints for a structured effect list: `(a_rowmajor, e)` or `None`.
+#[pyfunction(name = "structured_constraints")]
+fn structured_constraints_py(
+    effects: Vec<Bound<'_, PyDict>>,
+) -> PyResult<Option<(Vec<f64>, Vec<f64>)>> {
+    let parsed = parse_structured_effects(&effects)?;
+    match inla_core::structured_constraints(&parsed).map_err(PyValueError::new_err)? {
+        None => Ok(None),
+        Some(c) => Ok(Some((c.a, c.e))),
+    }
+}
+
+fn parse_structured_effects(effects: &[Bound<'_, PyDict>]) -> PyResult<Vec<inla_core::StructuredEffect>> {
+    let mut out = Vec::with_capacity(effects.len());
+    for d in effects {
+        let model: String = d
+            .get_item("model")?
+            .ok_or_else(|| PyValueError::new_err("effect missing model"))?
+            .extract()?;
+        let n: usize = d
+            .get_item("n")?
+            .ok_or_else(|| PyValueError::new_err("effect missing n"))?
+            .extract()?;
+        let theta_len: usize = d
+            .get_item("theta_len")?
+            .ok_or_else(|| PyValueError::new_err("effect missing theta_len"))?
+            .extract()?;
+        let scale_model: bool = d
+            .get_item("scale_model")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(false);
+        let order: i32 = d
+            .get_item("order")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let nrow: usize = d
+            .get_item("nrow")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let ncol: usize = d
+            .get_item("ncol")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let cyclic: bool = d
+            .get_item("cyclic")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(false);
+        let matern_nu: usize = d
+            .get_item("matern_nu")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(1);
+        let crw2_layout: String = d
+            .get_item("crw2_layout")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or_else(|| "simple".to_string());
+        let positions: Option<Vec<f64>> = d
+            .get_item("positions")?
+            .map(|v| v.extract())
+            .transpose()?;
+        let adj: Option<Vec<Vec<usize>>> = d.get_item("adj")?.map(|v| v.extract()).transpose()?;
+        out.push(inla_core::StructuredEffect {
+            model,
+            n,
+            scale_model,
+            theta_len,
+            order,
+            adj,
+            positions,
+            crw2_layout,
+            nrow,
+            ncol,
+            cyclic,
+            matern_nu,
+        });
+    }
+    Ok(out)
+}
+
+/// Gaussian + single AR(1), η = x, via [`inla_core::ModelSpec`] / [`resolve`].
+#[pyfunction]
+#[pyo3(signature = (
+    y,
+    name="time",
+    obs_precision=100.0,
+    strategy="ccd",
+    step_or_f0=1.0,
+    initial_theta=None,
+))]
+fn run_gaussian_ar1_plan(
+    py: Python<'_>,
+    y: Vec<f64>,
+    name: &str,
+    obs_precision: f64,
+    strategy: &str,
+    step_or_f0: f64,
+    initial_theta: Option<Vec<f64>>,
+) -> PyResult<PyInferenceResult> {
+    let n = y.len();
+    let spec = inla_core::ModelSpec {
+        likelihood: inla_core::LikelihoodSpec::Gaussian {
+            precision: Some(obs_precision),
+        },
+        effects: vec![inla_core::LatentEffectSpec::Ar1 {
+            name: name.to_string(),
+            n,
+            priors: None,
+        }],
+        computation: inla_core::ComputationSpec {
+            strategy: Some(strategy.to_string()),
+            step_or_f0: Some(step_or_f0),
+        },
+        initial_theta,
+    };
+    let result = py.allow_threads(|| {
+        let plan = inla_core::resolve(spec).map_err(|e| e.0)?;
+        inla_core::run_gaussian_ar1_plan(&plan, &y).map_err(|e| e.0)
+    });
+    Ok(inference_result_to_py(
+        result.map_err(|msg| string_error_to_py(py, msg))?,
+    ))
 }
 
 /// Helper function to parse python dicts representing observations.
@@ -1072,5 +1351,13 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hyper_prior_stack_log_density, m)?)?;
     m.add_function(wrap_pyfunction!(default_hyper_priors, m)?)?;
     m.add_function(wrap_pyfunction!(run_inla_inference_py, m)?)?;
+    m.add_function(wrap_pyfunction!(run_gaussian_ar1_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(build_structured_precision_py, m)?)?;
+    m.add_function(wrap_pyfunction!(structured_constraints_py, m)?)?;
+    m.add_function(wrap_pyfunction!(model_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(plane_constraint_2d, m)?)?;
+    m.add_function(wrap_pyfunction!(seasonal_constraint, m)?)?;
+    m.add_function(wrap_pyfunction!(supported_models, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_compute_options, m)?)?;
     Ok(())
 }
