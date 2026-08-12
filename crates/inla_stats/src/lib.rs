@@ -12,10 +12,14 @@ pub mod latent_models;
 pub mod marginals;
 pub mod matern2d;
 pub mod model_selection;
+pub mod options;
+pub mod plan;
 pub mod priors;
 pub mod projection;
+pub mod registry;
 pub mod rw2d;
 pub mod spde;
+pub mod structured;
 
 pub use ar1::{Ar1Precision, ar1_precision, ar1_precision_csc};
 pub use arp::arp_precision_csc;
@@ -48,12 +52,28 @@ pub use marginals::{
 };
 pub use matern2d::matern2d_precision_csc;
 pub use model_selection::{
-    CpoResult, DicResult, compute_cpo_pit, compute_dic, compute_marginal_log_lik_gaussian,
+    CpoResult, DicResult, WaicResult, compute_cpo_pit, compute_dic, compute_marginal_log_lik_gaussian,
+    compute_waic,
+};
+pub use options::{
+    ComputeOptions, IndexSelection, OptionValue, resolve_compute_options,
+};
+pub use plan::{
+    ComputationPlan, ComputationSpec, HyperSlotPlan, HyperTransformKind, LatentBlockLayout,
+    LatentEffectPlan, LatentEffectSpec, LatentLayout, LikelihoodPlan, LikelihoodSpec, ModelPlan,
+    ModelSpec, PlanError, resolve, run_gaussian_ar1_plan,
+};
+pub use registry::{
+    HyperSlotMeta, ModelMeta, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, model_metadata,
+    rank_deficiency,
 };
 pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use rw2d::rw2d_precision_csc;
 pub use spde::{
     spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
+};
+pub use structured::{
+    StructuredEffect, build_structured_precision, structured_constraints, structured_prior_stack,
 };
 
 pub use latent::{ClosureLatentModel, DynClosureLatentModel, LatentModel};
@@ -62,5 +82,6 @@ pub use projection::{IdentityProjection, ProjectionMapper, SparseProjectionMappe
 // Re-export math primitives commonly used with stats APIs.
 pub use inla_math::{
     ConstraintMethod, ConstraintSpec, CscMatrix, Eval1D, HARD_CONSTRAINT_KAPPA,
-    augment_precision_csc, model_rank_deficiency, project_constraints, sum_to_zero_constraint,
+    augment_precision_csc, model_rank_deficiency, plane_constraint_2d, project_constraints,
+    seasonal_constraint, sum_to_zero_constraint,
 };
