@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Mapping, Optional, Sequence, Union
 
 import numpy as np
@@ -86,79 +87,73 @@ def _resolve_graph(f_term, data: Mapping[str, Any]) -> list[list[int]]:
     return _adj_from_matrix(g)
 
 
+@lru_cache(maxsize=None)
+def _model_meta(
+    model: str, order: int = 0, group_model: Optional[str] = None, cyclic: bool = False
+) -> Mapping[str, Any]:
+    """Per-model metadata from the shared Rust registry (cached; called per θ node)."""
+    return core.model_metadata(
+        model.lower(), order=int(order), group_model=group_model, cyclic=bool(cyclic)
+    )
+
+
 def _theta_len(model: str, order: int = 0, group_model: Optional[str] = None) -> int:
-    model = model.lower()
-    if model in ("iid", "rw1", "rw2", "rw2d", "besag", "seasonal", "crw1", "crw2"):
-        main = 1
-    elif model in ("ar1", "fgn", "bym", "bym2", "matern2d", "spde"):
-        main = 2
-    elif model in ("ar", "arp"):
-        p = order if order > 0 else 2
-        main = 1 + p
-    elif model == "fixed":
-        main = 0
-    else:
-        main = 1
-    if not group_model:
-        return main
-    g = group_model.lower()
-    if g in ("iid", "rw1", "rw2"):
-        return main + 1
-    if g == "ar1":
-        return main + 2
-    raise ValueError(f"unsupported control.group model '{group_model}'")
+    return int(_model_meta(model, order, group_model)["theta_len"])
 
 
 def _default_theta(
     model: str, order: int = 0, group_model: Optional[str] = None
 ) -> list[float]:
-    model = model.lower()
-    if model == "fgn" and order in (3, 4):
-        main = [1.0, 2.0]
-    elif model in ("ar1", "fgn", "spde"):
-        main = [0.0, 0.0]
-    elif model == "bym":
-        main = [1.0, 1.0]
-    elif model == "bym2":
-        main = [1.0, 0.0]  # log_tau, logit_phi (phi≈0.5)
-    elif model == "matern2d":
-        main = [0.0, 0.0]  # log_prec, log_range
-    elif model in ("ar", "arp"):
-        p = order if order > 0 else 2
-        main = [0.0] * (1 + p)
-    elif model == "fixed":
-        main = []
-    elif model == "besag":
-        main = [1.0]
-    else:
-        main = [0.0]
-    if not group_model:
-        return main
-    g = group_model.lower()
-    if g in ("iid", "rw1", "rw2"):
-        return main + [0.0]
-    if g == "ar1":
-        return main + [0.0, 0.0]
-    raise ValueError(f"unsupported control.group model '{group_model}'")
+    return list(_model_meta(model, order, group_model)["default_theta"])
 
 
 def _rank_deficiency(model: str, cyclic: bool = False) -> int:
-    m = model.lower()
-    if m == "rw2d":
-        return 1 if cyclic else 2
-    if m in (
-        "rw1",
-        "rw2",
-        "besag",
-        "besag2",
-        "seasonal",
-        "bym",
-        "bym2",
-        "crw1",
-        "crw2",
-    ):
-        return 1
-    return 0
+    return int(_model_meta(model, 0, None, cyclic)["rank_deficiency"])
+
+
+def _hyper_labels(
+    types: Sequence[str],
+    names: Sequence[str],
+    orders: Sequence[int],
+    group_models: Sequence[Optional[str]],
+) -> tuple[list[str], list[str]]:
+    """(labels, transform tags) per internal θ, in optimizer order."""
+    labels: list[str] = []
+    transforms: list[str] = []
+    for typ, nm, order, gm in zip(types, names, orders, group_models):
+        if typ == "fixed":
+            continue
+        meta = _model_meta(typ, order, gm)
+        for lab, tr in zip(meta["hyper_labels"], meta["hyper_transforms"]):
+            labels.append(f"{lab} for {nm}")
+            transforms.append(tr)
+    return labels, transforms
+
+
+def _to_natural(tag: str, theta: float) -> float:
+    if tag == "exp":
+        return float(np.exp(theta))
+    if tag == "rho":
+        return float(2.0 / (1.0 + np.exp(-theta)) - 1.0)
+    if tag == "phi":
+        return float(1.0 / (1.0 + np.exp(-theta)))
+    return float(theta)
+
+
+def _natural_sd(tag: str, theta_mean: float, theta_sd: float) -> float:
+    """Delta-method sd matching Rust `HyperTransformKind::natural_sd`."""
+    if not np.isfinite(theta_sd):
+        return float("nan")
+    if tag == "exp":
+        return float(np.exp(theta_mean) * theta_sd)
+    if tag == "rho":
+        r = _to_natural(tag, theta_mean)
+        return float(0.5 * (1.0 - r * r) * theta_sd)
+    if tag == "phi":
+        p = _to_natural(tag, theta_mean)
+        return float(p * (1.0 - p) * theta_sd)
+    return float(theta_sd)
+
 
 def _group_model_from_ft(ft) -> Optional[str]:
     """Extract control.group model name from f() kwargs, if present."""
@@ -304,6 +299,35 @@ def _control_get(cc: Mapping[str, Any], *keys: str) -> Any:
         if dotted in cc:
             return cc[dotted]
     return None
+
+
+def _resolve_controls(
+    control_compute: Optional[Mapping[str, Any]],
+    *,
+    strategy: str,
+    step_or_f0: float,
+    fixed_prec: float,
+    deterministic: bool,
+) -> dict[str, Any]:
+    """Validate + default engine controls in Rust, so R and Python agree on names."""
+    bag: dict[str, Any] = {
+        "strategy": str(strategy),
+        "step_or_f0": float(step_or_f0),
+        "fixed_prec": float(fixed_prec),
+        "deterministic": bool(deterministic),
+    }
+    for key, value in (control_compute or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, (bool, np.bool_)):
+            bag[key] = bool(value)
+        elif isinstance(value, (int, float, np.integer, np.floating)):
+            bag[key] = float(value)
+        elif isinstance(value, str):
+            bag[key] = value
+        else:
+            bag[key] = [float(v) for v in np.asarray(value).reshape(-1)]
+    return dict(core.resolve_compute_options(bag))
 
 
 def _resolve_marginal_indices(
@@ -481,6 +505,96 @@ def _design_matrix(parsed: ParsedFormula, data: Mapping[str, Any], n_obs: int) -
     return x
 
 
+def _identity_ar1_index(idx: np.ndarray, n_obs: int) -> bool:
+    """True when idx is 0..n-1 or 1..n (so η = x with no remapping)."""
+    if idx.shape != (n_obs,):
+        return False
+    a0 = np.arange(n_obs, dtype=int)
+    a1 = np.arange(1, n_obs + 1, dtype=int)
+    return bool(np.array_equal(idx, a0) or np.array_equal(idx, a1))
+
+
+def _try_gaussian_ar1_plan(
+    *,
+    formula: str,
+    parsed,
+    data: Mapping[str, Any],
+    family: str,
+    y: np.ndarray,
+    n_obs: int,
+    obs_precision: float,
+    strategy: str,
+    step_or_f0: float,
+    initial_theta: Optional[Sequence[float]],
+    control_compute: Optional[Mapping[str, Any]],
+    latent_marginal_indices: Optional[Sequence[int]],
+    predictor_marginal_indices: Optional[Sequence[int]],
+    verbose: bool,
+) -> Optional[Any]:
+    """Fast path: single AR1 + Gaussian, no fixed effects, identity index → ModelPlan."""
+    fam = str(family).lower()
+    if fam not in ("gaussian", "normal"):
+        return None
+    if parsed.intercept or parsed.fixed_terms:
+        return None
+    if len(parsed.f_terms) != 1:
+        return None
+    ft = parsed.f_terms[0]
+    if str(ft.model).lower() != "ar1":
+        return None
+    if ft.kwargs.get("group") is not None:
+        return None
+    # Opt-in full latent/predictor marginal grids still use the generic path.
+    if latent_marginal_indices is not None or predictor_marginal_indices is not None:
+        return None
+    if control_compute:
+        for k in (
+            "return_marginals_latent",
+            "return.marginals.random",
+            "return_marginals_predictor",
+            "return.marginals.predictor",
+        ):
+            if control_compute.get(k):
+                return None
+    idx = _get_col(data, ft.index).astype(int)
+    if not _identity_ar1_index(idx, n_obs):
+        return None
+    init = None if initial_theta is None else list(np.asarray(initial_theta, dtype=float).reshape(-1))
+    if verbose:
+        print(f"inla: ModelPlan path (gaussian+ar1) n={n_obs}")
+    result = core.run_gaussian_ar1_plan(
+        y=list(np.asarray(y, dtype=float).reshape(-1)),
+        name=str(ft.index),
+        obs_precision=float(obs_precision),
+        strategy=strategy,
+        step_or_f0=float(step_or_f0),
+        initial_theta=init,
+    )
+    means = np.asarray(result.latent_means, dtype=float)
+    sds = np.sqrt(np.maximum(np.asarray(result.latent_variances, dtype=float), 0.0))
+    out = InlaResult(result)
+    out.summary_random = {
+        str(ft.index): {
+            "mean": means,
+            "sd": sds,
+            "0.025quant": means - 1.96 * sds,
+            "0.5quant": means,
+            "0.975quant": means + 1.96 * sds,
+        }
+    }
+    out.summary_fixed = None
+    labels, transforms = _hyper_labels(["ar1"], [str(ft.index)], [0], [None])
+    out.summary_hyperpar_internal = _internal_hyperpar_table(result)
+    out.summary_hyperpar = _natural_hyperpar_table(
+        out.summary_hyperpar_internal, labels, transforms
+    )
+    out.effects = {"names": [str(ft.index)], "types": ["ar1"], "ns": [n_obs]}
+    out.formula = formula
+    if verbose:
+        print(f"inla: mlik={out.marginal_log_lik:.4f} dic={out.dic:.4f}")
+    return out
+
+
 def _fit(
     formula: str,
     data: Mapping[str, Any],
@@ -552,6 +666,42 @@ def _fit(
             obs_precision = float(np.exp(control_family["hyper"]["prec"]["initial"]))
         except Exception:
             pass
+    # `f(..., obs_precision=)` overrides, matching the R front-end.
+    for ft in parsed.f_terms:
+        if ft.kwargs.get("obs_precision") is not None:
+            obs_precision = float(ft.kwargs["obs_precision"])
+
+    controls = _resolve_controls(
+        control_compute,
+        strategy=strategy,
+        step_or_f0=step_or_f0,
+        fixed_prec=fixed_prec,
+        deterministic=deterministic,
+    )
+    strategy = controls["strategy"]
+    step_or_f0 = controls["step_or_f0"]
+    fixed_prec = controls["fixed_prec"]
+    deterministic = controls["deterministic"]
+
+    if all(g is None for g in resolved_generics):
+        planned = _try_gaussian_ar1_plan(
+            formula=formula,
+            parsed=parsed,
+            data=data,
+            family=family,
+            y=y,
+            n_obs=n_obs,
+            obs_precision=obs_precision,
+            strategy=strategy,
+            step_or_f0=step_or_f0,
+            initial_theta=initial_theta,
+            control_compute=control_compute,
+            latent_marginal_indices=latent_marginal_indices,
+            predictor_marginal_indices=predictor_marginal_indices,
+            verbose=verbose,
+        )
+        if planned is not None:
+            return planned
 
     obs = _build_obs(
         family,
@@ -853,7 +1003,11 @@ def _fit(
         effect_types.append(model)
         effect_orders.append(int(order))
         effect_names.append(ft.index)
-        effect_scale.append(bool(ft.scale_model))
+        effect_scale.append(
+            bool(_model_meta(model)["default_scale_model"])
+            if ft.scale_model is None
+            else bool(ft.scale_model)
+        )
         effect_generics.append(None)
         effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs))
         tlen = _theta_len(model, order, group_model)
@@ -921,6 +1075,42 @@ def _fit(
             precomputed_scales.append(_compute_scale_factor(q_scipy))
         else:
             precomputed_scales.append(1.0)
+
+    use_shared_q = (
+        all(g is None for g in generics)
+        and all(gm is None for gm in group_models)
+        and "spde" not in types
+        and hasattr(core, "build_structured_precision")
+    )
+
+    def _structured_effect_dicts() -> list[dict]:
+        out = []
+        for ei, typ in enumerate(types):
+            order_enc = int(orders[ei])
+            if typ in ("rw2d", "matern2d"):
+                # Match R: ±nrow (negative ⇒ cyclic)
+                nrow_i = int(nrows[ei])
+                order_enc = -nrow_i if cyclics[ei] else nrow_i
+            elif typ == "seasonal":
+                order_enc = int(seasons_list[ei])
+            d = {
+                "model": typ,
+                "n": int(ns[ei]),
+                "theta_len": int(theta_lens[ei]),
+                "scale_model": bool(effect_scale[ei]),
+                "order": order_enc,
+                "nrow": int(nrows[ei]),
+                "ncol": int(ncols[ei]),
+                "cyclic": bool(cyclics[ei]),
+                "matern_nu": int(nus[ei]),
+                "crw2_layout": str(layouts_list[ei]),
+            }
+            if positions_list[ei] is not None:
+                d["positions"] = positions_list[ei]
+            if graphs[ei] is not None:
+                d["adj"] = graphs[ei]
+            out.append(d)
+        return out
 
     def _main_precision(typ, n_main, ti, ei):
         if typ == "iid":
@@ -1009,6 +1199,10 @@ def _fit(
 
     def build_prior(th):
         th = list(th)
+        if use_shared_q:
+            return core.build_structured_precision(
+                _structured_effect_dicts(), th, float(fixed_prec)
+            )
         blocks = []
         off = 0
         for ei, typ in enumerate(types):
@@ -1055,21 +1249,50 @@ def _fit(
                 owned.append(sparse.csc_matrix(b).copy())
         return core.PyCscMatrix.from_scipy(sparse.block_diag(owned, format="csc"))
 
-    constr_parts: list[tuple[list[float], list[float]]] = []
-    off = 0
-    for ei, (typ, n_e, cyclic_flag) in enumerate(zip(types, ns, cyclics)):
-        k = _rank_deficiency(typ, cyclic=cyclic_flag)
-        if k == 0 and typ == "iid" and has_intercept:
-            k = 1
-        if k > 0:
-            # Classic BYM: constrain spatial block u only (first n_main).
-            block_n = n_mains[ei] if typ == "bym" else n_e
-            ba, be = _sum_to_zero_a(block_n, k)
-            constr_parts.append(_embed_constraint(ba, be, block_n, col_off, off))
-        off += n_e
-    stacked = _vstack_constraints(constr_parts)
-    constraints_a = stacked[0] if stacked is not None else None
-    constraints_e = stacked[1] if stacked is not None else None
+    constraints_a = None
+    constraints_e = None
+    if use_shared_q and hasattr(core, "structured_constraints"):
+        shared_c = core.structured_constraints(_structured_effect_dicts())
+        if shared_c is not None:
+            constraints_a, constraints_e = shared_c
+        # Extra: classic INLA sum-to-zero on iid when an intercept is present.
+        if has_intercept:
+            off = 0
+            for ei, (typ, n_e) in enumerate(zip(types, ns)):
+                if typ == "iid":
+                    ba, be = _sum_to_zero_a(n_e, 1)
+                    part = _embed_constraint(ba, be, n_e, col_off, off)
+                    if constraints_a is None:
+                        constraints_a, constraints_e = part
+                    else:
+                        constraints_a = list(constraints_a) + list(part[0])
+                        constraints_e = list(constraints_e) + list(part[1])
+                off += n_e
+    else:
+        constr_parts: list[tuple[list[float], list[float]]] = []
+        off = 0
+        for ei, (typ, n_e, cyclic_flag) in enumerate(zip(types, ns, cyclics)):
+            if typ == "seasonal":
+                season = int(seasons_list[ei])
+                k = max(season - 1, 1)
+            else:
+                k = _rank_deficiency(typ, cyclic=cyclic_flag)
+            if k == 0 and typ == "iid" and has_intercept:
+                k = 1
+            if k > 0:
+                # Classic BYM: constrain spatial block u only (first n_main).
+                block_n = n_mains[ei] if typ == "bym" else n_e
+                if typ == "seasonal":
+                    ba, be = core.seasonal_constraint(block_n, min(season, block_n))
+                elif typ == "rw2d" and not cyclic_flag:
+                    ba, be = core.plane_constraint_2d(int(nrows[ei]), int(ncols[ei]))
+                else:
+                    ba, be = _sum_to_zero_a(block_n, k)
+                constr_parts.append(_embed_constraint(ba, be, block_n, col_off, off))
+            off += n_e
+        stacked = _vstack_constraints(constr_parts)
+        constraints_a = stacked[0] if stacked is not None else None
+        constraints_e = stacked[1] if stacked is not None else None
 
     def log_prior_density(th):
         th = list(th)
@@ -1116,11 +1339,7 @@ def _fit(
             if latent_marginal_indices is not None
             else (
                 _resolve_marginal_indices(
-                    _control_get(
-                        control_compute or {},
-                        "return_marginals_latent",
-                        "return.marginals.random",
-                    ),
+                    controls["return_marginals_latent"],
                     col_off,
                     name="return_marginals_latent",
                 )
@@ -1131,11 +1350,7 @@ def _fit(
             if predictor_marginal_indices is not None
             else (
                 _resolve_marginal_indices(
-                    _control_get(
-                        control_compute or {},
-                        "return_marginals_predictor",
-                        "return.marginals.predictor",
-                    ),
+                    controls["return_marginals_predictor"],
                     n_obs,
                     name="return_marginals_predictor",
                 )
@@ -1167,9 +1382,25 @@ def _fit(
             summary_random[name] = tab
         off += n_e
 
+    # Hyperparameter tables: internal θ as optimized, plus the natural scale
+    # (Precision / Rho / Phi / …) that R reports, using the shared registry labels.
+    label_orders = [
+        theta_lens[ei] if typ == "rgeneric" else effect_orders[ei]
+        for ei, typ in enumerate(effect_types)
+    ]
+    hyper_labels, hyper_transforms = _hyper_labels(
+        effect_types, effect_names, label_orders, group_models
+    )
+    summary_hyperpar_internal = _internal_hyperpar_table(result)
+    summary_hyperpar = _natural_hyperpar_table(
+        summary_hyperpar_internal, hyper_labels, hyper_transforms
+    )
+
     out = InlaResult(result)
     out.summary_random = summary_random
     out.summary_fixed = summary_fixed
+    out.summary_hyperpar = summary_hyperpar
+    out.summary_hyperpar_internal = summary_hyperpar_internal
     out.effects = {
         "names": effect_names,
         "types": effect_types,
@@ -1185,6 +1416,76 @@ def _fit(
     return out
 
 
+def _internal_hyperpar_table(result) -> Optional[dict[str, np.ndarray]]:
+    """Moments/quantiles of each internal θ marginal (mirrors the R front-end)."""
+    mode = np.asarray(result.mode, dtype=float)
+    m = mode.size
+    if m == 0:
+        return None
+    mean = np.full(m, np.nan)
+    sd = np.full(m, np.nan)
+    q025 = np.full(m, np.nan)
+    q50 = mode.copy()
+    q975 = np.full(m, np.nan)
+
+    marginals = list(result.internal_marginals_hyperpar or [])
+    if len(marginals) == m:
+        for j, marg in enumerate(marginals):
+            x = np.asarray(marg.x, dtype=float)
+            y = np.asarray(marg.y, dtype=float)
+            if x.size < 2:
+                continue
+            dx = np.diff(x)
+            mass = float(np.sum(0.5 * (y[:-1] + y[1:]) * dx))
+            if mass <= 0:
+                continue
+            y = y / mass
+            ex = float(np.sum(0.5 * (x[:-1] * y[:-1] + x[1:] * y[1:]) * dx))
+            ex2 = float(
+                np.sum(0.5 * (x[:-1] ** 2 * y[:-1] + x[1:] ** 2 * y[1:]) * dx)
+            )
+            mean[j] = ex
+            sd[j] = np.sqrt(max(ex2 - ex * ex, 0.0))
+            cdf = np.concatenate(([0.0], np.cumsum(0.5 * (y[:-1] + y[1:]) * dx)))
+            cdf = cdf / max(cdf[-1], np.finfo(float).eps)
+            q025[j], q50[j], q975[j] = np.interp([0.025, 0.5, 0.975], cdf, x)
+
+    return {
+        "names": [f"theta{j + 1}" for j in range(m)],
+        "mean": mean,
+        "sd": sd,
+        "0.025quant": q025,
+        "0.5quant": q50,
+        "0.975quant": q975,
+        "mode": mode,
+    }
+
+
+def _natural_hyperpar_table(
+    internal: Optional[dict[str, np.ndarray]],
+    labels: Sequence[str],
+    transforms: Sequence[str],
+) -> Optional[dict[str, np.ndarray]]:
+    """Map the internal θ table to the natural scale R prints in `summary.hyperpar`."""
+    if internal is None:
+        return None
+    m = len(internal["mode"])
+    if len(transforms) != m:
+        return internal
+
+    out = {k: np.array(v, dtype=float) for k, v in internal.items() if k != "names"}
+    for j, tag in enumerate(transforms):
+        theta_mean = internal["mean"][j]
+        out["sd"][j] = _natural_sd(tag, theta_mean, internal["sd"][j])
+        for key in ("mean", "0.025quant", "0.5quant", "0.975quant", "mode"):
+            out[key][j] = _to_natural(tag, internal[key][j])
+        if tag in ("exp", "rho", "phi"):
+            lo, hi = sorted((out["0.025quant"][j], out["0.975quant"][j]))
+            out["0.025quant"][j], out["0.975quant"][j] = lo, hi
+    out["names"] = list(labels)
+    return out
+
+
 class InlaResult:
     """Thin wrapper around ``PyInferenceResult`` with R-like summary fields."""
 
@@ -1192,6 +1493,8 @@ class InlaResult:
         self._native = native
         self.summary_random = {}
         self.summary_fixed = None
+        self.summary_hyperpar = None
+        self.summary_hyperpar_internal = None
         self.effects = None
         self.formula = None
 
