@@ -10,8 +10,9 @@ from scipy import sparse
 
 from inla import _native as core
 from inla import generic as generic_mod
-from inla.formula import ParsedFormula, parse_formula
+from inla.formula import FTerm, ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
+from inla.models import Effect, Family, Linear, ModelSpec
 
 SUPPORTED_F_MODELS = (
     "iid",
@@ -56,6 +57,19 @@ def _get_col(data: Mapping[str, Any], key: str) -> np.ndarray:
 
 
 def _adj_from_matrix(mat) -> list[list[int]]:
+    if sparse.issparse(mat):
+        mat = mat.tocsr()
+        if mat.shape[0] != mat.shape[1]:
+            raise ValueError("adjacency matrix must be square")
+        n = mat.shape[0]
+        out: list[list[int]] = []
+        for i in range(n):
+            row = mat.indices[mat.indptr[i] : mat.indptr[i + 1]]
+            nbs = [int(j) for j in row if int(j) != i and mat[i, j] != 0]
+            out.append(nbs)
+        return out
+    if hasattr(mat, "adjacency"):
+        return [[int(nbr) for nbr in nbrs] for _, nbrs in mat.adjacency()]
     a = np.asarray(mat)
     if a.ndim != 2 or a.shape[0] != a.shape[1]:
         raise ValueError("adjacency matrix must be square")
@@ -353,6 +367,11 @@ def _resolve_f_model(
     rgeneric: Optional[GenericLike],
 ) -> Optional[GenericLike]:
     """Return a GenericLike if this f() term is a custom model, else None."""
+    if ft.kwargs.get("generic_instance") is not None:
+        inst = ft.kwargs["generic_instance"]
+        if hasattr(inst, "as_generic"):
+            return inst.as_generic()
+        return inst
     key = str(ft.model).lower()
     if key in SUPPORTED_F_MODELS:
         return None
@@ -596,10 +615,17 @@ def _try_gaussian_ar1_plan(
 
 
 def _fit(
-    formula: str,
-    data: Mapping[str, Any],
-    family: str = "gaussian",
+    formula: Optional[Union[str, ModelSpec, type[ModelSpec]]] = None,
+    data: Optional[Any] = None,
+    family: Union[str, Family] = "gaussian",
     *,
+    response: Optional[str] = None,
+    fixed: Optional[Sequence[Union[str, Linear]]] = None,
+    fixed_effects: Optional[Sequence[Union[str, Linear]]] = None,
+    random: Optional[Sequence[Union[Effect, FTerm]]] = None,
+    random_effects: Optional[Sequence[Union[Effect, FTerm]]] = None,
+    intercept: bool = True,
+    offset: Optional[str] = None,
     E=None,
     Ntrials=None,
     event=None,
@@ -622,17 +648,25 @@ def _fit(
     rgeneric: Optional[GenericLike] = None,
     verbose: bool = False,
 ):
-    """Fit an INLA model with R-like formula syntax.
+    """Fit an INLA model with formula syntax, ModelSpec class, or functional kwargs.
 
     Parameters
     ----------
     formula :
-        e.g. ``"y ~ x + f(region, model='besag')"`` or ``"y <- x + f(...)"``.
+        e.g. ``"y ~ x + f(region, model='besag')"`` or a ``ModelSpec`` class / instance.
     data :
-        Mapping of column name → array (DataFrame ``to_dict(orient='series')`` works).
-        For Besag, include ``adj_matrix`` (square) or pass ``graph=...`` in ``f()``.
+        Mapping of column name → array or DataFrame.
+        For Besag, include ``adj_matrix`` (square) or pass ``graph=...`` in ``f()`` / ``Besag()``.
     family :
-        Likelihood family. ``cbinomial`` is accepted as an alias of ``binomial``.
+        Likelihood family name (str) or typed ``Family`` instance (e.g. ``Binomial()``).
+    response :
+        Response variable name (when not using formula string).
+    fixed / fixed_effects :
+        Sequence of fixed-effect column names (or ``Linear("x")`` instances).
+    random / random_effects :
+        Sequence of latent random effect terms (e.g. ``[Besag("idx", graph=adj)]``).
+    intercept :
+        Whether to include an intercept term (default: True).
     Ntrials :
         Binomial trials ``n``, or ``cbind``-style ``(n_obs, 2)`` array of ``(y, n)``.
     control_compute :
@@ -649,7 +683,126 @@ def _fit(
     rgeneric :
         Single custom model for ``f(..., model='rgeneric')`` (R-style).
     """
-    parsed = parse_formula(formula)
+    # Handle data passed as first positional arg when response is passed
+    if (
+        data is None
+        and formula is not None
+        and not isinstance(formula, str)
+        and not (isinstance(formula, type) and issubclass(formula, ModelSpec))
+        and not isinstance(formula, ModelSpec)
+        and (response is not None or hasattr(formula, "to_dict") or hasattr(formula, "__getitem__"))
+    ):
+        data = formula
+        formula = None
+
+    if data is not None and hasattr(data, "to_dict"):
+        try:
+            data = data.to_dict(orient="series")
+        except TypeError:
+            data = data.to_dict()
+
+    formula_str = None
+    if (isinstance(formula, type) and issubclass(formula, ModelSpec)) or isinstance(
+        formula, ModelSpec
+    ):
+        parsed, spec_kw = ModelSpec.compile_spec(formula)
+        if "family" in spec_kw and family == "gaussian":
+            family = spec_kw["family"]
+        if "Ntrials" in spec_kw and Ntrials is None:
+            Ntrials = spec_kw["Ntrials"]
+        if "E" in spec_kw and E is None:
+            E = spec_kw["E"]
+        if "event" in spec_kw and event is None:
+            event = spec_kw["event"]
+        if "control_family" in spec_kw and control_family is None:
+            control_family = spec_kw["control_family"]
+        if "size" in spec_kw:
+            size = spec_kw["size"]
+        if "zero_prob" in spec_kw:
+            zero_prob = spec_kw["zero_prob"]
+        if "inflation" in spec_kw:
+            inflation = spec_kw["inflation"]
+        if "alpha" in spec_kw:
+            alpha = spec_kw["alpha"]
+        if "gamma" in spec_kw:
+            gamma = spec_kw["gamma"]
+        if "shape" in spec_kw:
+            shape = spec_kw["shape"]
+        formula_str = f"{parsed.response} ~ {' + '.join(parsed.fixed_terms) or '1'}"
+    elif formula is None or response is not None:
+        if response is None:
+            raise ValueError(
+                "Must provide a formula string, a ModelSpec class/instance, or 'response=' with data."
+            )
+        fixed_terms: list[str] = []
+        raw_fixed = fixed if fixed is not None else fixed_effects
+        if raw_fixed:
+            for item in raw_fixed:
+                if isinstance(item, Linear):
+                    fixed_terms.append(item.name)
+                elif isinstance(item, str):
+                    fixed_terms.append(item)
+                else:
+                    raise TypeError(
+                        f"expected str or Linear for fixed effect, got {type(item)}"
+                    )
+
+        f_terms: list[FTerm] = []
+        raw_random = random if random is not None else random_effects
+        if raw_random:
+            for eff in raw_random:
+                if isinstance(eff, Effect):
+                    f_terms.append(eff.to_fterm())
+                elif isinstance(eff, FTerm):
+                    f_terms.append(eff)
+                else:
+                    raise TypeError(
+                        f"expected Effect instance in random effects, got {type(eff)}"
+                    )
+
+        parsed = ParsedFormula(
+            response=response,
+            fixed_terms=fixed_terms,
+            intercept=bool(intercept),
+            f_terms=f_terms,
+        )
+        formula_str = f"{response} ~ {' + '.join(fixed_terms) or ('1' if intercept else '-1')}"
+    elif isinstance(formula, str):
+        parsed = parse_formula(formula)
+        raw_random = random if random is not None else random_effects
+        if raw_random:
+            for eff in raw_random:
+                if isinstance(eff, Effect):
+                    parsed.f_terms.append(eff.to_fterm())
+                elif isinstance(eff, FTerm):
+                    parsed.f_terms.append(eff)
+        formula_str = formula
+    else:
+        raise TypeError(
+            f"Unsupported formula type: {type(formula)}. Pass str, ModelSpec, or response=..."
+        )
+
+    if isinstance(family, Family):
+        if family.Ntrials is not None and Ntrials is None:
+            Ntrials = family.Ntrials
+        if family.E is not None and E is None:
+            E = family.E
+        if family.event is not None and event is None:
+            event = family.event
+        if family.control_family is not None and control_family is None:
+            control_family = family.control_family
+        size = family.size
+        zero_prob = family.zero_prob
+        inflation = family.inflation
+        alpha = family.alpha
+        gamma = family.gamma
+        shape = family.shape
+        family = family.name
+
+    if data is None:
+        raise ValueError("data must be provided")
+
+    formula = formula_str
     resolved_generics: list[Optional[GenericLike]] = []
     for ft in parsed.f_terms:
         g = _resolve_f_model(ft, models=models, rgeneric=rgeneric)
@@ -659,6 +812,13 @@ def _fit(
 
     y = _get_col(data, parsed.response)
     n_obs = y.size
+
+    if isinstance(Ntrials, str):
+        Ntrials = _get_col(data, Ntrials)
+    if isinstance(E, str):
+        E = _get_col(data, E)
+    if isinstance(event, str):
+        event = _get_col(data, event)
 
     obs_precision = 1.0
     if control_family is not None:
@@ -1377,6 +1537,11 @@ def _fit(
             "0.975quant": means[sl] + 1.96 * sds[sl],
         }
         if typ == "fixed":
+            fixed_col_names = []
+            if has_intercept:
+                fixed_col_names.append("(Intercept)")
+            fixed_col_names.extend(parsed.fixed_terms)
+            tab["names"] = fixed_col_names
             summary_fixed = tab
         else:
             summary_random[name] = tab
