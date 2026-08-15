@@ -207,3 +207,35 @@ def test_poisson_family_with_exposure():
     )
     assert res.latent_means is not None
     assert len(res.latent_means) > 0
+
+
+def test_missing_response_prediction():
+    """Test handling of NaN values in response vector (missing values / imputation)."""
+    np.random.seed(42)
+    n = 50
+    x = np.random.randn(n)
+    y = 2.5 + 1.8 * x + np.random.normal(0, 0.2, size=n)
+
+    # Set 5 response values to NaN
+    missing_indices = [5, 12, 23, 34, 45]
+    y_with_na = y.copy()
+    y_with_na[missing_indices] = np.nan
+
+    res = inla.fit(
+        data={"y": y_with_na, "x": x},
+        response="y",
+        fixed=["x"],
+        family=Gaussian(obs_precision=25.0),
+        deterministic=True,
+    )
+
+    beta = res.summary_fixed["mean"]
+    # Check estimated coefficients on remaining 45 observations
+    assert np.isclose(beta[0], 2.5, atol=0.1)  # Intercept
+    assert np.isclose(beta[1], 1.8, atol=0.1)  # slope x
+
+    # Predict at missing indices
+    pred_missing = beta[0] + beta[1] * x[missing_indices]
+    true_missing = y[missing_indices]
+    np.testing.assert_allclose(pred_missing, true_missing, atol=0.5)
+

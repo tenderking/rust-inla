@@ -473,6 +473,9 @@ def _build_obs(
     event_arr = _opt_arr(event)
 
     for i in range(n):
+        if np.isnan(y[i]):
+            obs.append(None)
+            continue
         d: dict[str, Any] = {"family": fam, "y": float(y[i])}
         if fam == "gaussian":
             d["precision"] = float(obs_precision)
