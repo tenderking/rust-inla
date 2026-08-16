@@ -15,6 +15,7 @@ import sys
 import types
 
 from inla import generic as _generic
+from inla import spde as _spde
 from inla._native import (
     PyCscMatrix,
     PyInferenceResult,
@@ -38,7 +39,6 @@ from inla._native import (
 from inla.api import InlaResult, _fit, fit
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
-from inla import spde as _spde
 
 
 class _InlaModule(types.ModuleType):

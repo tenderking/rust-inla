@@ -3,10 +3,12 @@
 import signal
 import threading
 import time
-import pytest
+
 import numpy as np
-import inla
+import pytest
 from inla._native import run_inla_inference
+
+import inla
 
 
 def test_interrupt_handling():

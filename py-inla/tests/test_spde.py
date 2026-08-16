@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from inla import _native as core
 
@@ -56,9 +55,7 @@ def test_spde_gaussian_inference():
     def log_prior(theta):
         return float(-0.05 * (theta[0] ** 2 + theta[1] ** 2))
 
-    obs = [
-        {"family": "gaussian", "y": float(yi), "precision": 50.0} for yi in y
-    ]
+    obs = [{"family": "gaussian", "y": float(yi), "precision": 50.0} for yi in y]
     res = core.run_inla_inference(
         [0.0, 0.0],
         build_prior,

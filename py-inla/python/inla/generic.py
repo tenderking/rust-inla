@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Sequence
+from typing import Any
 
 import numpy as np
 from scipy import sparse
 
 
 def _as_csc(q) -> sparse.csc_matrix:
-    if isinstance(q, sparse.spmatrix):
-        return q.tocsc()
+    if sparse.issparse(q):
+        return sparse.csc_matrix(q)
     if hasattr(q, "to_scipy"):
-        return q.to_scipy().tocsc()
+        return sparse.csc_matrix(q.to_scipy())
     return sparse.csc_matrix(np.asarray(q, dtype=float))
 
 
@@ -30,7 +31,7 @@ class GenericModel:
     Q: Callable[[Sequence[float]], Any]
     n_theta: int = 1
     initial: list[float] = field(default_factory=list)
-    log_prior: Optional[Callable[[Sequence[float]], float]] = None
+    log_prior: Callable[[Sequence[float]], float] | None = None
     name: str = "rgeneric"
 
     def __post_init__(self):
@@ -41,13 +42,9 @@ class GenericModel:
         if not self.initial:
             self.initial = [0.0] * self.n_theta
         else:
-            self.initial = [
-                float(v) for v in np.asarray(self.initial, dtype=float).reshape(-1)
-            ]
+            self.initial = [float(v) for v in np.asarray(self.initial, dtype=float).reshape(-1)]
             if len(self.initial) != self.n_theta:
-                raise ValueError(
-                    f"initial length {len(self.initial)} != n_theta={self.n_theta}"
-                )
+                raise ValueError(f"initial length {len(self.initial)} != n_theta={self.n_theta}")
 
     def precision(self, theta: Sequence[float]) -> sparse.csc_matrix:
         th = list(theta)
@@ -81,7 +78,7 @@ class Model:
         n: int,
         *,
         n_theta: int = 1,
-        initial: Optional[Sequence[float]] = None,
+        initial: Sequence[float] | None = None,
         name: str = "rgeneric",
     ):
         self.n = int(n)
@@ -90,13 +87,9 @@ class Model:
         if initial is None:
             self.initial = [0.0] * self.n_theta
         else:
-            self.initial = [
-                float(v) for v in np.asarray(initial, dtype=float).reshape(-1)
-            ]
+            self.initial = [float(v) for v in np.asarray(initial, dtype=float).reshape(-1)]
             if len(self.initial) != self.n_theta:
-                raise ValueError(
-                    f"initial length {len(self.initial)} != n_theta={self.n_theta}"
-                )
+                raise ValueError(f"initial length {len(self.initial)} != n_theta={self.n_theta}")
 
     def Q(self, theta: Sequence[float]) -> Any:  # noqa: N802 — R-style name
         raise NotImplementedError(f"{type(self).__name__} must implement Q(theta)")
@@ -132,8 +125,8 @@ def define(
     n: int,
     Q: Callable[[Sequence[float]], Any],
     n_theta: int = 1,
-    initial: Optional[Sequence[float]] = None,
-    log_prior: Optional[Callable[[Sequence[float]], float]] = None,
+    initial: Sequence[float] | None = None,
+    log_prior: Callable[[Sequence[float]], float] | None = None,
     name: str = "rgeneric",
 ) -> GenericModel:
     """Define a custom latent model (R ``inla.rgeneric.define`` analogue).

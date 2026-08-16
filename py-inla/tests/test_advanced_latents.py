@@ -1,7 +1,6 @@
 """Pytest suite for rw2d and group spatio-temporal models in py-inla."""
 
 import numpy as np
-import pytest
 
 import inla
 from inla import _native as core

@@ -82,6 +82,8 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for smoke tests and PR expectations.
 
 ### Python (`py-inla`)
 
+Requires Python 3.13+.
+
 ```bash
 cd py-inla
 pip install maturin

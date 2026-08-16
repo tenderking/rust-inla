@@ -71,7 +71,7 @@ fn ar1_precision_matrix(
 
 /// A wrapper around `sprs::CsMat<f64>` (Compressed Sparse Column matrix)
 /// that exposes raw pointers for zero-copy SciPy integration.
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyCscMatrix {
     pub matrix: inla_core::sparse::CscMatrix,
@@ -214,7 +214,7 @@ fn csc_from_python(obj: &Bound<'_, PyAny>) -> PyResult<inla_core::sparse::CscMat
 }
 
 /// A 1D density grid `(x, y)` (classic INLA marginal shape).
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyMarginal1D {
     #[pyo3(get)]
@@ -337,7 +337,7 @@ impl PyInferenceResult {
         &self,
         py: Python<'_>,
         combs: Vec<(String, Vec<(usize, f64)>)>,
-    ) -> PyResult<Vec<PyObject>> {
+    ) -> PyResult<Vec<Py<PyDict>>> {
         let q = self
             .posterior_precision
             .as_ref()
@@ -357,7 +357,7 @@ impl PyInferenceResult {
             d.set_item("q025", s.q025)?;
             d.set_item("q50", s.q50)?;
             d.set_item("q975", s.q975)?;
-            out.push(d.into());
+            out.push(d.unbind());
         }
         Ok(out)
     }
@@ -426,8 +426,8 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
-    build_prior: PyObject,
-    log_prior_density: PyObject,
+    build_prior: Py<PyAny>,
+    log_prior_density: Py<PyAny>,
     obs: Vec<Bound<'_, PyAny>>,
     strategy: &str,
     step_or_f0: f64,
@@ -487,7 +487,7 @@ fn run_inla_inference_py(
 
     // 2. Closure for build_prior calling back to Python
     let build_prior_closure = move |theta: &[f64]| -> Result<inla_core::sparse::CscMatrix, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let theta_py = theta.to_vec();
             let res = match build_prior.call1(py, (theta_py,)) {
                 Ok(val) => val,
@@ -514,7 +514,7 @@ fn run_inla_inference_py(
 
     // 3. Closure for log_prior_density calling back to Python
     let log_prior_density_closure = move |theta: &[f64]| -> f64 {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let theta_py = theta.to_vec();
             let res = log_prior_density.call1(py, (theta_py,));
             match res {
@@ -545,7 +545,7 @@ fn run_inla_inference_py(
         ..Default::default()
     };
     let check_cancel = move || {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if let Err(e) = py.check_signals() {
                 let mut lock = store3.lock().unwrap();
                 if lock.is_none() {
@@ -566,7 +566,7 @@ fn run_inla_inference_py(
     };
 
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
-    let result = py.allow_threads(|| {
+    let result = py.detach(|| {
         inla_core::run_inla_inference_a_cancellable(
             &initial_theta,
             &build_prior_closure,
@@ -730,7 +730,7 @@ fn resolve_compute_options(py: Python<'_>, controls: &Bound<'_, PyDict>) -> PyRe
     Ok(d.into())
 }
 
-fn selection_to_py(py: Python<'_>, sel: &inla_core::IndexSelection) -> PyResult<PyObject> {
+fn selection_to_py(py: Python<'_>, sel: &inla_core::IndexSelection) -> PyResult<Py<PyAny>> {
     match sel {
         inla_core::IndexSelection::None => false.into_py_any(py),
         inla_core::IndexSelection::All => true.into_py_any(py),
@@ -892,7 +892,7 @@ fn run_gaussian_ar1_plan(
         },
         initial_theta,
     };
-    let result = py.allow_threads(|| {
+    let result = py.detach(|| {
         let plan = inla_core::resolve(spec).map_err(|e| e.0)?;
         inla_core::run_gaussian_ar1_plan(&plan, &y).map_err(|e| e.0)
     });

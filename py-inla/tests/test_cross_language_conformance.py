@@ -75,9 +75,7 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
         "ar1": fit("y ~ -1 + f(idx, model='ar1', obs_precision=25.0)", data),
         "rw2": fit("y ~ -1 + f(idx, model='rw2', obs_precision=100.0)", data),
         "iid": fit("y ~ -1 + f(idx, model='iid', obs_precision=25.0)", data),
-        "seasonal": fit(
-            "y ~ -1 + f(idx, model='seasonal', season=4, obs_precision=50.0)", data
-        ),
+        "seasonal": fit("y ~ -1 + f(idx, model='seasonal', season=4, obs_precision=50.0)", data),
         "poisson_iid": fit(
             "count ~ -1 + f(idx, model='iid')",
             data,

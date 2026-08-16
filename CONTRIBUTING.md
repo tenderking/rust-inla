@@ -10,6 +10,7 @@ cargo check --workspace --exclude r-inla
 cargo test --workspace --exclude r-inla --exclude inla_sys
 cargo clippy --workspace --exclude r-inla --exclude inla_sys --all-targets -- -D warnings
 cargo fmt --all -- --check
+cd py-inla && ruff check python tests && ruff format --check python tests
 ```
 
 `r-inla` needs a local R install (extendr). `inla_sys` bindgen needs a local
@@ -17,7 +18,7 @@ cargo fmt --all -- --check
 
 ```bash
 make smoke-r    # release r-inla + R smoke
-make smoke-py   # maturin + Python smoke
+make smoke-py   # maturin + Python smoke (Python 3.13+)
 ```
 
 Architecture notes: [`ARCHITECTURE.md`](ARCHITECTURE.md). Cursor agent skills
@@ -40,7 +41,7 @@ Rust IR (`ModelSpec` / `ModelPlan` / registry) as the source of truth.
 ## Pull requests
 
 - Prefer small, reviewable PRs.
-- Match `cargo fmt` / clippy (`-D warnings`) used in CI.
+- Match `cargo fmt` / clippy (`-D warnings`) and `ruff check` / `ruff format` used in CI.
 - Add or extend a `reference_ports` / smoke case when changing model behaviour.
 - Keep statistical defaults and θ→Q logic in Rust; keep formula parsing in the
   language skin.
