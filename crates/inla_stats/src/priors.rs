@@ -259,6 +259,8 @@ impl HyperPriorStack {
                 &[1.0, 1.0, 2.0],
             )?])),
             "fixed" => Ok(Self::new(vec![])),
+            // Free scaling on a copied field: N(1, prec=0.1) on β (identity scale).
+            "copy" => Ok(Self::new(vec![PriorSpec::gaussian(1.0, 0.1)])),
             other => Err(format!("no default hyperprior for effect type '{other}'")),
         }
     }

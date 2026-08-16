@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Any, Mapping, Optional, Sequence, Union
+from collections.abc import Mapping, Sequence
+from functools import cache
+from typing import Any
 
 import numpy as np
 from scipy import sparse
 
 from inla import _native as core
-from inla import generic as generic_mod
 from inla.formula import ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
 
@@ -30,6 +30,7 @@ SUPPORTED_F_MODELS = (
     "crw2",
     "matern2d",
     "spde",
+    "copy",
 )
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
 
@@ -39,7 +40,7 @@ FAMILY_ALIASES = {
     "negbin": "negative_binomial",
 }
 
-GenericLike = Union[GenericModel, Model]
+GenericLike = GenericModel | Model
 
 
 def _as_1d(x, name: str) -> np.ndarray:
@@ -87,9 +88,9 @@ def _resolve_graph(f_term, data: Mapping[str, Any]) -> list[list[int]]:
     return _adj_from_matrix(g)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _model_meta(
-    model: str, order: int = 0, group_model: Optional[str] = None, cyclic: bool = False
+    model: str, order: int = 0, group_model: str | None = None, cyclic: bool = False
 ) -> Mapping[str, Any]:
     """Per-model metadata from the shared Rust registry (cached; called per θ node)."""
     return core.model_metadata(
@@ -97,13 +98,11 @@ def _model_meta(
     )
 
 
-def _theta_len(model: str, order: int = 0, group_model: Optional[str] = None) -> int:
+def _theta_len(model: str, order: int = 0, group_model: str | None = None) -> int:
     return int(_model_meta(model, order, group_model)["theta_len"])
 
 
-def _default_theta(
-    model: str, order: int = 0, group_model: Optional[str] = None
-) -> list[float]:
+def _default_theta(model: str, order: int = 0, group_model: str | None = None) -> list[float]:
     return list(_model_meta(model, order, group_model)["default_theta"])
 
 
@@ -115,7 +114,7 @@ def _hyper_labels(
     types: Sequence[str],
     names: Sequence[str],
     orders: Sequence[int],
-    group_models: Sequence[Optional[str]],
+    group_models: Sequence[str | None],
 ) -> tuple[list[str], list[str]]:
     """(labels, transform tags) per internal θ, in optimizer order."""
     labels: list[str] = []
@@ -155,7 +154,7 @@ def _natural_sd(tag: str, theta_mean: float, theta_sd: float) -> float:
     return float(theta_sd)
 
 
-def _group_model_from_ft(ft) -> Optional[str]:
+def _group_model_from_ft(ft) -> str | None:
     """Extract control.group model name from f() kwargs, if present."""
     cg = ft.kwargs.get("control_group")
     if cg is None:
@@ -230,7 +229,7 @@ def _embed_constraint(
 
 def _vstack_constraints(
     parts: list[tuple[list[float], list[float]]],
-) -> Optional[tuple[list[float], list[float]]]:
+) -> tuple[list[float], list[float]] | None:
     if not parts:
         return None
     a_all: list[float] = []
@@ -247,7 +246,9 @@ def _as_param_list(val) -> list[float]:
     return [float(x) for x in np.asarray(val, dtype=float).reshape(-1)]
 
 
-def _resolve_effect_priors(model: str, kwargs: Optional[Mapping[str, Any]]) -> list[tuple[str, list[float]]]:
+def _resolve_effect_priors(
+    model: str, kwargs: Mapping[str, Any] | None
+) -> list[tuple[str, list[float]]]:
     """Build (name, param) list for an effect from f() kwargs or model defaults."""
     kw = dict(kwargs or {})
     # Flat f(..., prior=..., param=...) → first hyper slot
@@ -302,7 +303,7 @@ def _control_get(cc: Mapping[str, Any], *keys: str) -> Any:
 
 
 def _resolve_controls(
-    control_compute: Optional[Mapping[str, Any]],
+    control_compute: Mapping[str, Any] | None,
     *,
     strategy: str,
     step_or_f0: float,
@@ -330,9 +331,7 @@ def _resolve_controls(
     return dict(core.resolve_compute_options(bag))
 
 
-def _resolve_marginal_indices(
-    value: Any, n: int, *, name: str
-) -> Optional[list[int]]:
+def _resolve_marginal_indices(value: Any, n: int, *, name: str) -> list[int] | None:
     if value is None:
         return None
     if value is True:
@@ -349,9 +348,9 @@ def _resolve_marginal_indices(
 def _resolve_f_model(
     ft,
     *,
-    models: Optional[Mapping[str, GenericLike]],
-    rgeneric: Optional[GenericLike],
-) -> Optional[GenericLike]:
+    models: Mapping[str, GenericLike] | None,
+    rgeneric: GenericLike | None,
+) -> GenericLike | None:
     """Return a GenericLike if this f() term is a custom model, else None."""
     key = str(ft.model).lower()
     if key in SUPPORTED_F_MODELS:
@@ -387,26 +386,25 @@ def _compute_scale_factor(q_scipy) -> float:
     evals, evecs = np.linalg.eigh(a)
     max_lam = max(np.max(np.abs(evals)), 1.0)
     tol = np.sqrt(np.finfo(float).eps) * max_lam
-    
+
     valid = evals > tol
     if not np.any(valid):
         raise ValueError("scale_model: ginv has no positive diagonal")
-    
+
     evals_valid = evals[valid]
     evecs_valid = evecs[:, valid]
-    
-    ginv_diag = np.sum((evecs_valid ** 2) / evals_valid, axis=1)
-    
+
+    ginv_diag = np.sum((evecs_valid**2) / evals_valid, axis=1)
+
     valid_diag = (ginv_diag > 0.0) & np.isfinite(ginv_diag)
     if not np.any(valid_diag):
         raise ValueError("scale_model: ginv has no positive diagonal")
-        
+
     log_sum = np.sum(np.log(ginv_diag[valid_diag]))
     count = np.sum(valid_diag)
-    
+
     fac = np.exp(log_sum / count)
     return float(fac)
-
 
 
 def _build_obs(
@@ -469,11 +467,21 @@ def _build_obs(
         elif fam in ("laplace",):
             d["alpha"] = float(alpha)
             d["gamma"] = float(gamma)
-        elif fam in ("zero_inflated_poisson", "zeroinflatedpoisson0", "zeroinflatedpoisson1", "zip"):
+        elif fam in (
+            "zero_inflated_poisson",
+            "zeroinflatedpoisson0",
+            "zeroinflatedpoisson1",
+            "zip",
+        ):
             d["exposure"] = float(E_arr[i]) if E_arr is not None else 1.0
             d["zero_prob"] = float(zero_prob)
             d["inflation"] = str(inflation)
-        elif fam in ("zero_inflated_binomial", "zeroinflatedbinomial0", "zeroinflatedbinomial1", "zib"):
+        elif fam in (
+            "zero_inflated_binomial",
+            "zeroinflatedbinomial0",
+            "zeroinflatedbinomial1",
+            "zib",
+        ):
             if ntrials is None:
                 raise ValueError("zero_inflated_binomial requires Ntrials")
             d["n"] = float(ntrials[i])
@@ -525,12 +533,12 @@ def _try_gaussian_ar1_plan(
     obs_precision: float,
     strategy: str,
     step_or_f0: float,
-    initial_theta: Optional[Sequence[float]],
-    control_compute: Optional[Mapping[str, Any]],
-    latent_marginal_indices: Optional[Sequence[int]],
-    predictor_marginal_indices: Optional[Sequence[int]],
+    initial_theta: Sequence[float] | None,
+    control_compute: Mapping[str, Any] | None,
+    latent_marginal_indices: Sequence[int] | None,
+    predictor_marginal_indices: Sequence[int] | None,
     verbose: bool,
-) -> Optional[Any]:
+) -> Any | None:
     """Fast path: single AR1 + Gaussian, no fixed effects, identity index → ModelPlan."""
     fam = str(family).lower()
     if fam not in ("gaussian", "normal"):
@@ -559,7 +567,9 @@ def _try_gaussian_ar1_plan(
     idx = _get_col(data, ft.index).astype(int)
     if not _identity_ar1_index(idx, n_obs):
         return None
-    init = None if initial_theta is None else list(np.asarray(initial_theta, dtype=float).reshape(-1))
+    init = (
+        None if initial_theta is None else list(np.asarray(initial_theta, dtype=float).reshape(-1))
+    )
     if verbose:
         print(f"inla: ModelPlan path (gaussian+ar1) n={n_obs}")
     result = core.run_gaussian_ar1_plan(
@@ -611,15 +621,15 @@ def _fit(
     shape: float = 1.0,
     strategy: str = "ccd",
     step_or_f0: float = 1.0,
-    initial_theta: Optional[Sequence[float]] = None,
-    control_family: Optional[Mapping[str, Any]] = None,
-    control_compute: Optional[Mapping[str, Any]] = None,
+    initial_theta: Sequence[float] | None = None,
+    control_family: Mapping[str, Any] | None = None,
+    control_compute: Mapping[str, Any] | None = None,
     fixed_prec: float = 1e-4,
-    latent_marginal_indices: Optional[Sequence[int]] = None,
-    predictor_marginal_indices: Optional[Sequence[int]] = None,
+    latent_marginal_indices: Sequence[int] | None = None,
+    predictor_marginal_indices: Sequence[int] | None = None,
     deterministic: bool = False,
-    models: Optional[Mapping[str, GenericLike]] = None,
-    rgeneric: Optional[GenericLike] = None,
+    models: Mapping[str, GenericLike] | None = None,
+    rgeneric: GenericLike | None = None,
     verbose: bool = False,
 ):
     """Fit an INLA model with R-like formula syntax.
@@ -650,7 +660,7 @@ def _fit(
         Single custom model for ``f(..., model='rgeneric')`` (R-style).
     """
     parsed = parse_formula(formula)
-    resolved_generics: list[Optional[GenericLike]] = []
+    resolved_generics: list[GenericLike | None] = []
     for ft in parsed.f_terms:
         g = _resolve_f_model(ft, models=models, rgeneric=rgeneric)
         resolved_generics.append(g)
@@ -733,22 +743,23 @@ def _fit(
     effect_ns: list[int] = []
     effect_orders: list[int] = []
     effect_names: list[str] = []
-    effect_graphs: list[Optional[list[list[int]]]] = []
+    effect_graphs: list[list[list[int]] | None] = []
     effect_scale: list[bool] = []
-    effect_generics: list[Optional[GenericLike]] = []
+    effect_generics: list[GenericLike | None] = []
     effect_prior_specs: list[list[tuple[str, list[float]]]] = []
     theta: list[float] = []
 
-    effect_positions: list[Optional[list[float]]] = []
+    effect_positions: list[list[float] | None] = []
     effect_layouts: list[str] = []
     effect_seasons: list[int] = []
-    effect_group_models: list[Optional[str]] = []
+    effect_group_models: list[str | None] = []
     effect_n_main: list[int] = []
     effect_nrow: list[int] = []
     effect_ncol: list[int] = []
     effect_cyclic: list[bool] = []
-    effect_meshes: list[Optional[tuple]] = []  # (verts, tris) for SPDE
+    effect_meshes: list[tuple | None] = []  # (verts, tris) for SPDE
     effect_nus: list[int] = []  # matern2d nu
+    effect_copy_of: list[int | None] = []
 
     # Fixed effects block first → latent_means[0] is intercept when present
     if p > 0:
@@ -777,6 +788,7 @@ def _fit(
         effect_cyclic.append(False)
         effect_meshes.append(None)
         effect_nus.append(1)
+        effect_copy_of.append(None)
         col_off += p
 
     for ft, gmodel in zip(parsed.f_terms, resolved_generics):
@@ -784,12 +796,70 @@ def _fit(
         if np.any(idx < 0):
             raise ValueError(f"NA/negative index in f({ft.index})")
         model = ft.model
+        copy_src = ft.kwargs.get("copy")
+        if copy_src is not None:
+            model = "copy"
         order = ft.order
         group_model = _group_model_from_ft(ft) if gmodel is None else None
         group_key = ft.kwargs.get("group")
         cyclic = bool(ft.kwargs.get("cyclic", False))
         nrow_kw = ft.kwargs.get("nrow")
         ncol_kw = ft.kwargs.get("ncol")
+
+        if model == "copy":
+            src_name = str(copy_src)
+            try:
+                src_i = effect_names.index(src_name)
+            except ValueError as exc:
+                raise ValueError(
+                    f"f({ft.index}, copy='{src_name}'): source not found (must appear first)"
+                ) from exc
+            n_src = int(effect_ns[src_i])
+            zcol = idx.copy()
+            if int(zcol.min()) >= 1:
+                zcol = zcol - 1
+            if int(zcol.min()) < 0 or int(zcol.max()) >= n_src:
+                levels = np.sort(np.unique(idx))
+                if int(levels.size) != n_src:
+                    raise ValueError(
+                        f"copy index for '{ft.index}' incompatible with source n={n_src}"
+                    )
+                zcol = np.searchsorted(levels, idx)
+            for r in range(n_obs):
+                rows.append(r)
+                cols.append(col_off + int(zcol[r]))
+                vals.append(1.0)
+            effect_graphs.append(None)
+            effect_ns.append(n_src)
+            effect_types.append("copy")
+            effect_orders.append(0)
+            effect_names.append(ft.index)
+            effect_scale.append(False)
+            effect_generics.append(None)
+            effect_prior_specs.append(_resolve_effect_priors("copy", ft.kwargs))
+            effect_positions.append(None)
+            effect_layouts.append("simple")
+            effect_seasons.append(4)
+            effect_group_models.append(None)
+            effect_n_main.append(n_src)
+            effect_nrow.append(0)
+            effect_ncol.append(0)
+            effect_cyclic.append(False)
+            effect_meshes.append(None)
+            effect_nus.append(1)
+            effect_copy_of.append(src_i)
+            tlen = _theta_len("copy", 0, None)
+            if ft.initial is not None:
+                init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
+                if len(init) != tlen:
+                    raise ValueError(
+                        f"f({ft.index}): initial length {len(init)} != expected {tlen}"
+                    )
+                theta.extend(init)
+            elif initial_theta is None:
+                theta.extend(_default_theta("copy", 0, None))
+            col_off += n_src
+            continue
 
         if gmodel is not None:
             n_e = int(gmodel.n)
@@ -798,9 +868,7 @@ def _fit(
             if int(zcol.min()) < 0 or int(zcol.max()) >= n_e:
                 zcol = idx.copy()
                 if int(zcol.min()) < 0 or int(zcol.max()) >= n_e:
-                    raise ValueError(
-                        f"generic index for '{ft.index}' out of range for n={n_e}"
-                    )
+                    raise ValueError(f"generic index for '{ft.index}' out of range for n={n_e}")
             for r in range(n_obs):
                 rows.append(r)
                 cols.append(col_off + int(zcol[r]))
@@ -823,6 +891,7 @@ def _fit(
             effect_cyclic.append(False)
             effect_meshes.append(None)
             effect_nus.append(1)
+            effect_copy_of.append(None)
             tlen = int(gmodel.n_theta)
             if ft.initial is not None:
                 init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
@@ -839,6 +908,11 @@ def _fit(
         mesh_store = None
         nu_i = int(ft.kwargs.get("nu", 1) or 1)
         layout = str(ft.kwargs.get("layout", "simple"))
+        n_e = 0
+        n_main = 0
+        zcol: np.ndarray | None = None
+        adj = None
+        nrow_i = ncol_i = 0
 
         if model == "rw2d" or model == "matern2d":
             if nrow_kw is None or ncol_kw is None:
@@ -875,9 +949,7 @@ def _fit(
             if isinstance(tris, str):
                 tris = data[tris]
             if verts is None or tris is None:
-                raise ValueError(
-                    "f(..., model='spde') requires vertices= and triangles="
-                )
+                raise ValueError("f(..., model='spde') requires vertices= and triangles=")
             verts_arr = np.asarray(verts, dtype=float)
             tris_arr = np.asarray(tris)
             if verts_arr.ndim != 2 or verts_arr.shape[1] != 2:
@@ -894,19 +966,25 @@ def _fit(
             loc_x_key = ft.kwargs.get("loc_x", "loc_x")
             loc_y_key = ft.kwargs.get("loc_y", "loc_y")
             if "loc" in ft.kwargs:
-                loc = np.asarray(data[ft.kwargs["loc"]] if isinstance(ft.kwargs["loc"], str) else ft.kwargs["loc"], dtype=float)
+                loc_raw = (
+                    data[ft.kwargs["loc"]]
+                    if isinstance(ft.kwargs["loc"], str)
+                    else ft.kwargs["loc"]
+                )
+                loc = np.asarray(loc_raw, dtype=float)
                 loc_x = loc[:, 0]
                 loc_y = loc[:, 1]
             elif loc_x_key in data and loc_y_key in data:
                 loc_x = _get_col(data, str(loc_x_key))
                 loc_y = _get_col(data, str(loc_y_key))
             else:
-                raise ValueError(
-                    "f(..., model='spde') needs loc= or loc_x=/loc_y= columns"
-                )
-            a_spde = core.spde_projector_matrix(
-                vert_tuples, tri_tuples, loc_x.tolist(), loc_y.tolist()
-            ).to_scipy().tocsc().copy()
+                raise ValueError("f(..., model='spde') needs loc= or loc_x=/loc_y= columns")
+            a_spde = (
+                core.spde_projector_matrix(vert_tuples, tri_tuples, loc_x.tolist(), loc_y.tolist())
+                .to_scipy()
+                .tocsc()
+                .copy()
+            )
             # Scatter projector into global A
             coo = a_spde.tocoo()
             for r, c, v in zip(coo.row, coo.col, coo.data):
@@ -916,7 +994,7 @@ def _fit(
             n_e = n_main
             adj = None
             nrow_i = ncol_i = 0
-            zcol = None  # already mapped
+            zcol: np.ndarray | None = None  # already mapped into A
         elif model == "fgn" and order in (3, 4):
             levels = np.sort(np.unique(idx))
             n_time = int(levels.size)
@@ -942,11 +1020,11 @@ def _fit(
             nrow_i = ncol_i = 0
 
         if model != "spde":
+            if zcol is None:
+                raise RuntimeError(f"f({ft.index}): missing index map")
             if group_model is not None:
                 if group_key is None:
-                    raise ValueError(
-                        f"f({ft.index}): control_group=... requires group= column"
-                    )
+                    raise ValueError(f"f({ft.index}): control_group=... requires group= column")
                 gcol = _get_col(data, str(group_key)).astype(int)
                 g_levels = np.sort(np.unique(gcol))
                 n_group = int(g_levels.size)
@@ -960,8 +1038,12 @@ def _fit(
                 # Observe u + v: columns i and n+i
                 for r in range(n_obs):
                     zi = int(zcol[r])
-                    rows.append(r); cols.append(col_off + zi); vals.append(1.0)
-                    rows.append(r); cols.append(col_off + n_main + zi); vals.append(1.0)
+                    rows.append(r)
+                    cols.append(col_off + zi)
+                    vals.append(1.0)
+                    rows.append(r)
+                    cols.append(col_off + n_main + zi)
+                    vals.append(1.0)
                 n_e = 2 * n_main
             elif model == "crw2" and layout in ("pairs", "block"):
                 for r in range(n_obs):
@@ -1010,13 +1092,12 @@ def _fit(
         )
         effect_generics.append(None)
         effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs))
+        effect_copy_of.append(None)
         tlen = _theta_len(model, order, group_model)
         if ft.initial is not None:
             init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
             if len(init) != tlen:
-                raise ValueError(
-                    f"f({ft.index}): initial length {len(init)} != expected {tlen}"
-                )
+                raise ValueError(f"f({ft.index}): initial length {len(init)} != expected {tlen}")
             theta.extend(init)
         elif initial_theta is None:
             theta.extend(_default_theta(model, order, group_model))
@@ -1071,7 +1152,11 @@ def _fit(
             assert g is not None
             q_base = core.besag_precision_matrix(g, 1.0)
         if q_base is not None:
-            q_scipy = q_base.to_scipy() if isinstance(q_base, core.PyCscMatrix) else sparse.csc_matrix(q_base)
+            q_scipy = (
+                q_base.to_scipy()
+                if isinstance(q_base, core.PyCscMatrix)
+                else sparse.csc_matrix(q_base)
+            )
             precomputed_scales.append(_compute_scale_factor(q_scipy))
         else:
             precomputed_scales.append(1.0)
@@ -1109,6 +1194,9 @@ def _fit(
                 d["positions"] = positions_list[ei]
             if graphs[ei] is not None:
                 d["adj"] = graphs[ei]
+            copy_src = effect_copy_of[ei] if ei < len(effect_copy_of) else None
+            if copy_src is not None:
+                d["copy_of"] = int(copy_src)
             out.append(d)
         return out
 
@@ -1158,9 +1246,7 @@ def _fit(
             if len(ti) < 2:
                 raise ValueError("bym needs [log_tau_spatial, log_tau_iid]")
             assert graphs[ei] is not None
-            return core.bym_precision_matrix(
-                graphs[ei], float(np.exp(ti[0])), float(np.exp(ti[1]))
-            )
+            return core.bym_precision_matrix(graphs[ei], float(np.exp(ti[0])), float(np.exp(ti[1])))
         if typ == "bym2":
             if len(ti) < 2:
                 raise ValueError("bym2 needs [log_tau, logit_phi]")
@@ -1262,7 +1348,7 @@ def _fit(
                 if typ == "iid":
                     ba, be = _sum_to_zero_a(n_e, 1)
                     part = _embed_constraint(ba, be, n_e, col_off, off)
-                    if constraints_a is None:
+                    if constraints_a is None or constraints_e is None:
                         constraints_a, constraints_e = part
                     else:
                         constraints_a = list(constraints_a) + list(part[0])
@@ -1272,8 +1358,8 @@ def _fit(
         constr_parts: list[tuple[list[float], list[float]]] = []
         off = 0
         for ei, (typ, n_e, cyclic_flag) in enumerate(zip(types, ns, cyclics)):
+            season = int(seasons_list[ei])
             if typ == "seasonal":
-                season = int(seasons_list[ei])
                 k = max(season - 1, 1)
             else:
                 k = _rank_deficiency(typ, cyclic=cyclic_flag)
@@ -1416,7 +1502,7 @@ def _fit(
     return out
 
 
-def _internal_hyperpar_table(result) -> Optional[dict[str, np.ndarray]]:
+def _internal_hyperpar_table(result) -> dict[str, Any] | None:
     """Moments/quantiles of each internal θ marginal (mirrors the R front-end)."""
     mode = np.asarray(result.mode, dtype=float)
     m = mode.size
@@ -1441,9 +1527,7 @@ def _internal_hyperpar_table(result) -> Optional[dict[str, np.ndarray]]:
                 continue
             y = y / mass
             ex = float(np.sum(0.5 * (x[:-1] * y[:-1] + x[1:] * y[1:]) * dx))
-            ex2 = float(
-                np.sum(0.5 * (x[:-1] ** 2 * y[:-1] + x[1:] ** 2 * y[1:]) * dx)
-            )
+            ex2 = float(np.sum(0.5 * (x[:-1] ** 2 * y[:-1] + x[1:] ** 2 * y[1:]) * dx))
             mean[j] = ex
             sd[j] = np.sqrt(max(ex2 - ex * ex, 0.0))
             cdf = np.concatenate(([0.0], np.cumsum(0.5 * (y[:-1] + y[1:]) * dx)))
@@ -1462,10 +1546,10 @@ def _internal_hyperpar_table(result) -> Optional[dict[str, np.ndarray]]:
 
 
 def _natural_hyperpar_table(
-    internal: Optional[dict[str, np.ndarray]],
+    internal: dict[str, Any] | None,
     labels: Sequence[str],
     transforms: Sequence[str],
-) -> Optional[dict[str, np.ndarray]]:
+) -> dict[str, Any] | None:
     """Map the internal θ table to the natural scale R prints in `summary.hyperpar`."""
     if internal is None:
         return None
@@ -1473,7 +1557,9 @@ def _natural_hyperpar_table(
     if len(transforms) != m:
         return internal
 
-    out = {k: np.array(v, dtype=float) for k, v in internal.items() if k != "names"}
+    out: dict[str, Any] = {
+        k: np.array(v, dtype=float) for k, v in internal.items() if k != "names"
+    }
     for j, tag in enumerate(transforms):
         theta_mean = internal["mean"][j]
         out["sd"][j] = _natural_sd(tag, theta_mean, internal["sd"][j])
@@ -1489,14 +1575,14 @@ def _natural_hyperpar_table(
 class InlaResult:
     """Thin wrapper around ``PyInferenceResult`` with R-like summary fields."""
 
-    def __init__(self, native):
+    def __init__(self, native: Any):
         self._native = native
-        self.summary_random = {}
-        self.summary_fixed = None
-        self.summary_hyperpar = None
-        self.summary_hyperpar_internal = None
-        self.effects = None
-        self.formula = None
+        self.summary_random: dict[str, Any] = {}
+        self.summary_fixed: dict[str, Any] | None = None
+        self.summary_hyperpar: dict[str, Any] | None = None
+        self.summary_hyperpar_internal: dict[str, Any] | None = None
+        self.effects: dict[str, Any] | None = None
+        self.formula: str | None = None
 
     def __getattr__(self, name):
         return getattr(self._native, name)

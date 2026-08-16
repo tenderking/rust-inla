@@ -163,6 +163,9 @@ def parse_formula(formula: str) -> ParsedFormula:
     for full, idx, rest in _find_f_calls(rhs):
         kw = _parse_f_kwargs(rest or "")
         model = str(kw.pop("model", "iid")).lower()
+        copy = kw.get("copy")
+        if copy is not None:
+            model = "copy"
         order = int(kw.pop("order", 0) or 0)
         graph = kw.pop("graph", None)
         raw_scale = kw.pop("scale_model", None)

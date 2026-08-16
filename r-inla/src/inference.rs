@@ -409,6 +409,7 @@ fn inla_rs_run_inla_structured(
     effect_scales: Vec<i32>,
     effect_theta_lens: Vec<i32>,
     effect_orders: Vec<i32>,
+    effect_copy_of: Vec<i32>,
     adj_lists: List,
     fixed_prec: f64,
     exposure: Vec<f64>,
@@ -434,6 +435,7 @@ fn inla_rs_run_inla_structured(
         || effect_types.len() != effect_scales.len()
         || effect_types.len() != effect_theta_lens.len()
         || effect_types.len() != effect_orders.len()
+        || (!effect_copy_of.is_empty() && effect_copy_of.len() != effect_types.len())
     {
         return Err(Error::Other(
             "effect_* vectors must have equal length".to_string(),
@@ -527,6 +529,11 @@ fn inla_rs_run_inla_structured(
             } else {
                 (0, 0, false)
             };
+            let copy_of = if effect_copy_of.is_empty() || effect_copy_of[ei] < 0 {
+                None
+            } else {
+                Some(effect_copy_of[ei] as usize)
+            };
             inla_core::StructuredEffect {
                 model: typ,
                 n: effect_ns_u[ei],
@@ -540,6 +547,7 @@ fn inla_rs_run_inla_structured(
                 ncol,
                 cyclic,
                 matern_nu: 1,
+                copy_of,
             }
         })
         .collect();

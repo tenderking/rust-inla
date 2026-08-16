@@ -55,6 +55,24 @@ stopifnot(length(res_ar1$summary.random) >= 1L)
 cat("AR1 summary.hyperpar:\n")
 print(round(res_ar1$summary.hyperpar, 3))
 
+cat("\n--- Testing copy= shared latent ---\n")
+set.seed(3)
+n_c <- 12L
+u <- 0.4 * (seq_len(n_c) - 6.5)
+df_copy2 <- data.frame(
+  y = as.numeric(u + rnorm(n_c, sd = 0.05)),
+  i = seq_len(n_c),
+  j = seq_len(n_c)
+)
+res_copy <- inla_rs(
+  y ~ -1 + f(i, model = "iid") + f(j, copy = "i"),
+  data = df_copy2,
+  control.family = list(hyper = list(prec = list(initial = log(400), fixed = TRUE)))
+)
+cat("copy mode (log_tau, beta):", paste(round(res_copy$mode, 4), collapse = ", "), "\n")
+stopifnot(is.finite(res_copy$marginal_log_lik))
+stopifnot(length(res_copy$mode) == 2L)
+
 cat("\n--- Testing Formula Parser & Inference (FGN) ---\n")
 res_fgn <- inla_rs(y ~ -1 + f(idx, model = "fgn", obs_precision = 25.0), data = df)
 cat("FGN Hyperparameter Mode (log_tau, logit_hurst):", paste(round(res_fgn$mode, 4), collapse = ", "), "\n")

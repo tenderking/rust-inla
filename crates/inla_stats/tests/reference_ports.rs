@@ -5,14 +5,14 @@ use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
 use inla_math::{csc_from_triplets_0based, kronecker_csc};
 use inla_stats::{
     BinomialObs, ExponentialSurvivalObs, GaussianObs, LaplaceObs, Link, MarginalOptions,
-    NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs,
-    ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision_csc, arp_precision_csc,
-    besag_precision_csc, bym_precision_csc, bym2_precision_csc, crw1_precision_csc,
-    crw2_precision_csc, fgn_approx_latent_len, fgn_approx_precision_csc, fgn_hurst_from_intern,
-    fgn_precision_csc, iid_precision_csc, matern2d_precision_csc, run_inla_inference,
-    run_inla_inference_a, rw1_precision_csc, rw2_precision_csc, rw2d_precision_csc,
-    seasonal_precision_csc, spde_params_from_theta, spde_precision_csc, spde_projector_csc,
-    sum_to_zero_constraint,
+    NegativeBinomialObs, Obs, PoissonObs, StructuredEffect, WeibullSurvivalObs,
+    ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision_csc,
+    arp_precision_csc, besag_precision_csc, build_structured_precision, bym_precision_csc,
+    bym2_precision_csc, crw1_precision_csc, crw2_precision_csc, fgn_approx_latent_len,
+    fgn_approx_precision_csc, fgn_hurst_from_intern, fgn_precision_csc, iid_precision_csc,
+    matern2d_precision_csc, run_inla_inference, run_inla_inference_a, rw1_precision_csc,
+    rw2_precision_csc, rw2d_precision_csc, seasonal_precision_csc, spde_params_from_theta,
+    spde_precision_csc, spde_projector_csc, sum_to_zero_constraint,
 };
 
 fn log_prior_flatish(theta: &[f64]) -> f64 {
@@ -780,4 +780,52 @@ fn port_spde_gaussian() {
     )
     .expect("spde");
     assert_finite_result(&result, n_latent, 2);
+}
+
+#[test]
+fn port_copy_beta() {
+    let n = 16usize;
+    let beta_true = 2.0;
+    let u: Vec<f64> = (0..n).map(|i| 0.4 * (i as f64 - 7.5)).collect();
+    let mut y = Vec::with_capacity(2 * n);
+    y.extend(u.iter().map(|&ui| ui + 0.02));
+    y.extend(u.iter().map(|&ui| beta_true * ui + 0.02));
+
+    let mut rows = Vec::with_capacity(2 * n);
+    let mut cols = Vec::with_capacity(2 * n);
+    let mut vals = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        rows.push(i);
+        cols.push(i);
+        vals.push(1.0);
+        rows.push(n + i);
+        cols.push(n + i);
+        vals.push(1.0);
+    }
+    let a = csc_from_triplets_0based(2 * n, 2 * n, &rows, &cols, &vals).unwrap();
+
+    let mut copy = StructuredEffect::simple("copy", n, 1);
+    copy.copy_of = Some(0);
+    let effects = [StructuredEffect::simple("iid", n, 1), copy];
+    let build_prior = move |theta: &[f64]| build_structured_precision(&effects, theta, 1e-4);
+    let obs = gaussian_obs(&y, 400.0);
+    let result = run_inla_inference_a(
+        &[0.0, 1.0],
+        &build_prior,
+        &log_prior_flatish,
+        &obs,
+        Some(&a),
+        None,
+        "ccd",
+        1.0,
+        &MarginalOptions::default(),
+        true,
+    )
+    .expect("copy");
+    assert_finite_result(&result, 2 * n, 2);
+    assert!(
+        (result.mode[1] - beta_true).abs() < 0.35,
+        "beta={} want {beta_true}",
+        result.mode[1]
+    );
 }

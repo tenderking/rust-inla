@@ -781,6 +781,7 @@ fn parse_structured_effects(
         let positions: Option<Vec<f64>> =
             d.get_item("positions")?.map(|v| v.extract()).transpose()?;
         let adj: Option<Vec<Vec<usize>>> = d.get_item("adj")?.map(|v| v.extract()).transpose()?;
+        let copy_of: Option<usize> = d.get_item("copy_of")?.map(|v| v.extract()).transpose()?;
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -794,6 +795,7 @@ fn parse_structured_effects(
             ncol,
             cyclic,
             matern_nu,
+            copy_of,
         });
     }
     Ok(out)

@@ -299,6 +299,7 @@ inla_rs_run_inla_structured <- function(
     effect_scales,
     effect_theta_lens,
     effect_orders,
+    effect_copy_of = integer(0),
     adj_lists,
     fixed_prec = 1e-4,
     E = numeric(0),
@@ -330,6 +331,7 @@ inla_rs_run_inla_structured <- function(
     as.integer(effect_scales),
     as.integer(effect_theta_lens),
     as.integer(effect_orders),
+    as.integer(effect_copy_of),
     adj_lists,
     as.numeric(fixed_prec),
     as.numeric(E),
@@ -791,6 +793,8 @@ inla_rs <- function(
   effect_scales <- integer(0)
   effect_theta_lens <- integer(0)
   effect_orders <- integer(0)
+  effect_copy_of <- integer(0)
+  effect_names_acc <- character(0)
   adj_lists <- list()
   theta <- numeric(0)
 
@@ -801,7 +805,7 @@ inla_rs <- function(
   }
 
   for (fs in f_structs) {
-    model <- tolower(fs$model)
+    model <- if (!is.null(fs$args$copy)) "copy" else tolower(fs$model)
     supported <- .inla_rs_supported_f_models()
     if (!(model %in% supported)) {
       stop("Unsupported f() model '", fs$model, "'. Supported: ",
@@ -826,7 +830,29 @@ inla_rs <- function(
     order <- fs$order
     if (is.na(order) || is.null(order)) order <- 0L
 
-    if (model == "fgn" && order %in% c(3L, 4L)) {
+    if (identical(model, "copy")) {
+      src_name <- as.character(fs$args$copy)[1]
+      src_i <- match(src_name, effect_names_acc)
+      if (is.na(src_i)) {
+        stop("f(", idx_name, ", copy='", src_name,
+             "'): source not found (must appear first)", call. = FALSE)
+      }
+      n_e <- effect_ns[src_i]
+      zcol <- as.integer(idx)
+      if (min(zcol) >= 1L) zcol <- zcol - 1L
+      if (any(zcol < 0L | zcol >= n_e)) {
+        lev <- sort(unique(idx))
+        if (length(lev) != n_e) {
+          stop("copy index for '", idx_name, "' incompatible with source n=",
+               n_e, call. = FALSE)
+        }
+        zcol <- match(idx, lev) - 1L
+      }
+      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+      graph <- NULL
+      order_enc <- 0L
+      effect_copy_of <- c(effect_copy_of, as.integer(src_i - 1L))
+    } else if (model == "fgn" && order %in% c(3L, 4L)) {
       # Approx FGN: observations map to z-block only; latent length (order+1)*n_time
       n_time <- length(unique(idx))
       n_e <- as.integer((order + 1L) * n_time)
@@ -895,6 +921,10 @@ inla_rs <- function(
       }
     }
 
+    if (!identical(model, "copy")) {
+      effect_copy_of <- c(effect_copy_of, -1L)
+    }
+    effect_names_acc <- c(effect_names_acc, idx_name)
     effect_types <- c(effect_types, model)
     effect_ns <- c(effect_ns, n_e)
     effect_scales <- c(effect_scales, if (isTRUE(fs$scale.model)) 1L else 0L)
@@ -938,6 +968,7 @@ inla_rs <- function(
     effect_scales <- c(effect_scales, 0L)
     effect_theta_lens <- c(effect_theta_lens, 0L)
     effect_orders <- c(effect_orders, 0L)
+    effect_copy_of <- c(effect_copy_of, -1L)
     adj_lists[[length(adj_lists) + 1L]] <- list()
     col_off <- col_off + p
   }
@@ -972,6 +1003,7 @@ inla_rs <- function(
     effect_scales = effect_scales,
     effect_theta_lens = effect_theta_lens,
     effect_orders = effect_orders,
+    effect_copy_of = effect_copy_of,
     adj_lists = adj_lists,
     fixed_prec = fixed_prec,
     E = E,
@@ -1255,3 +1287,4 @@ inla_rs <- function(
   class(out) <- c("inla_rs", "list")
   out
 }
+

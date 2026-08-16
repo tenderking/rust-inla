@@ -139,3 +139,27 @@ def test_inla_generic_model_subclass():
     )
     assert np.isfinite(r.marginal_log_lik)
     assert "idx" in r.summary_random
+
+
+def test_parse_formula_copy():
+    p = inla.parse_formula("y ~ -1 + f(i, model='iid') + f(j, copy='i')")
+    assert p.f_terms[0].model == "iid"
+    assert p.f_terms[1].model == "copy"
+    assert p.f_terms[1].kwargs["copy"] == "i"
+
+
+def test_copy_shared_latent():
+    rng = np.random.default_rng(4)
+    n = 12
+    u = 0.4 * (np.arange(n) - 5.5)
+    y = u + rng.normal(0, 0.05, n)
+    fit = inla(
+        "y ~ -1 + f(i, model='iid') + f(j, copy='i')",
+        data={"y": y, "i": np.arange(n), "j": np.arange(n)},
+        family="gaussian",
+        deterministic=True,
+        control_family={"hyper": {"prec": {"initial": np.log(400.0)}}},
+    )
+    assert np.isfinite(fit.marginal_log_lik)
+    assert len(fit.mode) == 2
+    assert len(fit.latent_means) == 2 * n
