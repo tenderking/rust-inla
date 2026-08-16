@@ -130,6 +130,11 @@ pub mod plan {
     pub use inla_stats::plan::*;
 }
 
+/// Lincomb / posterior sampling — [`inla_stats::posterior`].
+pub mod posterior {
+    pub use inla_stats::posterior::*;
+}
+
 // --- Stats flat re-exports (previous inla_core public API) ---
 pub use inla_stats::{
     Ar1Precision, BinomialObs, COPY_PRECISION, ClosureLatentModel, ComputationPlan,
@@ -138,9 +143,9 @@ pub use inla_stats::{
     HARD_CONSTRAINT_KAPPA, HyperPriorStack, HyperSlotMeta, HyperSlotPlan, HyperTransformKind,
     IdentityProjection, IndexSelection, InferenceResult, LaplaceObs, LatentBlockLayout,
     LatentEffectPlan, LatentEffectSpec, LatentLayout, LatentModel, LikelihoodPlan, LikelihoodSpec,
-    Link, Marginal1D, MarginalOptions, ModelConfig, ModelMeta, ModelPlan, ModelSpec,
-    NegativeBinomialObs, Obs, OptionValue, PlanError, PoissonObs, PriorFamily, PriorSpec,
-    ProjectionMapper, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, SparseProjectionMapper,
+    LinComb, LinCombSummary, Link, Marginal1D, MarginalOptions, ModelConfig, ModelMeta, ModelPlan,
+    ModelSpec, NegativeBinomialObs, Obs, OptionValue, PlanError, PoissonObs, PriorFamily,
+    PriorSpec, ProjectionMapper, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, SparseProjectionMapper,
     StructuredEffect, WaicResult, WeibullSurvivalObs, ZeroInflatedBinomialObs,
     ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision, ar1_precision_csc, arp_precision_csc,
     augment_precision_csc, besag_precision_csc, build_structured_precision, bym_precision_csc,
@@ -153,10 +158,10 @@ pub use inla_stats::{
     eval_prior_loggamma, evaluate_neg_log_posterior, fgn_approx_latent_len,
     fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern, fgn_intern_from_hurst,
     fgn_precision_csc, find_latent_mode, find_latent_mode_a, find_latent_mode_a_with_solver,
-    gaussian_mixture_marginal, hyperpar_marginals, iid_precision_csc, marginal_cdf,
-    marginal_quantiles, marginal_summary_quantiles, matern2d_precision_csc, model_metadata,
-    model_rank_deficiency, nelder_mead, plane_constraint_2d, project_constraints, read_graph_file,
-    resolve, resolve_compute_options, run_gaussian_ar1_plan, run_inla_inference,
+    gaussian_mixture_marginal, hyperpar_marginals, iid_precision_csc, lincomb_summaries,
+    marginal_cdf, marginal_quantiles, marginal_summary_quantiles, matern2d_precision_csc,
+    model_metadata, model_rank_deficiency, nelder_mead, plane_constraint_2d, project_constraints,
+    read_graph_file, resolve, resolve_compute_options, run_gaussian_ar1_plan, run_inla_inference,
     run_inla_inference_a, run_inla_inference_a_cancellable, run_inla_inference_model,
     rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
     rw2d_precision_csc, seasonal_constraint, seasonal_precision_csc, spde_params_from_theta,

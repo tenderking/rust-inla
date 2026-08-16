@@ -3,8 +3,8 @@ use rayon::prelude::*;
 use inla_math::{
     ConstraintMethod, ConstraintSpec, CscMatrix, Eval1D, FaerCpuSolver, HARD_CONSTRAINT_KAPPA,
     InlaSolver, LdltFactor, add_csc, augment_precision_csc, ccd_design, grid_design, identity_csc,
-    invert_symmetric_matrix, jacobi_eigen, laplace_newton_step_a_solver, matvec_csc,
-    predictor_variances_diag, project_constraints,
+    invert_symmetric_matrix, jacobi_eigen, laplace_newton_step_a_solver, laplace_newton_system_a,
+    matvec_csc, predictor_variances_diag, project_constraints,
 };
 
 use crate::priors::PriorSpec;
@@ -821,6 +821,42 @@ pub struct InferenceResult {
     pub marginals_latent_indices: Vec<usize>,
     /// Indices used for `marginals_predictor`.
     pub marginals_predictor_indices: Vec<usize>,
+    /// Posterior precision \(Q(\hat\theta)\) at the Laplace mode (for lincomb / sampling).
+    pub posterior_precision: Option<CscMatrix>,
+}
+
+/// Assemble \(Q_{\mathrm{post}} = Q_{\mathrm{prior}} + A^\top (-\ell'') A\) at a latent mode.
+fn posterior_precision_at(
+    q_prior: &CscMatrix,
+    obs: &[Obs],
+    a: Option<&CscMatrix>,
+    constraints: Option<&ConstraintSpec>,
+    x: &[f64],
+) -> Result<CscMatrix, String> {
+    let q_aug;
+    let q_work = if let Some(c) = constraints {
+        q_aug = augment_precision_csc(q_prior, c, HARD_CONSTRAINT_KAPPA)?;
+        &q_aug
+    } else {
+        q_prior
+    };
+    let eta = match a {
+        None => x.to_vec(),
+        Some(am) => matvec_csc(am, x)?,
+    };
+    if eta.len() != obs.len() {
+        return Err(format!(
+            "posterior Q: eta length {} != n_obs {}",
+            eta.len(),
+            obs.len()
+        ));
+    }
+    let mut evals = Vec::with_capacity(obs.len());
+    for i in 0..obs.len() {
+        evals.push(eval_likelihood(eta[i], &obs[i])?)
+    }
+    let (q_post, _) = laplace_newton_system_a(q_work, &evals, a, x).map_err(|e| e.to_string())?;
+    Ok(q_post)
 }
 
 pub fn run_inla_inference(
@@ -950,6 +986,7 @@ pub fn run_inla_inference_a_cancellable(
             )?);
         }
 
+        let q_post = posterior_precision_at(&q_prior, obs, a, constraints, &x_star)?;
         return Ok(InferenceResult {
             mode: Vec::new(),
             hessian: Vec::new(),
@@ -975,6 +1012,7 @@ pub fn run_inla_inference_a_cancellable(
             marginals_predictor,
             marginals_latent_indices: marginal_opts.latent_indices.clone(),
             marginals_predictor_indices: marginal_opts.predictor_indices.clone(),
+            posterior_precision: Some(q_post),
         });
     }
 
@@ -1254,6 +1292,13 @@ pub fn run_inla_inference_a_cancellable(
         )?);
     }
 
+    let q_post = posterior_precision_at(
+        &build_prior(&mode)?,
+        obs,
+        a,
+        constraints,
+        &cond_means[mode_index],
+    )?;
     Ok(InferenceResult {
         mode,
         hessian,
@@ -1279,6 +1324,7 @@ pub fn run_inla_inference_a_cancellable(
         marginals_predictor,
         marginals_latent_indices: marginal_opts.latent_indices.clone(),
         marginals_predictor_indices: marginal_opts.predictor_indices.clone(),
+        posterior_precision: Some(q_post),
     })
 }
 

@@ -1584,6 +1584,13 @@ class InlaResult:
         self.effects: dict[str, Any] | None = None
         self.formula: str | None = None
 
+    def lincomb(self, combs):
+        """Gaussian summaries of ``v = a' x``.
+
+        ``combs`` is a list of ``(name, [(latent_index, weight), ...])``.
+        """
+        return self._native.lincomb(combs)
+
     def __getattr__(self, name):
         return getattr(self._native, name)
 

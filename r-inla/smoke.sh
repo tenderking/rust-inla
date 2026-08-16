@@ -72,6 +72,9 @@ res_copy <- inla_rs(
 cat("copy mode (log_tau, beta):", paste(round(res_copy$mode, 4), collapse = ", "), "\n")
 stopifnot(is.finite(res_copy$marginal_log_lik))
 stopifnot(length(res_copy$mode) == 2L)
+lc <- inla_rs_lincomb_fit(res_copy, inla_rs_make_lincomb("u1", 1L, 1.0))
+cat("lincomb u1 mean=", round(lc$mean, 4), " sd=", round(lc$sd, 4), "\n", sep = "")
+stopifnot(is.finite(lc$mean), is.finite(lc$sd), lc$sd > 0)
 
 cat("\n--- Testing Formula Parser & Inference (FGN) ---\n")
 res_fgn <- inla_rs(y ~ -1 + f(idx, model = "fgn", obs_precision = 25.0), data = df)

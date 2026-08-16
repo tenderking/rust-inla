@@ -4,7 +4,7 @@
 use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
 use inla_math::{csc_from_triplets_0based, kronecker_csc};
 use inla_stats::{
-    BinomialObs, ExponentialSurvivalObs, GaussianObs, LaplaceObs, Link, MarginalOptions,
+    BinomialObs, ExponentialSurvivalObs, GaussianObs, LaplaceObs, LinComb, Link, MarginalOptions,
     NegativeBinomialObs, Obs, PoissonObs, StructuredEffect, WeibullSurvivalObs,
     ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision_csc,
     arp_precision_csc, besag_precision_csc, build_structured_precision, bym_precision_csc,
@@ -828,4 +828,16 @@ fn port_copy_beta() {
         "beta={} want {beta_true}",
         result.mode[1]
     );
+    assert!(
+        result.posterior_precision.is_some(),
+        "posterior Q should be stored"
+    );
+    let lc = result
+        .lincomb(&[LinComb {
+            name: "u0".into(),
+            weights: vec![(0, 1.0)],
+        }])
+        .unwrap();
+    assert!((lc[0].mean - result.latent_means[0]).abs() < 1e-10);
+    assert!(lc[0].sd > 0.0 && lc[0].sd.is_finite());
 }

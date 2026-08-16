@@ -1288,3 +1288,54 @@ inla_rs <- function(
   out
 }
 
+#' Build a linear combination (1-based latent indices).
+#' @export
+inla_rs_make_lincomb <- function(name, idx, weights) {
+  if (length(idx) != length(weights)) {
+    stop("idx and weights must have the same length", call. = FALSE)
+  }
+  list(
+    name = as.character(name)[1],
+    idx = as.integer(idx) - 1L,
+    weights = as.numeric(weights)
+  )
+}
+
+inla_rs_lincomb <- function(q_i, q_p, q_x, q_n, means, comb_names, comb_idx, comb_weights) {
+  .Call(
+    "wrap__inla_rs_lincomb",
+    as.integer(q_i),
+    as.integer(q_p),
+    as.numeric(q_x),
+    as.integer(q_n)[1],
+    as.numeric(means),
+    as.character(comb_names),
+    comb_idx,
+    comb_weights
+  )
+}
+
+#' Linear combinations from a fitted `"inla_rs"` object.
+#' @export
+inla_rs_lincomb_fit <- function(fit, lincombs) {
+  if (is.null(fit$posterior_q_n) || as.integer(fit$posterior_q_n) < 1L) {
+    stop("fit has no stored posterior precision", call. = FALSE)
+  }
+  if (!is.null(lincombs$name) && !is.null(lincombs$idx)) {
+    lincombs <- list(lincombs)
+  }
+  names <- vapply(lincombs, function(lc) as.character(lc$name)[1], character(1))
+  idxs <- lapply(lincombs, function(lc) as.integer(lc$idx))
+  wts <- lapply(lincombs, function(lc) as.numeric(lc$weights))
+  inla_rs_lincomb(
+    fit$posterior_q_i,
+    fit$posterior_q_p,
+    fit$posterior_q_x,
+    fit$posterior_q_n,
+    fit$latent_means,
+    names,
+    idxs,
+    wts
+  )
+}
+

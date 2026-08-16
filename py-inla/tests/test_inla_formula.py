@@ -163,3 +163,6 @@ def test_copy_shared_latent():
     assert np.isfinite(fit.marginal_log_lik)
     assert len(fit.mode) == 2
     assert len(fit.latent_means) == 2 * n
+    lc = fit.lincomb([("u0", [(0, 1.0)])])
+    assert abs(lc[0]["mean"] - fit.latent_means[0]) < 1e-10
+    assert lc[0]["sd"] > 0

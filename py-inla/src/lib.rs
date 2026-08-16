@@ -316,6 +316,42 @@ pub struct PyInferenceResult {
     /// Indices corresponding to `marginals_predictor`.
     #[pyo3(get)]
     pub marginals_predictor_indices: Vec<usize>,
+    posterior_precision: Option<inla_core::CscMatrix>,
+}
+
+#[pymethods]
+impl PyInferenceResult {
+    /// Gaussian summaries of linear combinations \(v = a^\top x\).
+    ///
+    /// `combs` is a list of `(name, [(latent_index, weight), ...])`.
+    fn lincomb(
+        &self,
+        py: Python<'_>,
+        combs: Vec<(String, Vec<(usize, f64)>)>,
+    ) -> PyResult<Vec<PyObject>> {
+        let q = self
+            .posterior_precision
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("lincomb: posterior precision was not stored"))?;
+        let specs: Vec<inla_core::LinComb> = combs
+            .into_iter()
+            .map(|(name, weights)| inla_core::LinComb { name, weights })
+            .collect();
+        let summaries = inla_core::lincomb_summaries(&self.latent_means, q, &specs)
+            .map_err(PyValueError::new_err)?;
+        let mut out = Vec::with_capacity(summaries.len());
+        for s in summaries {
+            let d = PyDict::new(py);
+            d.set_item("name", s.name)?;
+            d.set_item("mean", s.mean)?;
+            d.set_item("sd", s.sd)?;
+            d.set_item("q025", s.q025)?;
+            d.set_item("q50", s.q50)?;
+            d.set_item("q975", s.q975)?;
+            out.push(d.into());
+        }
+        Ok(out)
+    }
 }
 
 /// Build an AR1 precision matrix.
@@ -574,6 +610,7 @@ fn inference_result_to_py(result: inla_core::InferenceResult) -> PyInferenceResu
             .map(to_py_marginal)
             .collect(),
         marginals_predictor_indices: result.marginals_predictor_indices,
+        posterior_precision: result.posterior_precision,
     }
 }
 
