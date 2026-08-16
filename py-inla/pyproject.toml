@@ -23,6 +23,9 @@ target-version = "py313"
 line-length = 100
 src = ["python", "tests"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["inla"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "W"]
 

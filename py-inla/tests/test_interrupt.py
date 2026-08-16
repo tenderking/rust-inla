@@ -6,9 +6,9 @@ import time
 
 import numpy as np
 import pytest
-from inla._native import run_inla_inference
 
 import inla
+from inla._native import run_inla_inference
 
 
 def test_interrupt_handling():
