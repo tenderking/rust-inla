@@ -840,4 +840,8 @@ fn port_copy_beta() {
         .unwrap();
     assert!((lc[0].mean - result.latent_means[0]).abs() < 1e-10);
     assert!(lc[0].sd > 0.0 && lc[0].sd.is_finite());
+
+    let draws = result.posterior_sample(24, 7).unwrap();
+    assert_eq!(draws.len(), 24 * 2 * n);
+    assert!(draws.iter().all(|v| v.is_finite()));
 }

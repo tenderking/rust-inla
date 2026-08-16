@@ -1339,3 +1339,44 @@ inla_rs_lincomb_fit <- function(fit, lincombs) {
   )
 }
 
+inla_rs_posterior_sample <- function(q_i, q_p, q_x, q_n, means, n_samples = 1L, seed = 1) {
+  .Call(
+    "wrap__inla_rs_posterior_sample",
+    as.integer(q_i),
+    as.integer(q_p),
+    as.numeric(q_x),
+    as.integer(q_n)[1],
+    as.numeric(means),
+    as.integer(n_samples)[1],
+    as.numeric(seed)[1]
+  )
+}
+
+inla_rs_emarginal <- function(x, y, g_of_x) {
+  .Call(
+    "wrap__inla_rs_emarginal",
+    as.numeric(x),
+    as.numeric(y),
+    as.numeric(g_of_x)
+  )
+}
+
+#' Joint latent posterior draws from a fitted `"inla_rs"` object.
+#' @export
+inla_rs_posterior_sample_fit <- function(fit, n = 1L, seed = 1) {
+  if (is.null(fit$posterior_q_n) || as.integer(fit$posterior_q_n) < 1L) {
+    stop("fit has no stored posterior precision", call. = FALSE)
+  }
+  flat <- inla_rs_posterior_sample(
+    fit$posterior_q_i,
+    fit$posterior_q_p,
+    fit$posterior_q_x,
+    fit$posterior_q_n,
+    fit$latent_means,
+    n_samples = n,
+    seed = seed
+  )
+  n_lat <- as.integer(fit$posterior_q_n)
+  matrix(flat, nrow = as.integer(n), ncol = n_lat, byrow = TRUE)
+}
+

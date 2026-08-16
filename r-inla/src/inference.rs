@@ -740,10 +740,40 @@ fn inla_rs_lincomb(
     ))
 }
 
+/// Joint latent draws from \(\mathcal{N}(\mu, Q^{-1})\).
+#[extendr]
+fn inla_rs_posterior_sample(
+    q_i: Vec<i32>,
+    q_p: Vec<i32>,
+    q_x: Vec<f64>,
+    q_n: i32,
+    means: Vec<f64>,
+    n_samples: i32,
+    seed: f64,
+) -> std::result::Result<Vec<f64>, Error> {
+    let n = usize::try_from(q_n).map_err(|_| Error::Other("q_n".into()))?;
+    let ns = usize::try_from(n_samples).map_err(|_| Error::Other("n_samples".into()))?;
+    let q = csc_from_r_slots(n, &q_i, &q_p, &q_x)?;
+    inla_core::sample_latent_gaussian(&means, &q, ns, seed as u64).map_err(Error::Other)
+}
+
+/// \(\mathbb{E}[g(X)]\) on a 1D marginal grid.
+#[extendr]
+fn inla_rs_emarginal(
+    x: Vec<f64>,
+    y: Vec<f64>,
+    g_of_x: Vec<f64>,
+) -> std::result::Result<f64, Error> {
+    let m = inla_core::Marginal1D { x, y };
+    inla_core::emarginal(&m, &g_of_x).map_err(Error::Other)
+}
+
 extendr_module! {
     mod inference;
     fn inla_rs_run_inla_inference;
     fn inla_rs_run_inla_structured;
     fn inla_rs_run_gaussian_ar1_plan;
     fn inla_rs_lincomb;
+    fn inla_rs_posterior_sample;
+    fn inla_rs_emarginal;
 }

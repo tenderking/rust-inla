@@ -159,6 +159,7 @@ def test_copy_shared_latent():
         family="gaussian",
         deterministic=True,
         control_family={"hyper": {"prec": {"initial": np.log(400.0)}}},
+        control_compute={"return_marginals_latent": [0]},
     )
     assert np.isfinite(fit.marginal_log_lik)
     assert len(fit.mode) == 2
@@ -166,3 +167,12 @@ def test_copy_shared_latent():
     lc = fit.lincomb([("u0", [(0, 1.0)])])
     assert abs(lc[0]["mean"] - fit.latent_means[0]) < 1e-10
     assert lc[0]["sd"] > 0
+
+    draws = fit.posterior_sample(16, seed=3)
+    assert draws.shape == (16, 2 * n)
+    assert np.isfinite(draws).all()
+
+    m = fit.marginals_latent[0]
+    g = [xi * xi for xi in m.x]
+    e = m.emarginal(g)
+    assert np.isfinite(e)

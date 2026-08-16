@@ -233,6 +233,15 @@ impl PyMarginal1D {
         };
         inla_core::marginal_quantiles(&m, &probs).map_err(PyValueError::new_err)
     }
+
+    /// \(\mathbb{E}[g(X)]\) on this marginal grid (`g_of_x` evaluated at `x`).
+    fn emarginal(&self, g_of_x: Vec<f64>) -> PyResult<f64> {
+        let m = inla_core::Marginal1D {
+            x: self.x.clone(),
+            y: self.y.clone(),
+        };
+        inla_core::emarginal(&m, &g_of_x).map_err(PyValueError::new_err)
+    }
 }
 
 fn to_py_marginal(m: &inla_core::Marginal1D) -> PyMarginal1D {
@@ -351,6 +360,16 @@ impl PyInferenceResult {
             out.push(d.into());
         }
         Ok(out)
+    }
+
+    /// Draw `n_samples` latent fields from \(\mathcal{N}(\mu, Q^{-1})\) (row-major).
+    #[pyo3(signature = (n_samples, seed=1))]
+    fn posterior_sample(&self, n_samples: usize, seed: u64) -> PyResult<Vec<f64>> {
+        let q = self.posterior_precision.as_ref().ok_or_else(|| {
+            PyValueError::new_err("posterior_sample: posterior precision was not stored")
+        })?;
+        inla_core::sample_latent_gaussian(&self.latent_means, q, n_samples, seed)
+            .map_err(PyValueError::new_err)
     }
 }
 

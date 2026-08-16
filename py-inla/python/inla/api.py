@@ -1591,6 +1591,12 @@ class InlaResult:
         """
         return self._native.lincomb(combs)
 
+    def posterior_sample(self, n_samples, seed=1):
+        """Draw ``n_samples`` latent fields; returns an ``(n_samples, n)`` array."""
+        flat = self._native.posterior_sample(int(n_samples), int(seed))
+        n = len(self.latent_means)
+        return np.asarray(flat, dtype=float).reshape(int(n_samples), n)
+
     def __getattr__(self, name):
         return getattr(self._native, name)
 

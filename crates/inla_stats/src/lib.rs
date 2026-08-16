@@ -62,7 +62,9 @@ pub use plan::{
     LatentEffectPlan, LatentEffectSpec, LatentLayout, LikelihoodPlan, LikelihoodSpec, ModelPlan,
     ModelSpec, PlanError, resolve, run_gaussian_ar1_plan,
 };
-pub use posterior::{COPY_PRECISION, LinComb, LinCombSummary, lincomb_summaries};
+pub use posterior::{
+    COPY_PRECISION, LinComb, LinCombSummary, emarginal, lincomb_summaries, sample_latent_gaussian,
+};
 pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use registry::{
     HyperSlotMeta, ModelMeta, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, model_metadata,
