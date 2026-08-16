@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any
 
 from inla.formula import FTerm, ParsedFormula
-
 
 # =============================================================================
 # Likelihood Families
@@ -27,7 +27,7 @@ class Family:
     alpha: float = 0.5
     gamma: float = 1.0
     shape: float = 1.0
-    control_family: Optional[Mapping[str, Any]] = None
+    control_family: Mapping[str, Any] | None = None
 
 
 @dataclass
@@ -37,14 +37,12 @@ class Gaussian(Family):
     def __init__(
         self,
         *,
-        obs_precision: Optional[float] = None,
-        control_family: Optional[Mapping[str, Any]] = None,
+        obs_precision: float | None = None,
+        control_family: Mapping[str, Any] | None = None,
     ):
         ctrl = dict(control_family) if control_family is not None else {}
         if obs_precision is not None:
-            ctrl.setdefault("hyper", {}).setdefault("prec", {})[
-                "initial"
-            ] = float(obs_precision)
+            ctrl.setdefault("hyper", {}).setdefault("prec", {})["initial"] = float(obs_precision)
         super().__init__(name="gaussian", control_family=ctrl if ctrl else None)
 
 
@@ -56,11 +54,9 @@ class Binomial(Family):
         self,
         Ntrials: Any = None,
         *,
-        control_family: Optional[Mapping[str, Any]] = None,
+        control_family: Mapping[str, Any] | None = None,
     ):
-        super().__init__(
-            name="binomial", Ntrials=Ntrials, control_family=control_family
-        )
+        super().__init__(name="binomial", Ntrials=Ntrials, control_family=control_family)
 
 
 @dataclass
@@ -71,7 +67,7 @@ class Poisson(Family):
         self,
         E: Any = None,
         *,
-        control_family: Optional[Mapping[str, Any]] = None,
+        control_family: Mapping[str, Any] | None = None,
     ):
         super().__init__(name="poisson", E=E, control_family=control_family)
 
@@ -84,11 +80,9 @@ class NegativeBinomial(Family):
         self,
         *,
         size: float = 1.0,
-        control_family: Optional[Mapping[str, Any]] = None,
+        control_family: Mapping[str, Any] | None = None,
     ):
-        super().__init__(
-            name="negative_binomial", size=size, control_family=control_family
-        )
+        super().__init__(name="negative_binomial", size=size, control_family=control_family)
 
 
 @dataclass
@@ -99,7 +93,7 @@ class Gamma(Family):
         self,
         *,
         shape: float = 1.0,
-        control_family: Optional[Mapping[str, Any]] = None,
+        control_family: Mapping[str, Any] | None = None,
     ):
         super().__init__(name="gamma", shape=shape, control_family=control_family)
 
@@ -117,12 +111,12 @@ class Effect:
     model: str = "iid"
     order: int = 0
     graph: Any = None
-    scale_model: Optional[bool] = None
+    scale_model: bool | None = None
     initial: Any = None
     weights: Any = None
-    group: Optional[str] = None
-    group_model: Optional[str] = None
-    replicate: Optional[str] = None
+    group: str | None = None
+    group_model: str | None = None
+    replicate: str | None = None
     cyclic: bool = False
     prior: Any = None
     kwargs: dict[str, Any] = field(default_factory=dict)
@@ -164,9 +158,9 @@ class IID(Effect):
         *,
         initial: Any = None,
         prior: Any = None,
-        group: Optional[str] = None,
-        group_model: Optional[str] = None,
-        replicate: Optional[str] = None,
+        group: str | None = None,
+        group_model: str | None = None,
+        replicate: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -190,12 +184,12 @@ class Besag(Effect):
         index: str,
         *,
         graph: Any = None,
-        scale_model: Optional[bool] = None,
+        scale_model: bool | None = None,
         initial: Any = None,
         weights: Any = None,
-        group: Optional[str] = None,
-        group_model: Optional[str] = None,
-        replicate: Optional[str] = None,
+        group: str | None = None,
+        group_model: str | None = None,
+        replicate: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -221,7 +215,7 @@ class BYM(Effect):
         index: str,
         *,
         graph: Any = None,
-        scale_model: Optional[bool] = None,
+        scale_model: bool | None = None,
         initial: Any = None,
         **kwargs: Any,
     ):
@@ -244,7 +238,7 @@ class BYM2(Effect):
         index: str,
         *,
         graph: Any = None,
-        scale_model: Optional[bool] = None,
+        scale_model: bool | None = None,
         initial: Any = None,
         **kwargs: Any,
     ):
@@ -267,7 +261,7 @@ class RW1(Effect):
         index: str,
         *,
         cyclic: bool = False,
-        scale_model: Optional[bool] = None,
+        scale_model: bool | None = None,
         initial: Any = None,
         **kwargs: Any,
     ):
@@ -290,7 +284,7 @@ class RW2(Effect):
         index: str,
         *,
         cyclic: bool = False,
-        scale_model: Optional[bool] = None,
+        scale_model: bool | None = None,
         initial: Any = None,
         **kwargs: Any,
     ):
@@ -313,8 +307,8 @@ class AR1(Effect):
         index: str,
         *,
         initial: Any = None,
-        group: Optional[str] = None,
-        replicate: Optional[str] = None,
+        group: str | None = None,
+        replicate: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -358,8 +352,8 @@ class SPDE(Effect):
         *,
         spde_model: Any = None,
         initial: Any = None,
-        group: Optional[str] = None,
-        replicate: Optional[str] = None,
+        group: str | None = None,
+        replicate: str | None = None,
         **kwargs: Any,
     ):
         kw = dict(kwargs)
@@ -469,28 +463,28 @@ class ModelSpec:
     >>> result = inla.fit(DiseaseMapping, data=df)
     """
 
-    response: Optional[str] = None
-    family: Union[str, Family] = "gaussian"
+    response: str | None = None
+    family: str | Family = "gaussian"
     intercept: bool = True
-    fixed: Optional[list[Union[str, Linear]]] = None
-    fixed_effects: Optional[list[Union[str, Linear]]] = None
-    random: Optional[list[Effect]] = None
-    random_effects: Optional[list[Effect]] = None
-    offset: Optional[str] = None
+    fixed: list[str | Linear] | None = None
+    fixed_effects: list[str | Linear] | None = None
+    random: list[Effect] | None = None
+    random_effects: list[Effect] | None = None
+    offset: str | None = None
     Ntrials: Any = None
     E: Any = None
 
     def __init__(
         self,
         *,
-        response: Optional[str] = None,
-        family: Optional[Union[str, Family]] = None,
-        intercept: Optional[bool] = None,
-        fixed: Optional[Sequence[Union[str, Linear]]] = None,
-        fixed_effects: Optional[Sequence[Union[str, Linear]]] = None,
-        random: Optional[Sequence[Effect]] = None,
-        random_effects: Optional[Sequence[Effect]] = None,
-        offset: Optional[str] = None,
+        response: str | None = None,
+        family: str | Family | None = None,
+        intercept: bool | None = None,
+        fixed: Sequence[str | Linear] | None = None,
+        fixed_effects: Sequence[str | Linear] | None = None,
+        random: Sequence[Effect] | None = None,
+        random_effects: Sequence[Effect] | None = None,
+        offset: str | None = None,
         Ntrials: Any = None,
         E: Any = None,
         **kwargs: Any,
@@ -521,7 +515,9 @@ class ModelSpec:
             setattr(self, k, v)
 
     @staticmethod
-    def compile_spec(cls_or_self: Union[type[ModelSpec], ModelSpec]) -> tuple[ParsedFormula, dict[str, Any]]:
+    def compile_spec(
+        cls_or_self: type[ModelSpec] | ModelSpec,
+    ) -> tuple[ParsedFormula, dict[str, Any]]:
         """Compile class or instance into a ParsedFormula and fitting kwargs."""
         inst = cls_or_self() if isinstance(cls_or_self, type) else cls_or_self
 
@@ -545,7 +541,7 @@ class ModelSpec:
                 else:
                     raise TypeError(f"expected str or Linear for fixed effect, got {type(item)}")
 
-        # 4. Resolve random effects (from .random / .random_effects AND any attribute that is an Effect)
+        # 4. Resolve random effects (.random / .random_effects and Effect attrs)
         f_terms: list[FTerm] = []
         seen_effects: set[int] = set()
 

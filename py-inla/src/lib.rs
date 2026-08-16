@@ -71,7 +71,7 @@ fn ar1_precision_matrix(
 
 /// A wrapper around `sprs::CsMat<f64>` (Compressed Sparse Column matrix)
 /// that exposes raw pointers for zero-copy SciPy integration.
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyCscMatrix {
     pub matrix: inla_core::sparse::CscMatrix,
@@ -214,7 +214,7 @@ fn csc_from_python(obj: &Bound<'_, PyAny>) -> PyResult<inla_core::sparse::CscMat
 }
 
 /// A 1D density grid `(x, y)` (classic INLA marginal shape).
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyMarginal1D {
     #[pyo3(get)]
@@ -232,6 +232,15 @@ impl PyMarginal1D {
             y: self.y.clone(),
         };
         inla_core::marginal_quantiles(&m, &probs).map_err(PyValueError::new_err)
+    }
+
+    /// \(\mathbb{E}[g(X)]\) on this marginal grid (`g_of_x` evaluated at `x`).
+    fn emarginal(&self, g_of_x: Vec<f64>) -> PyResult<f64> {
+        let m = inla_core::Marginal1D {
+            x: self.x.clone(),
+            y: self.y.clone(),
+        };
+        inla_core::emarginal(&m, &g_of_x).map_err(PyValueError::new_err)
     }
 }
 
@@ -316,6 +325,52 @@ pub struct PyInferenceResult {
     /// Indices corresponding to `marginals_predictor`.
     #[pyo3(get)]
     pub marginals_predictor_indices: Vec<usize>,
+    posterior_precision: Option<inla_core::CscMatrix>,
+}
+
+#[pymethods]
+impl PyInferenceResult {
+    /// Gaussian summaries of linear combinations \(v = a^\top x\).
+    ///
+    /// `combs` is a list of `(name, [(latent_index, weight), ...])`.
+    fn lincomb(
+        &self,
+        py: Python<'_>,
+        combs: Vec<(String, Vec<(usize, f64)>)>,
+    ) -> PyResult<Vec<Py<PyDict>>> {
+        let q = self
+            .posterior_precision
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("lincomb: posterior precision was not stored"))?;
+        let specs: Vec<inla_core::LinComb> = combs
+            .into_iter()
+            .map(|(name, weights)| inla_core::LinComb { name, weights })
+            .collect();
+        let summaries = inla_core::lincomb_summaries(&self.latent_means, q, &specs)
+            .map_err(PyValueError::new_err)?;
+        let mut out = Vec::with_capacity(summaries.len());
+        for s in summaries {
+            let d = PyDict::new(py);
+            d.set_item("name", s.name)?;
+            d.set_item("mean", s.mean)?;
+            d.set_item("sd", s.sd)?;
+            d.set_item("q025", s.q025)?;
+            d.set_item("q50", s.q50)?;
+            d.set_item("q975", s.q975)?;
+            out.push(d.unbind());
+        }
+        Ok(out)
+    }
+
+    /// Draw `n_samples` latent fields from \(\mathcal{N}(\mu, Q^{-1})\) (row-major).
+    #[pyo3(signature = (n_samples, seed=1))]
+    fn posterior_sample(&self, n_samples: usize, seed: u64) -> PyResult<Vec<f64>> {
+        let q = self.posterior_precision.as_ref().ok_or_else(|| {
+            PyValueError::new_err("posterior_sample: posterior precision was not stored")
+        })?;
+        inla_core::sample_latent_gaussian(&self.latent_means, q, n_samples, seed)
+            .map_err(PyValueError::new_err)
+    }
 }
 
 /// Build an AR1 precision matrix.
@@ -371,8 +426,8 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
-    build_prior: PyObject,
-    log_prior_density: PyObject,
+    build_prior: Py<PyAny>,
+    log_prior_density: Py<PyAny>,
     obs: Vec<Bound<'_, PyAny>>,
     strategy: &str,
     step_or_f0: f64,
@@ -432,7 +487,7 @@ fn run_inla_inference_py(
 
     // 2. Closure for build_prior calling back to Python
     let build_prior_closure = move |theta: &[f64]| -> Result<inla_core::sparse::CscMatrix, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let theta_py = theta.to_vec();
             let res = match build_prior.call1(py, (theta_py,)) {
                 Ok(val) => val,
@@ -459,7 +514,7 @@ fn run_inla_inference_py(
 
     // 3. Closure for log_prior_density calling back to Python
     let log_prior_density_closure = move |theta: &[f64]| -> f64 {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let theta_py = theta.to_vec();
             let res = log_prior_density.call1(py, (theta_py,));
             match res {
@@ -490,7 +545,7 @@ fn run_inla_inference_py(
         ..Default::default()
     };
     let check_cancel = move || {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             if let Err(e) = py.check_signals() {
                 let mut lock = store3.lock().unwrap();
                 if lock.is_none() {
@@ -511,7 +566,7 @@ fn run_inla_inference_py(
     };
 
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
-    let result = py.allow_threads(|| {
+    let result = py.detach(|| {
         inla_core::run_inla_inference_a_cancellable(
             &initial_theta,
             &build_prior_closure,
@@ -574,6 +629,7 @@ fn inference_result_to_py(result: inla_core::InferenceResult) -> PyInferenceResu
             .map(to_py_marginal)
             .collect(),
         marginals_predictor_indices: result.marginals_predictor_indices,
+        posterior_precision: result.posterior_precision,
     }
 }
 
@@ -674,7 +730,7 @@ fn resolve_compute_options(py: Python<'_>, controls: &Bound<'_, PyDict>) -> PyRe
     Ok(d.into())
 }
 
-fn selection_to_py(py: Python<'_>, sel: &inla_core::IndexSelection) -> PyResult<PyObject> {
+fn selection_to_py(py: Python<'_>, sel: &inla_core::IndexSelection) -> PyResult<Py<PyAny>> {
     match sel {
         inla_core::IndexSelection::None => false.into_py_any(py),
         inla_core::IndexSelection::All => true.into_py_any(py),
@@ -781,6 +837,7 @@ fn parse_structured_effects(
         let positions: Option<Vec<f64>> =
             d.get_item("positions")?.map(|v| v.extract()).transpose()?;
         let adj: Option<Vec<Vec<usize>>> = d.get_item("adj")?.map(|v| v.extract()).transpose()?;
+        let copy_of: Option<usize> = d.get_item("copy_of")?.map(|v| v.extract()).transpose()?;
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -794,6 +851,7 @@ fn parse_structured_effects(
             ncol,
             cyclic,
             matern_nu,
+            copy_of,
         });
     }
     Ok(out)
@@ -834,7 +892,7 @@ fn run_gaussian_ar1_plan(
         },
         initial_theta,
     };
-    let result = py.allow_threads(|| {
+    let result = py.detach(|| {
         let plan = inla_core::resolve(spec).map_err(|e| e.0)?;
         inla_core::run_gaussian_ar1_plan(&plan, &y).map_err(|e| e.0)
     });

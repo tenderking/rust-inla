@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: test bench build-r smoke-r smoke-py
+.PHONY: test bench build-r smoke-r smoke-py lint-py
 
 test:
 	cargo test --workspace
@@ -18,3 +18,6 @@ smoke-r:
 
 smoke-py:
 	cd py-inla && ./smoke.sh
+
+lint-py:
+	cd py-inla && ruff check python tests && ruff format --check python tests

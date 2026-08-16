@@ -8,6 +8,8 @@ import numpy as np
 
 from inla._native import (
     fem_blocks_mesh as _fem_blocks_mesh,
+)
+from inla._native import (
     spde_precision_matrix,
     spde_projector_matrix,
 )

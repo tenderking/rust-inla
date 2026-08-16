@@ -5,9 +5,12 @@
 //! model `match` arms in each binding.
 
 use inla_math::{
-    ConstraintSpec, CscMatrix, block_diag_csc, identity_csc, model_rank_deficiency,
-    plane_constraint_2d, scale_csc, scale_model_csc, seasonal_constraint, sum_to_zero_constraint,
+    ConstraintSpec, CscMatrix, add_csc, block_diag_csc, identity_csc, model_rank_deficiency,
+    plane_constraint_2d, scale_csc, scale_model_csc, seasonal_constraint, sparse_from_triplets,
+    sum_to_zero_constraint,
 };
+
+use crate::posterior::COPY_PRECISION;
 
 use crate::ar1::ar1_precision_csc;
 use crate::arp::arp_precision_csc;
@@ -40,6 +43,8 @@ pub struct StructuredEffect {
     pub ncol: usize,
     pub cyclic: bool,
     pub matern_nu: usize,
+    /// Index of the source effect when `model == "copy"` (source must appear first).
+    pub copy_of: Option<usize>,
 }
 
 impl StructuredEffect {
@@ -57,6 +62,7 @@ impl StructuredEffect {
             ncol: 0,
             cyclic: false,
             matern_nu: 1,
+            copy_of: None,
         }
     }
 
@@ -82,6 +88,7 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
     let n_e = effect.n;
     match typ.as_str() {
         "fixed" => identity_csc(n_e, fixed_prec),
+        "copy" => identity_csc(n_e, COPY_PRECISION),
         "iid" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
             let q0 = maybe_scale(iid_precision_csc(n_e, 1.0)?, effect.scale_model)?;
@@ -296,7 +303,81 @@ pub fn build_structured_precision(
         off += tlen;
         blocks.push(one_block(effect, th, fixed_prec)?);
     }
-    block_diag_csc(&blocks)
+    let q = block_diag_csc(&blocks)?;
+    apply_copy_couplings(q, effects, theta)
+}
+
+/// Soft constraint \(x_{\mathrm{copy}} \approx \beta x_{\mathrm{src}}\):
+/// \(Q_{\mathrm{src}} \mathrel{+}= \tau\beta^2 I\), \(Q_{\mathrm{cross}} = -\tau\beta I\).
+/// The copy diagonal \(\tau I\) is already in the block from [`one_block`].
+fn apply_copy_couplings(
+    q: CscMatrix,
+    effects: &[StructuredEffect],
+    theta: &[f64],
+) -> Result<CscMatrix, String> {
+    let mut offsets = Vec::with_capacity(effects.len());
+    let mut off = 0usize;
+    for e in effects {
+        offsets.push(off);
+        off += e.n;
+    }
+    let n = off;
+    let mut theta_off = 0usize;
+    let mut theta_offs = Vec::with_capacity(effects.len());
+    for e in effects {
+        theta_offs.push(theta_off);
+        theta_off += e.theta_len;
+    }
+
+    let mut extra: Vec<(usize, usize, f64)> = Vec::new();
+    let tau = COPY_PRECISION;
+    for (i, e) in effects.iter().enumerate() {
+        if e.model_key() != "copy" {
+            continue;
+        }
+        let src = e.copy_of.ok_or_else(|| {
+            format!("copy effect {i}: missing copy_of (source must appear first)")
+        })?;
+        if src >= effects.len() || src == i {
+            return Err(format!("copy effect {i}: invalid source index {src}"));
+        }
+        if src > i {
+            return Err(format!(
+                "copy effect {i}: source {src} must appear before the copy"
+            ));
+        }
+        if effects[src].n != e.n {
+            return Err(format!(
+                "copy effect {i}: n={} != source n={}",
+                e.n, effects[src].n
+            ));
+        }
+        let beta = if e.theta_len > 0 {
+            theta
+                .get(theta_offs[i])
+                .copied()
+                .ok_or_else(|| format!("copy effect {i}: missing beta in theta"))?
+        } else {
+            1.0
+        };
+        if !beta.is_finite() {
+            return Err(format!("copy effect {i}: non-finite beta"));
+        }
+        let src_off = offsets[src];
+        let cpy_off = offsets[i];
+        let tau_b2 = tau * beta * beta;
+        let tau_b = tau * beta;
+        for k in 0..e.n {
+            extra.push((src_off + k, src_off + k, tau_b2));
+            extra.push((src_off + k, cpy_off + k, -tau_b));
+            extra.push((cpy_off + k, src_off + k, -tau_b));
+        }
+    }
+    if extra.is_empty() {
+        return Ok(q);
+    }
+    let extra_q = sparse_from_triplets(n, n, &extra);
+    add_csc(&q, &extra_q)
 }
 
 /// Default hyperprior stack (skips `fixed` blocks).
@@ -426,5 +507,23 @@ mod tests {
         let c = structured_constraints(&effects).unwrap().unwrap();
         assert_eq!(c.k, 2);
         assert_eq!(c.n, 6);
+    }
+
+    #[test]
+    fn copy_couples_source_with_beta() {
+        let mut copy = StructuredEffect::simple("copy", 3, 1);
+        copy.copy_of = Some(0);
+        let effects = [StructuredEffect::simple("iid", 3, 1), copy];
+        let beta = 1.5;
+        let q = build_structured_precision(&effects, &[0.0, beta], 1e-4).unwrap();
+        let dense = q.to_dense();
+        let tau = COPY_PRECISION;
+        // iid τ=exp(0)=1, plus τ_copy β² on the source diagonal
+        assert!((dense[[0, 0]] - (1.0 + tau * beta * beta)).abs() < 1e-6);
+        assert!((dense[[3, 3]] - tau).abs() < 1e-6);
+        assert!((dense[[0, 3]] + tau * beta).abs() < 1e-6);
+        assert!((dense[[3, 0]] + tau * beta).abs() < 1e-6);
+        // copy has no hard constraints
+        assert!(structured_constraints(&effects).unwrap().is_none());
     }
 }

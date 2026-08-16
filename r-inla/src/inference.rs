@@ -1,6 +1,8 @@
 //! Observation builders and INLA inference entry points for R.
 
-use crate::convert::{marginals_to_r_list, parse_adj_list_1based};
+use crate::convert::{
+    csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based, posterior_q_slots,
+};
 use extendr_api::prelude::*;
 
 /// Canonicalize likelihood family strings (R-INLA aliases → internal names).
@@ -366,6 +368,9 @@ fn inla_rs_run_inla_inference(
         f64::NAN
     };
 
+    let (posterior_q_i, posterior_q_p, posterior_q_x, posterior_q_n) =
+        posterior_q_slots(&result.posterior_precision)?;
+
     Ok(list!(
         mode = result.mode,
         hessian = result.hessian,
@@ -382,7 +387,11 @@ fn inla_rs_run_inla_inference(
         waic_lppd = result.waic_lppd,
         waic_effective_params = result.waic_effective_params,
         hurst = hurst_est,
-        order = order
+        order = order,
+        posterior_q_i = posterior_q_i,
+        posterior_q_p = posterior_q_p,
+        posterior_q_x = posterior_q_x,
+        posterior_q_n = posterior_q_n
     ))
 }
 
@@ -409,6 +418,7 @@ fn inla_rs_run_inla_structured(
     effect_scales: Vec<i32>,
     effect_theta_lens: Vec<i32>,
     effect_orders: Vec<i32>,
+    effect_copy_of: Vec<i32>,
     adj_lists: List,
     fixed_prec: f64,
     exposure: Vec<f64>,
@@ -434,6 +444,7 @@ fn inla_rs_run_inla_structured(
         || effect_types.len() != effect_scales.len()
         || effect_types.len() != effect_theta_lens.len()
         || effect_types.len() != effect_orders.len()
+        || (!effect_copy_of.is_empty() && effect_copy_of.len() != effect_types.len())
     {
         return Err(Error::Other(
             "effect_* vectors must have equal length".to_string(),
@@ -527,6 +538,11 @@ fn inla_rs_run_inla_structured(
             } else {
                 (0, 0, false)
             };
+            let copy_of = if effect_copy_of.is_empty() || effect_copy_of[ei] < 0 {
+                None
+            } else {
+                Some(effect_copy_of[ei] as usize)
+            };
             inla_core::StructuredEffect {
                 model: typ,
                 n: effect_ns_u[ei],
@@ -540,6 +556,7 @@ fn inla_rs_run_inla_structured(
                 ncol,
                 cyclic,
                 matern_nu: 1,
+                copy_of,
             }
         })
         .collect();
@@ -571,6 +588,8 @@ fn inla_rs_run_inla_structured(
     .map_err(Error::Other)?;
 
     let internal_marginals_hyperpar = marginals_to_r_list(&result.internal_marginals_hyperpar)?;
+    let (posterior_q_i, posterior_q_p, posterior_q_x, posterior_q_n) =
+        posterior_q_slots(&result.posterior_precision)?;
 
     Ok(list!(
         mode = result.mode,
@@ -589,7 +608,11 @@ fn inla_rs_run_inla_structured(
         waic_effective_params = result.waic_effective_params,
         cpo_n_failures = result.cpo_n_failures as i32,
         node_weights = result.node_weights,
-        internal_marginals_hyperpar = internal_marginals_hyperpar
+        internal_marginals_hyperpar = internal_marginals_hyperpar,
+        posterior_q_i = posterior_q_i,
+        posterior_q_p = posterior_q_p,
+        posterior_q_x = posterior_q_x,
+        posterior_q_n = posterior_q_n
     ))
 }
 
@@ -627,6 +650,8 @@ fn inla_rs_run_gaussian_ar1_plan(
     let plan = inla_core::resolve(spec).map_err(|e| Error::Other(e.0))?;
     let result = inla_core::run_gaussian_ar1_plan(&plan, &y_obs).map_err(|e| Error::Other(e.0))?;
     let internal_marginals_hyperpar = marginals_to_r_list(&result.internal_marginals_hyperpar)?;
+    let (posterior_q_i, posterior_q_p, posterior_q_x, posterior_q_n) =
+        posterior_q_slots(&result.posterior_precision)?;
     Ok(list!(
         mode = result.mode,
         hessian = result.hessian,
@@ -644,8 +669,103 @@ fn inla_rs_run_gaussian_ar1_plan(
         waic_effective_params = result.waic_effective_params,
         cpo_n_failures = result.cpo_n_failures as i32,
         node_weights = result.node_weights,
-        internal_marginals_hyperpar = internal_marginals_hyperpar
+        internal_marginals_hyperpar = internal_marginals_hyperpar,
+        posterior_q_i = posterior_q_i,
+        posterior_q_p = posterior_q_p,
+        posterior_q_x = posterior_q_x,
+        posterior_q_n = posterior_q_n
     ))
+}
+
+/// Linear combinations \(v = a^\top x\) from a stored posterior precision.
+#[extendr]
+fn inla_rs_lincomb(
+    q_i: Vec<i32>,
+    q_p: Vec<i32>,
+    q_x: Vec<f64>,
+    q_n: i32,
+    means: Vec<f64>,
+    comb_names: Vec<String>,
+    comb_idx: List,
+    comb_weights: List,
+) -> std::result::Result<List, Error> {
+    let n = usize::try_from(q_n).map_err(|_| Error::Other("q_n".into()))?;
+    let q = csc_from_r_slots(n, &q_i, &q_p, &q_x)?;
+    if comb_names.len() != comb_idx.len() || comb_names.len() != comb_weights.len() {
+        return Err(Error::Other(
+            "lincomb names/idx/weights length mismatch".into(),
+        ));
+    }
+    let mut combs = Vec::with_capacity(comb_names.len());
+    for ((idx_item, wt_item), name) in comb_idx
+        .values()
+        .zip(comb_weights.values())
+        .zip(&comb_names)
+    {
+        let idx: Vec<i32> = idx_item
+            .as_integer_vector()
+            .ok_or_else(|| Error::Other("lincomb idx must be integer".into()))?;
+        let wts: Vec<f64> = wt_item
+            .as_real_vector()
+            .ok_or_else(|| Error::Other("lincomb weights must be numeric".into()))?;
+        if idx.len() != wts.len() {
+            return Err(Error::Other(format!(
+                "lincomb '{name}': idx/weights length mismatch"
+            )));
+        }
+        let weights = idx
+            .iter()
+            .zip(&wts)
+            .map(|(&i, &w)| (i as usize, w))
+            .collect();
+        combs.push(inla_core::LinComb {
+            name: name.clone(),
+            weights,
+        });
+    }
+    let summaries = inla_core::lincomb_summaries(&means, &q, &combs).map_err(Error::Other)?;
+    let names: Vec<String> = summaries.iter().map(|s| s.name.clone()).collect();
+    let mean: Vec<f64> = summaries.iter().map(|s| s.mean).collect();
+    let sd: Vec<f64> = summaries.iter().map(|s| s.sd).collect();
+    let q025: Vec<f64> = summaries.iter().map(|s| s.q025).collect();
+    let q50: Vec<f64> = summaries.iter().map(|s| s.q50).collect();
+    let q975: Vec<f64> = summaries.iter().map(|s| s.q975).collect();
+    Ok(list!(
+        name = names,
+        mean = mean,
+        sd = sd,
+        q025 = q025,
+        q50 = q50,
+        q975 = q975
+    ))
+}
+
+/// Joint latent draws from \(\mathcal{N}(\mu, Q^{-1})\).
+#[extendr]
+fn inla_rs_posterior_sample(
+    q_i: Vec<i32>,
+    q_p: Vec<i32>,
+    q_x: Vec<f64>,
+    q_n: i32,
+    means: Vec<f64>,
+    n_samples: i32,
+    seed: f64,
+) -> std::result::Result<Vec<f64>, Error> {
+    let n = usize::try_from(q_n).map_err(|_| Error::Other("q_n".into()))?;
+    let ns = usize::try_from(n_samples).map_err(|_| Error::Other("n_samples".into()))?;
+    let q = csc_from_r_slots(n, &q_i, &q_p, &q_x)?;
+    inla_core::sample_latent_gaussian(&means, &q, ns, seed as u64).map_err(Error::Other)
+}
+
+/// \(\mathbb{E}[g(X)]\) on a 1D marginal grid.
+#[extendr]
+fn inla_rs_emarginal(
+    x: Vec<f64>,
+    y: Vec<f64>,
+    g_of_x: Vec<f64>,
+) -> std::result::Result<f64, Error> {
+    let m = inla_core::Marginal1D { x, y };
+    inla_core::emarginal(&m, &g_of_x).map_err(Error::Other)
 }
 
 extendr_module! {
@@ -653,4 +773,7 @@ extendr_module! {
     fn inla_rs_run_inla_inference;
     fn inla_rs_run_inla_structured;
     fn inla_rs_run_gaussian_ar1_plan;
+    fn inla_rs_lincomb;
+    fn inla_rs_posterior_sample;
+    fn inla_rs_emarginal;
 }

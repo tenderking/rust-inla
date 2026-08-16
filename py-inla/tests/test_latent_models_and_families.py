@@ -1,7 +1,6 @@
 """Pytest suite for expanded latent models and family arms in py-inla."""
 
 import numpy as np
-import pytest
 
 import inla
 
@@ -75,7 +74,13 @@ def test_negative_binomial_family():
         "y": np.array([1, 3, 2, 6, 4, 5], dtype=float),
         "x": np.array([0, 1, 2, 3, 4, 5], dtype=int),
     }
-    res = inla.fit("y ~ f(x, model='iid')", data=data, family="negative_binomial", size=2.0, initial_theta=[1.0])
+    res = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family="negative_binomial",
+        size=2.0,
+        initial_theta=[1.0],
+    )
     assert res.marginal_log_lik is not None
     assert np.isfinite(res.marginal_log_lik)
 
@@ -85,7 +90,13 @@ def test_zero_inflated_poisson_family():
         "y": np.array([0, 2, 0, 4, 1, 0, 3], dtype=float),
         "x": np.array([0, 1, 2, 3, 4, 5, 6], dtype=int),
     }
-    res = inla.fit("y ~ f(x, model='iid')", data=data, family="zero_inflated_poisson", zero_prob=0.2, initial_theta=[1.0])
+    res = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family="zero_inflated_poisson",
+        zero_prob=0.2,
+        initial_theta=[1.0],
+    )
     assert res.marginal_log_lik is not None
     assert np.isfinite(res.marginal_log_lik)
 
@@ -98,11 +109,24 @@ def test_survival_families_with_event():
         "event": events,
         "x": np.arange(len(times), dtype=int),
     }
-    res_exp = inla.fit("y ~ f(x, model='iid')", data=data, family="exponential_survival", event=events, initial_theta=[0.0])
+    res_exp = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family="exponential_survival",
+        event=events,
+        initial_theta=[0.0],
+    )
     assert res_exp.marginal_log_lik is not None
     assert np.isfinite(res_exp.marginal_log_lik)
 
-    res_weib = inla.fit("y ~ f(x, model='iid')", data=data, family="weibull_survival", event=events, shape=1.5, initial_theta=[0.0])
+    res_weib = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family="weibull_survival",
+        event=events,
+        shape=1.5,
+        initial_theta=[0.0],
+    )
     assert res_weib.marginal_log_lik is not None
     assert np.isfinite(res_weib.marginal_log_lik)
 
@@ -112,6 +136,13 @@ def test_laplace_family():
         "y": np.array([0.2, -0.5, 0.8, 0.1, -0.3, 0.4]),
         "x": np.arange(6, dtype=int),
     }
-    res = inla.fit("y ~ f(x, model='iid')", data=data, family="laplace", alpha=0.5, gamma=0.5, initial_theta=[1.0])
+    res = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family="laplace",
+        alpha=0.5,
+        gamma=0.5,
+        initial_theta=[1.0],
+    )
     assert res.marginal_log_lik is not None
     assert np.isfinite(res.marginal_log_lik)

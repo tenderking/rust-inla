@@ -299,6 +299,7 @@ inla_rs_run_inla_structured <- function(
     effect_scales,
     effect_theta_lens,
     effect_orders,
+    effect_copy_of = integer(0),
     adj_lists,
     fixed_prec = 1e-4,
     E = numeric(0),
@@ -330,6 +331,7 @@ inla_rs_run_inla_structured <- function(
     as.integer(effect_scales),
     as.integer(effect_theta_lens),
     as.integer(effect_orders),
+    as.integer(effect_copy_of),
     adj_lists,
     as.numeric(fixed_prec),
     as.numeric(E),
@@ -791,6 +793,8 @@ inla_rs <- function(
   effect_scales <- integer(0)
   effect_theta_lens <- integer(0)
   effect_orders <- integer(0)
+  effect_copy_of <- integer(0)
+  effect_names_acc <- character(0)
   adj_lists <- list()
   theta <- numeric(0)
 
@@ -801,7 +805,7 @@ inla_rs <- function(
   }
 
   for (fs in f_structs) {
-    model <- tolower(fs$model)
+    model <- if (!is.null(fs$args$copy)) "copy" else tolower(fs$model)
     supported <- .inla_rs_supported_f_models()
     if (!(model %in% supported)) {
       stop("Unsupported f() model '", fs$model, "'. Supported: ",
@@ -826,7 +830,29 @@ inla_rs <- function(
     order <- fs$order
     if (is.na(order) || is.null(order)) order <- 0L
 
-    if (model == "fgn" && order %in% c(3L, 4L)) {
+    if (identical(model, "copy")) {
+      src_name <- as.character(fs$args$copy)[1]
+      src_i <- match(src_name, effect_names_acc)
+      if (is.na(src_i)) {
+        stop("f(", idx_name, ", copy='", src_name,
+             "'): source not found (must appear first)", call. = FALSE)
+      }
+      n_e <- effect_ns[src_i]
+      zcol <- as.integer(idx)
+      if (min(zcol) >= 1L) zcol <- zcol - 1L
+      if (any(zcol < 0L | zcol >= n_e)) {
+        lev <- sort(unique(idx))
+        if (length(lev) != n_e) {
+          stop("copy index for '", idx_name, "' incompatible with source n=",
+               n_e, call. = FALSE)
+        }
+        zcol <- match(idx, lev) - 1L
+      }
+      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+      graph <- NULL
+      order_enc <- 0L
+      effect_copy_of <- c(effect_copy_of, as.integer(src_i - 1L))
+    } else if (model == "fgn" && order %in% c(3L, 4L)) {
       # Approx FGN: observations map to z-block only; latent length (order+1)*n_time
       n_time <- length(unique(idx))
       n_e <- as.integer((order + 1L) * n_time)
@@ -895,6 +921,10 @@ inla_rs <- function(
       }
     }
 
+    if (!identical(model, "copy")) {
+      effect_copy_of <- c(effect_copy_of, -1L)
+    }
+    effect_names_acc <- c(effect_names_acc, idx_name)
     effect_types <- c(effect_types, model)
     effect_ns <- c(effect_ns, n_e)
     effect_scales <- c(effect_scales, if (isTRUE(fs$scale.model)) 1L else 0L)
@@ -938,6 +968,7 @@ inla_rs <- function(
     effect_scales <- c(effect_scales, 0L)
     effect_theta_lens <- c(effect_theta_lens, 0L)
     effect_orders <- c(effect_orders, 0L)
+    effect_copy_of <- c(effect_copy_of, -1L)
     adj_lists[[length(adj_lists) + 1L]] <- list()
     col_off <- col_off + p
   }
@@ -972,6 +1003,7 @@ inla_rs <- function(
     effect_scales = effect_scales,
     effect_theta_lens = effect_theta_lens,
     effect_orders = effect_orders,
+    effect_copy_of = effect_copy_of,
     adj_lists = adj_lists,
     fixed_prec = fixed_prec,
     E = E,
@@ -1255,3 +1287,96 @@ inla_rs <- function(
   class(out) <- c("inla_rs", "list")
   out
 }
+
+#' Build a linear combination (1-based latent indices).
+#' @export
+inla_rs_make_lincomb <- function(name, idx, weights) {
+  if (length(idx) != length(weights)) {
+    stop("idx and weights must have the same length", call. = FALSE)
+  }
+  list(
+    name = as.character(name)[1],
+    idx = as.integer(idx) - 1L,
+    weights = as.numeric(weights)
+  )
+}
+
+inla_rs_lincomb <- function(q_i, q_p, q_x, q_n, means, comb_names, comb_idx, comb_weights) {
+  .Call(
+    "wrap__inla_rs_lincomb",
+    as.integer(q_i),
+    as.integer(q_p),
+    as.numeric(q_x),
+    as.integer(q_n)[1],
+    as.numeric(means),
+    as.character(comb_names),
+    comb_idx,
+    comb_weights
+  )
+}
+
+#' Linear combinations from a fitted `"inla_rs"` object.
+#' @export
+inla_rs_lincomb_fit <- function(fit, lincombs) {
+  if (is.null(fit$posterior_q_n) || as.integer(fit$posterior_q_n) < 1L) {
+    stop("fit has no stored posterior precision", call. = FALSE)
+  }
+  if (!is.null(lincombs$name) && !is.null(lincombs$idx)) {
+    lincombs <- list(lincombs)
+  }
+  names <- vapply(lincombs, function(lc) as.character(lc$name)[1], character(1))
+  idxs <- lapply(lincombs, function(lc) as.integer(lc$idx))
+  wts <- lapply(lincombs, function(lc) as.numeric(lc$weights))
+  inla_rs_lincomb(
+    fit$posterior_q_i,
+    fit$posterior_q_p,
+    fit$posterior_q_x,
+    fit$posterior_q_n,
+    fit$latent_means,
+    names,
+    idxs,
+    wts
+  )
+}
+
+inla_rs_posterior_sample <- function(q_i, q_p, q_x, q_n, means, n_samples = 1L, seed = 1) {
+  .Call(
+    "wrap__inla_rs_posterior_sample",
+    as.integer(q_i),
+    as.integer(q_p),
+    as.numeric(q_x),
+    as.integer(q_n)[1],
+    as.numeric(means),
+    as.integer(n_samples)[1],
+    as.numeric(seed)[1]
+  )
+}
+
+inla_rs_emarginal <- function(x, y, g_of_x) {
+  .Call(
+    "wrap__inla_rs_emarginal",
+    as.numeric(x),
+    as.numeric(y),
+    as.numeric(g_of_x)
+  )
+}
+
+#' Joint latent posterior draws from a fitted `"inla_rs"` object.
+#' @export
+inla_rs_posterior_sample_fit <- function(fit, n = 1L, seed = 1) {
+  if (is.null(fit$posterior_q_n) || as.integer(fit$posterior_q_n) < 1L) {
+    stop("fit has no stored posterior precision", call. = FALSE)
+  }
+  flat <- inla_rs_posterior_sample(
+    fit$posterior_q_i,
+    fit$posterior_q_p,
+    fit$posterior_q_x,
+    fit$posterior_q_n,
+    fit$latent_means,
+    n_samples = n,
+    seed = seed
+  )
+  n_lat <- as.integer(fit$posterior_q_n)
+  matrix(flat, nrow = as.integer(n), ncol = n_lat, byrow = TRUE)
+}
+

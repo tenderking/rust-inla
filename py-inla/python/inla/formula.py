@@ -5,8 +5,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
-
+from typing import Any
 
 _F_CALL_RE = re.compile(
     r"f\s*\(\s*(?P<idx>[A-Za-z_][\w.]*)\s*(?P<rest>(?:,\s*.*?)?)\s*\)",
@@ -78,7 +77,7 @@ class FTerm:
     order: int = 0
     graph: Any = None
     #: ``None`` means "use the registry default for this model".
-    scale_model: Optional[bool] = None
+    scale_model: bool | None = None
     initial: Any = None
     kwargs: dict = field(default_factory=dict)
 
@@ -163,6 +162,9 @@ def parse_formula(formula: str) -> ParsedFormula:
     for full, idx, rest in _find_f_calls(rhs):
         kw = _parse_f_kwargs(rest or "")
         model = str(kw.pop("model", "iid")).lower()
+        copy = kw.get("copy")
+        if copy is not None:
+            model = "copy"
         order = int(kw.pop("order", 0) or 0)
         graph = kw.pop("graph", None)
         raw_scale = kw.pop("scale_model", None)
@@ -207,9 +209,7 @@ def parse_formula(formula: str) -> ParsedFormula:
                 fixed_terms.append(name)
 
     # Detect "-1 +" or "0 +" style at start of original rhs
-    if re.search(r"(^|[\s+])-\s*1([\s+]|$)", rhs) or re.search(
-        r"(^|[\s+])0\s*\+", rhs
-    ):
+    if re.search(r"(^|[\s+])-\s*1([\s+]|$)", rhs) or re.search(r"(^|[\s+])0\s*\+", rhs):
         intercept = False
 
     return ParsedFormula(

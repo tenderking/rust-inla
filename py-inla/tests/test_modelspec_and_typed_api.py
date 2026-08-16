@@ -9,16 +9,14 @@ from scipy import sparse
 import inla
 from inla import (
     AR1,
+    IID,
+    RW1,
     Besag,
     Binomial,
     Gaussian,
-    IID,
-    Intercept,
     Linear,
     ModelSpec,
     Poisson,
-    RW1,
-    RW2,
 )
 
 
@@ -79,15 +77,9 @@ def test_functional_and_modelspec_equivalence_gaussian_ar1():
     res_spec_inst = inla.fit(spec_inst, data=data, deterministic=True)
 
     # Check identical latent means and marginal log-likelihood
-    np.testing.assert_allclose(
-        res_formula.latent_means, res_functional.latent_means, rtol=1e-5
-    )
-    np.testing.assert_allclose(
-        res_formula.latent_means, res_spec_cls.latent_means, rtol=1e-5
-    )
-    np.testing.assert_allclose(
-        res_formula.latent_means, res_spec_inst.latent_means, rtol=1e-5
-    )
+    np.testing.assert_allclose(res_formula.latent_means, res_functional.latent_means, rtol=1e-5)
+    np.testing.assert_allclose(res_formula.latent_means, res_spec_cls.latent_means, rtol=1e-5)
+    np.testing.assert_allclose(res_formula.latent_means, res_spec_inst.latent_means, rtol=1e-5)
 
     assert pytest.approx(res_formula.marginal_log_lik, rel=1e-4) == res_functional.marginal_log_lik
     assert pytest.approx(res_formula.marginal_log_lik, rel=1e-4) == res_spec_cls.marginal_log_lik
@@ -165,7 +157,7 @@ def test_modelspec_inheritance_and_overrides():
     assert "x1" in res_ext.summary_fixed["names"]
     assert "x2" in res_ext.summary_fixed["names"]
     assert len(res_base.summary_fixed["mean"]) == 2  # (Intercept), x1
-    assert len(res_ext.summary_fixed["mean"]) == 3   # (Intercept), x1, x2
+    assert len(res_ext.summary_fixed["mean"]) == 3  # (Intercept), x1, x2
 
 
 def test_modelspec_without_intercept():
@@ -238,4 +230,3 @@ def test_missing_response_prediction():
     pred_missing = beta[0] + beta[1] * x[missing_indices]
     true_missing = y[missing_indices]
     np.testing.assert_allclose(pred_missing, true_missing, atol=0.5)
-

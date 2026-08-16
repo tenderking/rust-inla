@@ -14,6 +14,7 @@ pub mod matern2d;
 pub mod model_selection;
 pub mod options;
 pub mod plan;
+pub mod posterior;
 pub mod priors;
 pub mod projection;
 pub mod registry;
@@ -60,6 +61,9 @@ pub use plan::{
     ComputationPlan, ComputationSpec, HyperSlotPlan, HyperTransformKind, LatentBlockLayout,
     LatentEffectPlan, LatentEffectSpec, LatentLayout, LikelihoodPlan, LikelihoodSpec, ModelPlan,
     ModelSpec, PlanError, resolve, run_gaussian_ar1_plan,
+};
+pub use posterior::{
+    COPY_PRECISION, LinComb, LinCombSummary, emarginal, lincomb_summaries, sample_latent_gaussian,
 };
 pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use registry::{

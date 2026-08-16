@@ -12,7 +12,7 @@ use crate::priors::{HyperPriorStack, PriorSpec};
 /// Latent models understood by the structured/formula paths.
 pub const SUPPORTED_MODELS: &[&str] = &[
     "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "besag2", "bym", "bym2", "fgn",
-    "seasonal", "crw1", "crw2", "matern2d", "spde", "fixed", "rgeneric",
+    "seasonal", "crw1", "crw2", "matern2d", "spde", "fixed", "rgeneric", "copy",
 ];
 
 /// Group (`control.group`) models understood by the Kronecker path.
@@ -171,6 +171,14 @@ pub fn model_metadata(
             } else {
                 default_theta.extend_from_slice(&[0.0, 0.0]);
             }
+        }
+        "copy" => {
+            hyper.push(HyperSlotMeta::new(
+                "beta",
+                "Beta",
+                HyperTransformKind::Identity,
+            ));
+            default_theta.push(1.0);
         }
         "rgeneric" => {
             let n_th = if order > 0 { order } else { 1 };
@@ -384,5 +392,16 @@ mod tests {
     #[test]
     fn unknown_model_is_rejected() {
         assert!(model_metadata("does_not_exist", 0, None, false).is_err());
+    }
+
+    #[test]
+    fn copy_metadata() {
+        let meta = model_metadata("copy", 0, None, false).unwrap();
+        assert_eq!(meta.theta_len, 1);
+        assert_eq!(meta.default_theta, vec![1.0]);
+        assert_eq!(meta.hyper[0].label, "Beta");
+        assert_eq!(meta.hyper[0].transform_tag(), "identity");
+        assert_eq!(meta.rank_deficiency, 0);
+        assert!(!meta.default_scale_model);
     }
 }

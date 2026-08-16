@@ -3,8 +3,10 @@
 import signal
 import threading
 import time
-import pytest
+
 import numpy as np
+import pytest
+
 import inla
 from inla._native import run_inla_inference
 

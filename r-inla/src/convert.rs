@@ -55,6 +55,47 @@ pub(crate) fn marginal_to_r_matrix(m: &inla_core::Marginal1D) -> std::result::Re
     Ok(mat)
 }
 
+pub(crate) fn posterior_q_slots(
+    q: &Option<inla_core::CscMatrix>,
+) -> std::result::Result<(Vec<i32>, Vec<i32>, Vec<f64>, i32), Error> {
+    let Some(q) = q else {
+        return Ok((Vec::new(), Vec::new(), Vec::new(), 0));
+    };
+    let slots = csc_for_r_dgcmatrix(q).map_err(Error::Other)?;
+    Ok((slots.i, slots.p, slots.x, slots.nrow as i32))
+}
+
+pub(crate) fn csc_from_r_slots(
+    n: usize,
+    i: &[i32],
+    p: &[i32],
+    x: &[f64],
+) -> std::result::Result<inla_core::CscMatrix, Error> {
+    if p.len() != n + 1 {
+        return Err(Error::Other(format!(
+            "CSC p length {} != n+1={}",
+            p.len(),
+            n + 1
+        )));
+    }
+    let mut rows = Vec::with_capacity(x.len());
+    let mut cols = Vec::with_capacity(x.len());
+    let mut vals = Vec::with_capacity(x.len());
+    for col in 0..n {
+        let start = usize::try_from(p[col]).map_err(|_| Error::Other("CSC p".into()))?;
+        let end = usize::try_from(p[col + 1]).map_err(|_| Error::Other("CSC p".into()))?;
+        if end > i.len() || end > x.len() || start > end {
+            return Err(Error::Other("CSC pointer out of range".into()));
+        }
+        for k in start..end {
+            rows.push(usize::try_from(i[k]).map_err(|_| Error::Other("CSC i".into()))?);
+            cols.push(col);
+            vals.push(x[k]);
+        }
+    }
+    inla_core::csc_from_triplets_0based(n, n, &rows, &cols, &vals).map_err(Error::Other)
+}
+
 pub(crate) fn marginals_to_r_list(
     ms: &[inla_core::Marginal1D],
 ) -> std::result::Result<List, Error> {

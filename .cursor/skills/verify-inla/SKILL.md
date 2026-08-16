@@ -27,6 +27,7 @@ cargo test --workspace
 From repo root, with `.venv` if present:
 
 ```bash
+cd py-inla && ruff check python tests && ruff format --check python tests
 cd py-inla && maturin develop --release
 ../.venv/bin/python -m pytest tests -q
 ```

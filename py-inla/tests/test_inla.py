@@ -11,14 +11,15 @@ import math
 import numpy as np
 import pytest
 import scipy.sparse as sp
+
 import inla
 
 
 def _sample_gmrf(q_csc: inla.PyCscMatrix, rng: np.random.Generator) -> np.ndarray:
     q = q_csc.to_scipy().toarray()
-    l = np.linalg.cholesky(q)
+    chol = np.linalg.cholesky(q)
     z = rng.standard_normal(q.shape[0])
-    return np.linalg.solve(l.T, z)
+    return np.linalg.solve(chol.T, z)
 
 
 def test_scipy_conversion():
