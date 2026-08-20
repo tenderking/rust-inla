@@ -1,7 +1,8 @@
 //! Observation builders and INLA inference entry points for R.
 
 use crate::convert::{
-    csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based, posterior_q_slots,
+    csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based, parse_effect_positions,
+    posterior_q_slots,
 };
 use extendr_api::prelude::*;
 
@@ -420,6 +421,7 @@ fn inla_rs_run_inla_structured(
     effect_orders: Vec<i32>,
     effect_copy_of: Vec<i32>,
     adj_lists: List,
+    effect_positions: List,
     fixed_prec: f64,
     exposure: Vec<f64>,
     ntrials: Vec<f64>,
@@ -431,6 +433,7 @@ fn inla_rs_run_inla_structured(
     gamma: f64,
     shape: f64,
     deterministic: bool,
+    gaussian_free_prec: bool,
 ) -> std::result::Result<List, Error> {
     let n_obs = y_obs.len();
     let a_nrow_u = usize::try_from(a_nrow).map_err(|_| Error::Other("a_nrow".into()))?;
@@ -453,6 +456,11 @@ fn inla_rs_run_inla_structured(
     if adj_lists.len() != effect_types.len() {
         return Err(Error::Other(
             "adj_lists length must match number of effects".to_string(),
+        ));
+    }
+    if effect_positions.len() != effect_types.len() {
+        return Err(Error::Other(
+            "effect_positions length must match number of effects".to_string(),
         ));
     }
 
@@ -507,10 +515,11 @@ fn inla_rs_run_inla_structured(
         .map(|&v| usize::try_from(v).unwrap_or(0))
         .collect();
     let effect_orders_i: Vec<i32> = effect_orders.clone();
-    let expected_theta: usize = effect_theta_lens_u.iter().sum();
+    let expected_theta: usize =
+        effect_theta_lens_u.iter().sum::<usize>() + if gaussian_free_prec { 1 } else { 0 };
     if initial_theta.len() != expected_theta {
         return Err(Error::Other(format!(
-            "initial_theta length {} != sum(effect_theta_lens) {}",
+            "initial_theta length {} != expected {}",
             initial_theta.len(),
             expected_theta
         )));
@@ -521,6 +530,8 @@ fn inla_rs_run_inla_structured(
             "sum(effect_ns)={n_lat_expected} != A.ncols={a_ncol_u}"
         )));
     }
+
+    let positions = parse_effect_positions(&effect_positions, &effect_ns_u)?;
 
     let effects: Vec<inla_core::StructuredEffect> = (0..effect_types_owned.len())
         .map(|ei| {
@@ -550,7 +561,7 @@ fn inla_rs_run_inla_structured(
                 theta_len: effect_theta_lens_u[ei],
                 order: raw_order,
                 adj: adjs[ei].clone(),
-                positions: None,
+                positions: positions[ei].clone(),
                 crw2_layout: "simple".into(),
                 nrow,
                 ncol,
@@ -565,15 +576,55 @@ fn inla_rs_run_inla_structured(
 
     let effects_for_q = effects.clone();
     let build_prior = move |theta: &[f64]| -> std::result::Result<inla_core::CscMatrix, String> {
-        inla_core::build_structured_precision(&effects_for_q, theta, fixed_prec)
+        let latent_th = if gaussian_free_prec {
+            if theta.is_empty() { &[] } else { &theta[1..] }
+        } else {
+            theta
+        };
+        inla_core::build_structured_precision(&effects_for_q, latent_th, fixed_prec)
     };
 
     let log_prior_density = {
         let stack = inla_core::structured_prior_stack(&effects);
-        move |theta: &[f64]| -> f64 { stack.log_density(theta).unwrap_or(f64::NEG_INFINITY) }
+        let fam_prior = inla_core::PriorSpec::loggamma(1.0, 5e-5);
+        move |theta: &[f64]| -> f64 {
+            if gaussian_free_prec {
+                if theta.is_empty() {
+                    return f64::NEG_INFINITY;
+                }
+                let lp_fam = fam_prior
+                    .log_density(&theta[..1])
+                    .unwrap_or(f64::NEG_INFINITY);
+                let lp_latent = stack.log_density(&theta[1..]).unwrap_or(f64::NEG_INFINITY);
+                lp_fam + lp_latent
+            } else {
+                stack.log_density(theta).unwrap_or(f64::NEG_INFINITY)
+            }
+        }
     };
 
-    let result = inla_core::run_inla_inference_a(
+    let y_obs_copy = y_obs.clone();
+    let build_obs_closure = move |th: &[f64]| -> Vec<inla_core::Obs> {
+        let prec = if !th.is_empty() { th[0].exp() } else { 1.0 };
+        y_obs_copy
+            .iter()
+            .map(|&y| {
+                inla_core::Obs::Gaussian(inla_core::GaussianObs {
+                    y,
+                    precision: prec,
+                    link: link_ty,
+                })
+            })
+            .collect()
+    };
+    let build_obs_opt: Option<&(dyn Fn(&[f64]) -> Vec<inla_core::Obs> + Sync)> =
+        if gaussian_free_prec {
+            Some(&build_obs_closure)
+        } else {
+            None
+        };
+
+    let result = inla_core::run_inla_inference_a_cancellable(
         &initial_theta,
         &build_prior,
         &log_prior_density,
@@ -584,6 +635,8 @@ fn inla_rs_run_inla_structured(
         step_or_f0,
         &inla_core::MarginalOptions::default(),
         deterministic,
+        None,
+        build_obs_opt,
     )
     .map_err(Error::Other)?;
 

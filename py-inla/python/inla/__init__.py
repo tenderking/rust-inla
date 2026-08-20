@@ -55,7 +55,7 @@ from inla._native import (
     rw2_precision_matrix,
     seasonal_precision_matrix,
 )
-from inla.api import InlaResult, _fit, fit
+from inla.api import InlaResult, _fit, fit, group
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
 from inla.models import (
@@ -125,6 +125,7 @@ _mod.__dict__.update(
             "PyMarginal1D",
             "PyInferenceResult",
             "parse_formula",
+            "group",
             "generic",
             "define",
             "GenericModel",
@@ -180,6 +181,7 @@ _mod.__dict__.update(
         "PyMarginal1D": PyMarginal1D,
         "PyInferenceResult": PyInferenceResult,
         "parse_formula": parse_formula,
+        "group": group,
         "generic": _generic,
         "spde": _spde,
         "models": _models_mod,

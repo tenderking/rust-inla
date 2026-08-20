@@ -68,7 +68,7 @@ def test_inference_ar1():
         "y ~ -1 + f(idx, model='ar1')",
         data={"y": y, "idx": np.arange(n)},
         family="gaussian",
-        control_family={"hyper": {"prec": {"initial": math.log(obs_prec)}}},
+        control_family={"hyper": {"prec": {"initial": math.log(obs_prec), "fixed": True}}},
     )
 
     assert len(res.mode) == 2
@@ -94,7 +94,7 @@ def test_inference_fgn():
         "y ~ -1 + f(idx, model='fgn')",
         data={"y": y, "idx": np.arange(n)},
         family="gaussian",
-        control_family={"hyper": {"prec": {"initial": math.log(1000.0)}}},
+        control_family={"hyper": {"prec": {"initial": math.log(1000.0), "fixed": True}}},
     )
 
     est_h = 1.0 / (1.0 + math.exp(-res.mode[1]))
@@ -115,7 +115,7 @@ def test_inference_fgn_approx():
         f"y ~ -1 + f(idx, model='fgn', order={order})",
         data={"y": y, "idx": np.arange(n)},
         family="gaussian",
-        control_family={"hyper": {"prec": {"initial": math.log(obs_prec)}}},
+        control_family={"hyper": {"prec": {"initial": math.log(obs_prec), "fixed": True}}},
         initial_theta=[1.0, inla.fgn_intern_from_hurst(h_true)],
     )
 
@@ -134,7 +134,7 @@ def test_inference_rw2():
         "y ~ -1 + f(idx, model='rw2')",
         data={"y": y, "idx": np.arange(n)},
         family="gaussian",
-        control_family={"hyper": {"prec": {"initial": math.log(100.0)}}},
+        control_family={"hyper": {"prec": {"initial": math.log(100.0), "fixed": True}}},
     )
     assert len(res.mode) == 1
     assert res.mode[0] > 0.0

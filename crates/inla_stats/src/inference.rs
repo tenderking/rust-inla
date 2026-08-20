@@ -909,6 +909,7 @@ pub fn run_inla_inference_a(
         marginal_opts,
         deterministic,
         None,
+        None,
     )
 }
 
@@ -925,6 +926,7 @@ pub fn run_inla_inference_a_cancellable(
     marginal_opts: &crate::marginals::MarginalOptions,
     deterministic: bool,
     check_cancel: Option<&(dyn Fn() -> Result<(), String> + Sync)>,
+    build_obs: Option<&(dyn Fn(&[f64]) -> Vec<Obs> + Sync)>,
 ) -> Result<InferenceResult, String> {
     let m = initial_theta.len();
     let n_obs = obs.len();
@@ -1025,6 +1027,7 @@ pub fn run_inla_inference_a_cancellable(
         a,
         constraints,
         check_cancel,
+        build_obs,
     };
 
     let mode = crate::hyper_opt::nelder_mead(initial_theta, 0.1, 200, 1e-6, &config)?;
@@ -1097,11 +1100,19 @@ pub fn run_inla_inference_a_cancellable(
             }
 
             let q_prior = build_prior(&theta)?;
+            let obs_buf;
+            let obs_slice = match build_obs {
+                Some(f) => {
+                    obs_buf = f(&theta);
+                    &obs_buf[..]
+                }
+                None => obs,
+            };
             // Per-node solver factory: CCD Rayon workers must not share &mut InlaSolver.
             let mut solver = FaerCpuSolver::new();
             let (x_star, marginal_log_lik) = match find_latent_mode_a_with_solver(
                 &q_prior,
-                obs,
+                obs_slice,
                 a,
                 constraints,
                 200,
@@ -1238,12 +1249,21 @@ pub fn run_inla_inference_a_cancellable(
     )
     .unwrap_or(f64::NAN);
 
+    let mode_obs_buf;
+    let mode_obs = match build_obs {
+        Some(f) => {
+            mode_obs_buf = f(&mode);
+            &mode_obs_buf[..]
+        }
+        None => obs,
+    };
+
     let dic_result =
-        crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, mode_index)?;
-    let waic_result = crate::model_selection::compute_waic(obs, &cond_eta, &norm_weights)?;
+        crate::model_selection::compute_dic(mode_obs, &cond_eta, &norm_weights, mode_index)?;
+    let waic_result = crate::model_selection::compute_waic(mode_obs, &cond_eta, &norm_weights)?;
 
     let cpo_result =
-        crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?;
+        crate::model_selection::compute_cpo_pit(mode_obs, &cond_eta, &cond_eta_var, &norm_weights)?;
 
     let internal_marginals_hyperpar = if marginal_opts.hyperpar && m > 0 {
         crate::marginals::hyperpar_marginals(
@@ -1364,6 +1384,7 @@ pub fn run_inla_inference_model(
         step_or_f0,
         marginal_opts,
         deterministic,
+        None,
         None,
     )
 }

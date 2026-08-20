@@ -157,7 +157,7 @@ def test_copy_shared_latent():
         data={"y": y, "i": np.arange(n), "j": np.arange(n)},
         family="gaussian",
         deterministic=True,
-        control_family={"hyper": {"prec": {"initial": np.log(400.0)}}},
+        control_family={"hyper": {"prec": {"initial": np.log(400.0), "fixed": True}}},
         control_compute={"return_marginals_latent": [0]},
     )
     assert np.isfinite(fit.marginal_log_lik)

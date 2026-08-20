@@ -14,6 +14,8 @@ pub struct ModelConfig<'a> {
     pub constraints: Option<&'a ConstraintSpec>,
     /// Optional cancellation check callback.
     pub check_cancel: Option<&'a (dyn Fn() -> Result<(), String> + Sync)>,
+    /// Optional dynamic observation builder (e.g. for free likelihood precision).
+    pub build_obs: Option<&'a (dyn Fn(&[f64]) -> Vec<Obs> + Sync)>,
 }
 
 pub fn evaluate_neg_log_posterior(theta: &[f64], config: &ModelConfig) -> Result<f64, String> {
@@ -21,14 +23,15 @@ pub fn evaluate_neg_log_posterior(theta: &[f64], config: &ModelConfig) -> Result
         cancel()?;
     }
     let q_prior = (config.build_prior)(theta)?;
-    match find_latent_mode_a(
-        &q_prior,
-        config.obs,
-        config.a,
-        config.constraints,
-        200,
-        1e-5,
-    ) {
+    let obs_buf;
+    let obs_slice = match config.build_obs {
+        Some(f) => {
+            obs_buf = f(theta);
+            &obs_buf[..]
+        }
+        None => config.obs,
+    };
+    match find_latent_mode_a(&q_prior, obs_slice, config.a, config.constraints, 200, 1e-5) {
         Ok((_x_star, _factor, marginal_log_lik)) => {
             let log_prior = (config.log_prior_density)(theta);
             Ok(-(marginal_log_lik + log_prior))

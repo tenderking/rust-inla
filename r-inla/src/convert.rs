@@ -28,6 +28,33 @@ pub(crate) fn csc_to_dgcmatrix(
     Ok(m.into())
 }
 
+pub(crate) fn parse_effect_positions(
+    lists: &List,
+    ns: &[usize],
+) -> std::result::Result<Vec<Option<Vec<f64>>>, Error> {
+    if lists.len() != ns.len() {
+        return Err(Error::Other(
+            "effect_positions length must match number of effects".to_string(),
+        ));
+    }
+    let mut out = Vec::with_capacity(ns.len());
+    for (ei, item) in lists.values().enumerate() {
+        let vals: Vec<f64> = if let Some(v) = item.as_real_vector() {
+            v
+        } else if let Some(v) = item.as_integer_vector() {
+            v.into_iter().map(|i| i as f64).collect()
+        } else {
+            Vec::new()
+        };
+        if vals.len() == ns[ei] && vals.iter().all(|x| x.is_finite()) {
+            out.push(Some(vals));
+        } else {
+            out.push(None);
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn parse_adj_list_1based(
     adj_list: &List,
 ) -> std::result::Result<Vec<Vec<usize>>, Error> {
