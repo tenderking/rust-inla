@@ -1262,7 +1262,12 @@ def _fit(
                 zcol = np.asarray(raw_idx_val.codes)
             else:
                 arr = np.asarray(raw_idx_val)
-                if np.issubdtype(arr.dtype, np.integer) and int(arr.min()) == 1 and int(arr.max()) == len(np.unique(arr)):
+                dense_int = (
+                    np.issubdtype(arr.dtype, np.integer)
+                    and int(arr.min()) == 1
+                    and int(arr.max()) == len(np.unique(arr))
+                )
+                if dense_int:
                     n_main = int(arr.max())
                     zcol = arr - 1
                     levels = np.arange(1, n_main + 1)
@@ -1672,7 +1677,11 @@ def _fit(
         if family_free_prec:
             fam_th = [float(th[0])]
             try:
-                lp += float(core.hyper_prior_stack_log_density([family_prior_spec[0]], [family_prior_spec[1]], fam_th))
+                lp += float(
+                    core.hyper_prior_stack_log_density(
+                        [family_prior_spec[0]], [family_prior_spec[1]], fam_th
+                    )
+                )
             except Exception:
                 lp += float(fam_th[0] - 5e-5 * np.exp(fam_th[0]))
             latent_th = th[1:]
@@ -1712,7 +1721,8 @@ def _fit(
                 theta = [family_initial_theta] + init_arr
             else:
                 raise ValueError(
-                    f"initial_theta length {len(init_arr)} != expected {1 + total_latent_dim} (or {total_latent_dim})"
+                    f"initial_theta length {len(init_arr)} != expected "
+                    f"{1 + total_latent_dim} (or {total_latent_dim})"
                 )
         else:
             if len(init_arr) == total_latent_dim:
