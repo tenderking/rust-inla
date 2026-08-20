@@ -301,6 +301,7 @@ inla_rs_run_inla_structured <- function(
     effect_orders,
     effect_copy_of = integer(0),
     adj_lists,
+    effect_positions = list(),
     fixed_prec = 1e-4,
     E = numeric(0),
     Ntrials = numeric(0),
@@ -311,7 +312,8 @@ inla_rs_run_inla_structured <- function(
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
-    deterministic = FALSE) {
+    deterministic = FALSE,
+    gaussian_free_prec = FALSE) {
   .Call(
     "wrap__inla_rs_run_inla_structured",
     as.numeric(initial_theta),
@@ -333,6 +335,7 @@ inla_rs_run_inla_structured <- function(
     as.integer(effect_orders),
     as.integer(effect_copy_of),
     adj_lists,
+    effect_positions,
     as.numeric(fixed_prec),
     as.numeric(E),
     as.numeric(Ntrials),
@@ -343,7 +346,8 @@ inla_rs_run_inla_structured <- function(
     as.numeric(alpha),
     as.numeric(gamma),
     as.numeric(shape),
-    as.logical(deterministic)
+    as.logical(deterministic),
+    as.logical(gaussian_free_prec)
   )
 }
 
@@ -395,9 +399,6 @@ inla_rs_hyper_prior_stack_log_density <- function(names, params, theta) {
   )
 }
 
-#' Bin a continuous covariate into `n` groups (R-INLA `inla.group` style).
-#'
-#' Returns integer group indices in `1..n` (or `1..n_unique` when `n` is NULL).
 #' Classic-INLA style survival response helper.
 #'
 #' Returns a two-column data frame; use with `family = "exponential.surv"` (etc.)
@@ -411,31 +412,49 @@ if (!exists("inla.surv", mode = "function", inherits = TRUE)) {
   inla.surv <- inla_rs_surv
 }
 
-inla_rs_group <- function(x, n = NULL, method = c("quantile", "cut")) {
+#' Bin a continuous covariate into `n` groups (classic R-INLA `inla.group`).
+#'
+#' Returns the **median** of each occupied bin (not integer codes `1..K`).
+#' Those medians are the RW2/`$ID` locations, matching
+#' `f(inla.group(x, n), model = "rw2")`.
+inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = FALSE) {
   method <- match.arg(method)
   x <- as.numeric(x)
-  ok <- is.finite(x)
-  if (!any(ok)) {
+  if (!any(is.finite(x))) {
     stop("inla_rs_group: no finite values", call. = FALSE)
   }
-  if (is.null(n)) {
-    ux <- sort(unique(x[ok]))
-    out <- match(x, ux)
-    return(as.integer(out))
-  }
   n <- as.integer(n)[1]
-  if (n < 2L) {
-    stop("inla_rs_group: n must be >= 2", call. = FALSE)
+  if (is.na(n) || n < 1L) {
+    stop("inla_rs_group: n must be >= 1", call. = FALSE)
   }
-  if (method == "quantile") {
-    br <- unique(as.numeric(quantile(x[ok], probs = seq(0, 1, length.out = n + 1L), na.rm = TRUE)))
-  } else {
-    br <- seq(min(x[ok]), max(x[ok]), length.out = n + 1L)
+
+  core <- function(xx) {
+    if (n == 1L) {
+      return(rep(stats::median(xx), length(xx)))
+    }
+    if (method == "cut") {
+      a <- cut(xx, n)
+    } else {
+      aq <- unique(as.numeric(stats::quantile(
+        xx, probs = c(0, stats::ppoints(n - 1L), 1)
+      )))
+      a <- cut(xx, breaks = aq, include.lowest = TRUE)
+    }
+    idx <- as.integer(a)
+    med <- vapply(seq_len(nlevels(a)), function(i) {
+      xi <- xx[idx == i]
+      if (length(xi) > 0L) stats::median(xi) else NA_real_
+    }, numeric(1))
+    if (isTRUE(idx.only)) {
+      return(as.numeric(idx))
+    }
+    as.numeric(med[idx])
   }
-  if (length(br) < 3L) {
-    return(rep(1L, length(x)))
-  }
-  as.integer(cut(x, breaks = br, include.lowest = TRUE, labels = FALSE))
+
+  out <- rep(NA_real_, length(x))
+  ok <- is.finite(x)
+  out[ok] <- core(x[ok])
+  out
 }
 
 #' Scale a Besag/GMRF precision so geom-mean marginal variance ≈ 1.
@@ -727,54 +746,64 @@ inla_rs <- function(
     X <- stats::model.matrix(fixed_fml, data = data)
   }
 
-  # Observation precision
-  obs_precision <- 1.0
+  family_free_prec <- FALSE
+  initial_log_prec <- 0.0
+  prec_fixed <- FALSE
   if (!is.null(control.family)) {
     prec <- tryCatch(control.family$hyper$prec, error = function(e) NULL)
-    if (!is.null(prec) && !is.null(prec$initial)) {
-      obs_precision <- exp(as.numeric(prec$initial))
+    if (!is.null(prec)) {
+      if (isTRUE(prec$fixed)) prec_fixed <- TRUE
+      if (!is.null(prec$initial)) initial_log_prec <- as.numeric(prec$initial)[1]
     }
   }
+  has_f_obs_prec <- FALSE
   for (fs in f_structs) {
     if (!is.null(fs$args$obs_precision)) {
-      obs_precision <- as.numeric(fs$args$obs_precision)
+      obs_precision <- as.numeric(fs$args$obs_precision)[1]
+      initial_log_prec <- log(obs_precision)
+      has_f_obs_prec <- TRUE
     }
   }
+  if (fam %in% c("gaussian", "normal")) {
+    if (!prec_fixed && !has_f_obs_prec) {
+      family_free_prec <- TRUE
+    }
+  }
+  obs_precision <- exp(initial_log_prec)
 
   # ModelPlan fast path: gaussian + single AR1 + no fixed effects + identity index
   if (identical(fam, "gaussian") &&
+      !family_free_prec &&
       length(f_structs) == 1L &&
       ncol(X) == 0L &&
       identical(tolower(f_structs[[1]]$model), "ar1") &&
       is.null(f_structs[[1]]$group)) {
     fs <- f_structs[[1]]
     idx_name <- fs$name
-    if (!grepl("^inla\\.group\\(", idx_name) &&
-        !grepl("^inla_rs_group\\(", idx_name) &&
-        is.null(fs$values) &&
-        !is.null(data[[idx_name]])) {
-      idx <- as.integer(data[[idx_name]])
-      id0 <- seq_len(n_obs) - 1L
-      id1 <- seq_len(n_obs)
-      if (!any(is.na(idx)) &&
-          (identical(idx, id0) || identical(idx, id1))) {
-        init <- if (is.null(initial_theta)) {
-          if (!is.null(fs$initial)) as.numeric(fs$initial) else numeric(0)
-        } else {
+    if (!is.null(data[[idx_name]])) {
+      idx_val <- data[[idx_name]]
+      n_raw <- length(idx_val)
+      # Check for 1..n contiguous
+      if (is.numeric(idx_val) && min(idx_val) == 1 && max(idx_val) == n_raw && length(unique(idx_val)) == n_raw) {
+        theta_init <- if (!is.null(initial_theta)) {
           as.numeric(initial_theta)
+        } else if (!is.null(fs$initial)) {
+          as.numeric(fs$initial)
+        } else {
+          c(0.0, 0.0) # default log_prec=0, logit_rho=0
         }
         raw <- inla_rs_run_gaussian_ar1_plan(
-          y_obs = y,
+          y_obs = as.numeric(y),
           name = idx_name,
           obs_precision = obs_precision,
           strategy = strategy,
           step_or_f0 = step_or_f0,
-          initial_theta = init
+          initial_theta = theta_init
         )
         return(.inla_rs_attach_summaries(
           raw,
           effect_types = "ar1",
-          effect_ns = as.integer(n_obs),
+          effect_ns = as.integer(n_raw),
           effect_orders = 0L,
           effect_names = idx_name,
           fixed_names = character(0)
@@ -796,6 +825,8 @@ inla_rs <- function(
   effect_copy_of <- integer(0)
   effect_names_acc <- character(0)
   adj_lists <- list()
+  effect_ids <- list()
+  effect_positions <- list()
   theta <- numeric(0)
 
   add_triplets <- function(rows0, cols0, vals) {
@@ -814,14 +845,14 @@ inla_rs <- function(
     idx_name <- fs$name
     # Support inla.group(...) captured as name string — evaluate index from data
     if (grepl("^inla\\.group\\(", idx_name) || grepl("^inla_rs_group\\(", idx_name)) {
-      idx <- as.integer(eval(parse(text = idx_name), envir = data))
+      idx <- eval(parse(text = idx_name), envir = data)
     } else if (!is.null(fs$values)) {
-      idx <- as.integer(fs$values)
+      idx <- fs$values
     } else {
       if (is.null(data[[idx_name]])) {
         stop("Index variable '", idx_name, "' not found in data", call. = FALSE)
       }
-      idx <- as.integer(data[[idx_name]])
+      idx <- data[[idx_name]]
     }
     if (any(is.na(idx))) {
       stop("NA in index for f(", idx_name, ")", call. = FALSE)
@@ -852,16 +883,17 @@ inla_rs <- function(
       graph <- NULL
       order_enc <- 0L
       effect_copy_of <- c(effect_copy_of, as.integer(src_i - 1L))
+      effect_ids[[length(effect_ids) + 1L]] <- effect_ids[[src_i]]
     } else if (model == "fgn" && order %in% c(3L, 4L)) {
       # Approx FGN: observations map to z-block only; latent length (order+1)*n_time
-      n_time <- length(unique(idx))
+      lev <- sort(unique(idx))
+      n_time <- length(lev)
       n_e <- as.integer((order + 1L) * n_time)
-      # Map obs i -> z_{idx[i]} column (0-based within block = idx-1)
-      umin <- min(idx)
-      zcol <- as.integer(idx - umin) # 0..n_time-1
+      zcol <- match(idx, lev) - 1L
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
       graph <- NULL
       order_enc <- order
+      effect_ids[[length(effect_ids) + 1L]] <- lev
     } else if (model == "rw2d" || model == "matern2d") {
       nrow <- as.integer(fs$args$nrow)[1]
       ncol <- as.integer(fs$args$ncol)[1]
@@ -880,6 +912,7 @@ inla_rs <- function(
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
       graph <- NULL
       order_enc <- if (isTRUE(fs$args$cyclic)) -as.integer(nrow) else as.integer(nrow)
+      effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
     } else if (model %in% c("besag", "bym", "bym2")) {
       graph <- fs$graph
       if (is.null(graph)) graph <- adj_list
@@ -903,6 +936,7 @@ inla_rs <- function(
         n_e <- as.integer(n_graph)
       }
       order_enc <- as.integer(order)
+      effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_graph)
     } else {
       # Generic: unique sorted levels → latent size
       lev <- sort(unique(idx))
@@ -919,6 +953,7 @@ inla_rs <- function(
       } else {
         as.integer(order)
       }
+      effect_ids[[length(effect_ids) + 1L]] <- lev
     }
 
     if (!identical(model, "copy")) {
@@ -935,6 +970,13 @@ inla_rs <- function(
       adj_lists[[length(adj_lists) + 1L]] <- graph
     } else {
       adj_lists[[length(adj_lists) + 1L]] <- list()
+    }
+    ids <- effect_ids[[length(effect_ids)]]
+    pos <- suppressWarnings(as.numeric(ids))
+    if (length(pos) == n_e && all(is.finite(pos))) {
+      effect_positions[[length(effect_positions) + 1L]] <- pos
+    } else {
+      effect_positions[[length(effect_positions) + 1L]] <- numeric(0)
     }
     if (is.null(initial_theta)) {
       if (!is.null(fs$initial)) {
@@ -970,6 +1012,8 @@ inla_rs <- function(
     effect_orders <- c(effect_orders, 0L)
     effect_copy_of <- c(effect_copy_of, -1L)
     adj_lists[[length(adj_lists) + 1L]] <- list()
+    effect_ids[[length(effect_ids) + 1L]] <- colnames(X)
+    effect_positions[[length(effect_positions) + 1L]] <- numeric(0)
     col_off <- col_off + p
   }
 
@@ -979,6 +1023,8 @@ inla_rs <- function(
 
   if (!is.null(initial_theta)) {
     theta <- as.numeric(initial_theta)
+  } else if (family_free_prec) {
+    theta <- c(initial_log_prec, theta)
   }
 
   if (is.null(E)) E <- numeric(0)
@@ -1005,6 +1051,7 @@ inla_rs <- function(
     effect_orders = effect_orders,
     effect_copy_of = effect_copy_of,
     adj_lists = adj_lists,
+    effect_positions = effect_positions,
     fixed_prec = fixed_prec,
     E = E,
     Ntrials = Ntrials,
@@ -1015,7 +1062,8 @@ inla_rs <- function(
     alpha = alpha,
     gamma = gamma,
     shape = shape,
-    deterministic = deterministic
+    deterministic = deterministic,
+    gaussian_free_prec = family_free_prec
   )
 
   .inla_rs_attach_summaries(
@@ -1033,7 +1081,9 @@ inla_rs <- function(
       }
       nm
     },
-    fixed_names = if (p > 0L) colnames(X) else character(0)
+    fixed_names = if (p > 0L) colnames(X) else character(0),
+    effect_ids = effect_ids,
+    family_free_prec = family_free_prec
   )
 }
 
@@ -1041,9 +1091,13 @@ inla_rs <- function(
 #'
 #' Delegates to the shared Rust registry so R and Python label θ identically.
 .inla_rs_hyper_labels <- function(effect_types, effect_names, effect_orders = NULL,
-                                  effect_group_models = NULL) {
+                                  effect_group_models = NULL, family_free_prec = FALSE) {
   kinds <- character(0)
   labels <- character(0)
+  if (family_free_prec) {
+    kinds <- c(kinds, "exp")
+    labels <- c(labels, "Precision for the Gaussian observations")
+  }
   for (i in seq_along(effect_types)) {
     typ <- tolower(effect_types[i])
     if (typ == "fixed") next
@@ -1110,7 +1164,8 @@ inla_rs <- function(
 
 #' Build Gaussian interim summary tables + class `"inla_rs"`.
 .inla_rs_attach_summaries <- function(raw, effect_types, effect_ns, effect_orders = NULL,
-                                    effect_names, fixed_names) {
+                                    effect_names, fixed_names, effect_ids = NULL,
+                                    family_free_prec = FALSE) {
   means <- as.numeric(raw$latent_means)
   vars <- as.numeric(raw$latent_variances)
   off <- 0L
@@ -1122,8 +1177,13 @@ inla_rs <- function(
     idx <- (off + 1L):(off + n_e)
     mu <- means[idx]
     sd <- sqrt(pmax(vars[idx], 0))
+    id_vals <- if (!is.null(effect_ids) && length(effect_ids) >= i && length(effect_ids[[i]]) == n_e) {
+      effect_ids[[i]]
+    } else {
+      seq_len(n_e)
+    }
     tab <- data.frame(
-      ID = seq_len(n_e),
+      ID = id_vals,
       mean = mu,
       sd = sd,
       `0.025quant` = mu - 1.96 * sd,
@@ -1211,7 +1271,7 @@ inla_rs <- function(
   }
 
   # Natural-scale table (Precision / Range / Rho / …) matching classic INLA summaries
-  hyp_meta <- .inla_rs_hyper_labels(effect_types, effect_names, effect_orders)
+  hyp_meta <- .inla_rs_hyper_labels(effect_types, effect_names, effect_orders, family_free_prec = family_free_prec)
   summary.hyperpar <- if (m > 0L && length(hyp_meta$kind) == m) {
     nat_mean <- hyp_mean
     nat_sd <- hyp_sd

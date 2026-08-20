@@ -122,6 +122,7 @@ def run_inla_inference(
     constraints_a: list[float] | None = None,
     constraints_e: list[float] | None = None,
     deterministic: bool = False,
+    gaussian_free_prec: bool = False,
 ) -> PyInferenceResult: ...
 def run_gaussian_ar1_plan(
     y: list[float],
@@ -137,6 +138,7 @@ def build_structured_precision(
 def structured_constraints(
     effects: list[dict[str, Any]],
 ) -> tuple[list[float], list[float]] | None: ...
+def scale_model_csc(q: Any) -> PyCscMatrix: ...
 def model_metadata(
     model: str,
     order: int = 0,

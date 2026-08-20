@@ -24,7 +24,7 @@ def test_bym_formula():
         data=data,
         family="gaussian",
     )
-    assert len(res.mode) == 2
+    assert len(res.mode) == 3
     assert len(res.latent_means) == 2 * n
     assert np.isfinite(res.marginal_log_lik)
 
@@ -40,7 +40,7 @@ def test_bym2_formula():
         data=data,
         family="gaussian",
     )
-    assert len(res.mode) == 2
+    assert len(res.mode) == 3
     assert len(res.latent_means) == n
     assert np.isfinite(res.marginal_log_lik)
 
@@ -57,7 +57,7 @@ def test_matern2d_formula():
         data=data,
         family="gaussian",
     )
-    assert len(res.mode) == 2
+    assert len(res.mode) == 3
     assert len(res.latent_means) == n
     assert np.isfinite(res.marginal_log_lik)
 
@@ -83,7 +83,7 @@ def test_spde_formula():
         data=data,
         family="gaussian",
     )
-    assert len(res.mode) == 2
+    assert len(res.mode) == 3
     assert len(res.latent_means) == verts.shape[0]
     assert np.isfinite(res.marginal_log_lik)
 

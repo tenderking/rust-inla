@@ -83,6 +83,36 @@ fn apply_tau(q: &CscMatrix, tau: f64) -> Result<CscMatrix, String> {
     scale_csc(q, tau)
 }
 
+/// R-INLA `f(..., diagonal=)` default when `constr=TRUE`.
+///
+/// RW2 is rank-2, but classic INLA only hard-constrains the constant
+/// (`constr=TRUE`). The linear-trend null space is regularized by this
+/// small ridge, not by an `extraconstr`. A hard linear constraint sends
+/// spatially structured covariates into Besag.
+const RW2_CONSTR_DIAGONAL: f64 = 1e-4;
+
+fn rw2_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, String> {
+    match positions {
+        Some(pos) if pos.len() == n => crw2_precision_csc(pos, 1.0, "simple"),
+        Some(pos) => Err(format!(
+            "rw2 positions length {} != effect n {n}",
+            pos.len()
+        )),
+        None => rw2_precision_csc(n, 1.0),
+    }
+}
+
+fn rw1_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, String> {
+    match positions {
+        Some(pos) if pos.len() == n => crw1_precision_csc(pos, 1.0),
+        Some(pos) => Err(format!(
+            "rw1 positions length {} != effect n {n}",
+            pos.len()
+        )),
+        None => rw1_precision_csc(n, 1.0),
+    }
+}
+
 fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<CscMatrix, String> {
     let typ = effect.model_key();
     let n_e = effect.n;
@@ -96,13 +126,20 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
         }
         "rw1" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
-            let q0 = maybe_scale(rw1_precision_csc(n_e, 1.0)?, effect.scale_model)?;
+            let q0 = maybe_scale(
+                rw1_structure_csc(n_e, effect.positions.as_deref())?,
+                effect.scale_model,
+            )?;
             apply_tau(&q0, tau)
         }
         "rw2" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
-            let q0 = maybe_scale(rw2_precision_csc(n_e, 1.0)?, effect.scale_model)?;
-            apply_tau(&q0, tau)
+            let q0 = maybe_scale(
+                rw2_structure_csc(n_e, effect.positions.as_deref())?,
+                effect.scale_model,
+            )?;
+            let q_tau = apply_tau(&q0, tau)?;
+            add_csc(&q_tau, &identity_csc(n_e, RW2_CONSTR_DIAGONAL)?)
         }
         "rw2d" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
@@ -443,6 +480,18 @@ pub fn structured_constraints(
             offset += n_e;
             continue;
         }
+        if typ == "rw2" {
+            // Match R-INLA `constr=TRUE`: sum-to-zero only. Rank deficiency 2
+            // is handled by `RW2_CONSTR_DIAGONAL` on Q, not a linear extraconstr.
+            let block = sum_to_zero_constraint(n_e, 1)?;
+            let embedded = block.embed(full_n, offset)?;
+            stacked = Some(match stacked {
+                None => embedded,
+                Some(prev) => prev.vstack(&embedded)?,
+            });
+            offset += n_e;
+            continue;
+        }
         let k = model_rank_deficiency(&typ);
         if k > 0 {
             let block = sum_to_zero_constraint(n_e, k)?;
@@ -502,11 +551,77 @@ mod tests {
     }
 
     #[test]
-    fn rw2_constraints_rank2() {
+    fn rw2_constraints_match_rinla_sum_to_zero_only() {
         let effects = [StructuredEffect::simple("rw2", 6, 1)];
         let c = structured_constraints(&effects).unwrap().unwrap();
-        assert_eq!(c.k, 2);
+        assert_eq!(c.k, 1);
         assert_eq!(c.n, 6);
+    }
+
+    #[test]
+    fn rw2_unit_positions_match_equal_spacing_q() {
+        let n = 8usize;
+        let pos: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let mut with_pos = StructuredEffect::simple("rw2", n, 1);
+        with_pos.positions = Some(pos);
+        let q_pos = build_structured_precision(&[with_pos], &[0.0], 1e-4).unwrap();
+        let q_eq =
+            build_structured_precision(&[StructuredEffect::simple("rw2", n, 1)], &[0.0], 1e-4)
+                .unwrap();
+        let d_pos = q_pos.to_dense();
+        let d_eq = q_eq.to_dense();
+        for i in 0..n {
+            for j in 0..n {
+                let a = d_pos[[i, j]];
+                let b = d_eq[[i, j]];
+                assert!((a - b).abs() < 1e-10, "Q[{i},{j}] {a} vs {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn rw2_irregular_positions_change_q() {
+        let n = 6usize;
+        let mut irregular = StructuredEffect::simple("rw2", n, 1);
+        irregular.positions = Some(vec![0.0, 1.0, 1.5, 4.0, 8.0, 9.0]);
+        let q_irr = build_structured_precision(&[irregular], &[0.0], 1e-4).unwrap();
+        let q_eq =
+            build_structured_precision(&[StructuredEffect::simple("rw2", n, 1)], &[0.0], 1e-4)
+                .unwrap();
+        let d_irr = q_irr.to_dense();
+        let d_eq = q_eq.to_dense();
+        let mut max_diff = 0.0_f64;
+        for i in 0..n {
+            for j in 0..n {
+                max_diff = max_diff.max((d_irr[[i, j]] - d_eq[[i, j]]).abs());
+            }
+        }
+        assert!(
+            max_diff > 0.1,
+            "irregular RW2 Q should differ from equal-spacing, max_diff={max_diff}"
+        );
+    }
+
+    #[test]
+    fn rw2_galerkin_kernel_includes_linear_in_locations() {
+        let pos = [0.0, 1.0, 2.5, 4.0, 7.0, 9.0];
+        let n = pos.len();
+        let q = crw2_precision_csc(&pos, 1.0, "simple").unwrap();
+        let dense = q.to_dense();
+        let mut q1 = 0.0_f64;
+        let mut qp = 0.0_f64;
+        for i in 0..n {
+            let mut s1 = 0.0;
+            let mut sp = 0.0;
+            for j in 0..n {
+                s1 += dense[[i, j]];
+                sp += dense[[i, j]] * pos[j];
+            }
+            q1 += s1.abs();
+            qp += sp.abs();
+        }
+        assert!(q1 < 1e-8, "Q 1 = {q1}");
+        assert!(qp < 1e-8, "Q pos = {qp}");
     }
 
     #[test]

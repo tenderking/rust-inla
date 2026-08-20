@@ -142,30 +142,34 @@ impl PyCscMatrix {
         let np = py.import("numpy")?;
         let ctypes = py.import("ctypes")?;
 
+        let py_self = Bound::new(py, self.clone())?;
+        let self_ref = py_self.borrow();
+
         // indptr: cast raw pointer and create a numpy array view
         let c_uint64 = ctypes.getattr("c_uint64")?;
         let c_uint64_ptr_t = ctypes.call_method1("POINTER", (c_uint64,))?;
-        let cast_indptr = ctypes.call_method1("cast", (self.indptr_ptr(), &c_uint64_ptr_t))?;
+        let cast_indptr = ctypes.call_method1("cast", (self_ref.indptr_ptr(), &c_uint64_ptr_t))?;
         let indptr_arr = np
             .getattr("ctypeslib")?
-            .call_method1("as_array", (cast_indptr, (self.indptr_len(),)))?;
+            .call_method1("as_array", (cast_indptr, (self_ref.indptr_len(),)))?;
 
         // indices: cast raw pointer and create a numpy array view
-        let cast_indices = ctypes.call_method1("cast", (self.indices_ptr(), &c_uint64_ptr_t))?;
+        let cast_indices =
+            ctypes.call_method1("cast", (self_ref.indices_ptr(), &c_uint64_ptr_t))?;
         let indices_arr = np
             .getattr("ctypeslib")?
-            .call_method1("as_array", (cast_indices, (self.indices_len(),)))?;
+            .call_method1("as_array", (cast_indices, (self_ref.indices_len(),)))?;
 
         // data: cast raw pointer and create a numpy array view
         let c_double = ctypes.getattr("c_double")?;
         let c_double_ptr_t = ctypes.call_method1("POINTER", (c_double,))?;
-        let cast_data = ctypes.call_method1("cast", (self.data_ptr(), &c_double_ptr_t))?;
+        let cast_data = ctypes.call_method1("cast", (self_ref.data_ptr(), &c_double_ptr_t))?;
         let data_arr = np
             .getattr("ctypeslib")?
-            .call_method1("as_array", (cast_data, (self.data_len(),)))?;
+            .call_method1("as_array", (cast_data, (self_ref.data_len(),)))?;
 
         // Build the scipy.sparse.csc_matrix
-        let shape = self.shape();
+        let shape = self_ref.shape();
         let kwargs = PyDict::new(py);
         kwargs.set_item("shape", shape)?;
         let csc_matrix = scipy.call_method(
@@ -175,7 +179,6 @@ impl PyCscMatrix {
         )?;
 
         // Custom attribute to keep the Rust wrapper and its memory alive
-        let py_self = Bound::new(py, self.clone())?;
         csc_matrix.setattr("_base_matrix", py_self)?;
 
         Ok(csc_matrix)
@@ -422,7 +425,7 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 /// step_or_f0 : float, optional
 ///     Integration step size or f0 design parameter (default 1.0).
 #[pyfunction(name = "run_inla_inference")]
-#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false))]
+#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false, gaussian_free_prec=false))]
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
@@ -438,6 +441,7 @@ fn run_inla_inference_py(
     constraints_a: Option<Vec<f64>>,
     constraints_e: Option<Vec<f64>>,
     deterministic: bool,
+    gaussian_free_prec: bool,
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
@@ -538,6 +542,23 @@ fn run_inla_inference_py(
         })
     };
 
+    let base_rust_obs = rust_obs.clone();
+    let build_obs_closure = move |th: &[f64]| -> Vec<inla_core::inference::Obs> {
+        let prec = if !th.is_empty() { th[0].exp() } else { 1.0 };
+        base_rust_obs
+            .iter()
+            .map(|o| match o {
+                inla_core::inference::Obs::Gaussian(g) => {
+                    inla_core::inference::Obs::Gaussian(inla_core::inference::GaussianObs {
+                        precision: prec,
+                        ..*g
+                    })
+                }
+                other => *other,
+            })
+            .collect()
+    };
+
     let opts = inla_core::MarginalOptions {
         n_points,
         latent_indices: latent_marginal_indices.unwrap_or_default(),
@@ -579,6 +600,14 @@ fn run_inla_inference_py(
             &opts,
             deterministic,
             Some(&check_cancel),
+            if gaussian_free_prec {
+                Some(
+                    &build_obs_closure
+                        as &(dyn Fn(&[f64]) -> Vec<inla_core::inference::Obs> + Sync),
+                )
+            } else {
+                None
+            },
         )
     });
 
@@ -1375,6 +1404,13 @@ fn default_hyper_priors(model: &str) -> PyResult<Vec<(String, Vec<f64>)>> {
     Ok(stack.to_names_params())
 }
 
+#[pyfunction]
+fn scale_model_csc(_py: Python<'_>, q: Bound<'_, PyAny>) -> PyResult<PyCscMatrix> {
+    let csc = csc_from_python(&q)?;
+    let scaled = inla_core::scale_model_csc(&csc).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: scaled })
+}
+
 /// The initialization function for the Python extension module `inla._native`.
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1411,6 +1447,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_gaussian_ar1_plan, m)?)?;
     m.add_function(wrap_pyfunction!(build_structured_precision_py, m)?)?;
     m.add_function(wrap_pyfunction!(structured_constraints_py, m)?)?;
+    m.add_function(wrap_pyfunction!(scale_model_csc, m)?)?;
     m.add_function(wrap_pyfunction!(model_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(plane_constraint_2d, m)?)?;
     m.add_function(wrap_pyfunction!(seasonal_constraint, m)?)?;

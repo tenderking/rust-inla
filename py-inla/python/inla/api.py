@@ -129,10 +129,12 @@ def _hyper_labels(
     names: Sequence[str],
     orders: Sequence[int],
     group_models: Sequence[str | None],
+    family_labels: Sequence[str] | None = None,
+    family_transforms: Sequence[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """(labels, transform tags) per internal θ, in optimizer order."""
-    labels: list[str] = []
-    transforms: list[str] = []
+    labels: list[str] = list(family_labels or [])
+    transforms: list[str] = list(family_transforms or [])
     for typ, nm, order, gm in zip(types, names, orders, group_models):
         if typ == "fixed":
             continue
@@ -252,6 +254,53 @@ def _vstack_constraints(
         a_all.extend(a)
         e_all.extend(e)
     return a_all, e_all
+
+
+def group(
+    x,
+    n: int = 25,
+    method: str = "cut",
+    idx_only: bool = False,
+) -> np.ndarray:
+    """Classic R-INLA ``inla.group``: replace values by the median of their bin.
+
+    The returned values are the RW2 ``$ID`` locations. Empty bins are omitted
+    from the unique sorted latent nodes, matching ``f(inla.group(x, n), ...)``.
+    """
+    arr = np.asarray(x, dtype=float).reshape(-1)
+    out = np.full(arr.shape, np.nan)
+    ok = np.isfinite(arr)
+    if not np.any(ok):
+        raise ValueError("group: no finite values")
+    n_bins = int(n)
+    if n_bins < 1:
+        raise ValueError("group: n must be >= 1")
+    xx = arr[ok]
+    if n_bins == 1:
+        out[ok] = float(np.median(xx))
+        return out
+    method = str(method).lower()
+    if method == "cut":
+        codes = np.searchsorted(np.linspace(xx.min(), xx.max(), n_bins + 1)[1:-1], xx, side="right")
+    elif method == "quantile":
+        probs = np.concatenate(([0.0], (np.arange(1, n_bins) - 0.5) / n_bins, [1.0]))
+        br = np.unique(np.quantile(xx, probs))
+        if br.size < 2:
+            out[ok] = float(np.median(xx))
+            return out
+        codes = np.searchsorted(br[1:-1], xx, side="right")
+        codes = np.clip(codes, 0, br.size - 2)
+    else:
+        raise ValueError("group: method must be 'cut' or 'quantile'")
+    med = np.empty(int(codes.max()) + 1, dtype=float)
+    for i in range(med.size):
+        xi = xx[codes == i]
+        med[i] = float(np.median(xi)) if xi.size else np.nan
+    if idx_only:
+        out[ok] = codes.astype(float) + 1.0
+    else:
+        out[ok] = med[codes]
+    return out
 
 
 def _as_param_list(val) -> list[float]:
@@ -831,15 +880,41 @@ def _fit(
         event = _get_col(data, event)
 
     obs_precision = 1.0
-    if control_family is not None:
-        try:
-            obs_precision = float(np.exp(control_family["hyper"]["prec"]["initial"]))
-        except Exception:
-            pass
-    # `f(..., obs_precision=)` overrides, matching the R front-end.
-    for ft in parsed.f_terms:
-        if ft.kwargs.get("obs_precision") is not None:
-            obs_precision = float(ft.kwargs["obs_precision"])
+    family_free_prec = False
+    family_initial_theta = 0.0
+    family_prior_spec = ("loggamma", [1.0, 5e-5])
+
+    has_kw_obs_prec = any(ft.kwargs.get("obs_precision") is not None for ft in parsed.f_terms)
+
+    if family.lower() in ("gaussian", "normal"):
+        prec_cfg = None
+        if control_family is not None and isinstance(control_family.get("hyper"), Mapping):
+            prec_cfg = control_family["hyper"].get("prec")
+
+        if has_kw_obs_prec:
+            for ft in parsed.f_terms:
+                if ft.kwargs.get("obs_precision") is not None:
+                    obs_precision = float(ft.kwargs["obs_precision"])
+            family_free_prec = False
+        elif prec_cfg is not None and isinstance(prec_cfg, Mapping):
+            is_fixed = bool(prec_cfg.get("fixed", False))
+            init = prec_cfg.get("initial")
+            if init is not None:
+                family_initial_theta = float(init)
+                obs_precision = float(np.exp(family_initial_theta))
+            if is_fixed:
+                family_free_prec = False
+            else:
+                family_free_prec = True
+                prior_name = str(prec_cfg.get("prior", "loggamma"))
+                prior_param = _as_param_list(prec_cfg.get("param", [1.0, 5e-5]))
+                family_prior_spec = (prior_name, prior_param)
+        else:
+            # Default in R-INLA: Gaussian observation precision is free
+            family_free_prec = True
+            family_initial_theta = 0.0
+            obs_precision = 1.0
+            family_prior_spec = ("loggamma", [1.0, 5e-5])
 
     controls = _resolve_controls(
         control_compute,
@@ -853,7 +928,7 @@ def _fit(
     fixed_prec = controls["fixed_prec"]
     deterministic = controls["deterministic"]
 
-    if all(g is None for g in resolved_generics):
+    if not family_free_prec and all(g is None for g in resolved_generics):
         planned = _try_gaussian_ar1_plan(
             formula=formula,
             parsed=parsed,
@@ -908,6 +983,8 @@ def _fit(
     effect_generics: list[GenericLike | None] = []
     effect_prior_specs: list[list[tuple[str, list[float]]]] = []
     theta: list[float] = []
+    if family_free_prec:
+        theta.append(family_initial_theta)
 
     effect_positions: list[list[float] | None] = []
     effect_layouts: list[str] = []
@@ -920,6 +997,7 @@ def _fit(
     effect_meshes: list[tuple | None] = []  # (verts, tris) for SPDE
     effect_nus: list[int] = []  # matern2d nu
     effect_copy_of: list[int | None] = []
+    effect_ids: list[np.ndarray | None] = []
 
     # Fixed effects block first → latent_means[0] is intercept when present
     if p > 0:
@@ -949,12 +1027,14 @@ def _fit(
         effect_meshes.append(None)
         effect_nus.append(1)
         effect_copy_of.append(None)
+        effect_ids.append(None)
         col_off += p
 
     for ft, gmodel in zip(parsed.f_terms, resolved_generics):
-        idx = _get_col(data, ft.index).astype(int)
-        if np.any(idx < 0):
+        raw_idx = _get_col(data, ft.index)
+        if np.issubdtype(raw_idx.dtype, np.integer) and np.any(raw_idx < 0):
             raise ValueError(f"NA/negative index in f({ft.index})")
+        idx = raw_idx
         model = ft.model
         copy_src = ft.kwargs.get("copy")
         if copy_src is not None:
@@ -978,8 +1058,8 @@ def _fit(
             zcol = idx.copy()
             if int(zcol.min()) >= 1:
                 zcol = zcol - 1
+            levels = np.sort(np.unique(idx))
             if int(zcol.min()) < 0 or int(zcol.max()) >= n_src:
-                levels = np.sort(np.unique(idx))
                 if int(levels.size) != n_src:
                     raise ValueError(
                         f"copy index for '{ft.index}' incompatible with source n={n_src}"
@@ -1008,6 +1088,7 @@ def _fit(
             effect_meshes.append(None)
             effect_nus.append(1)
             effect_copy_of.append(src_i)
+            effect_ids.append(levels)
             tlen = _theta_len("copy", 0, None)
             if ft.initial is not None:
                 init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
@@ -1052,6 +1133,7 @@ def _fit(
             effect_meshes.append(None)
             effect_nus.append(1)
             effect_copy_of.append(None)
+            effect_ids.append(np.arange(n_e))
             tlen = int(gmodel.n_theta)
             if ft.initial is not None:
                 init = list(np.asarray(ft.initial, dtype=float).reshape(-1))
@@ -1073,6 +1155,7 @@ def _fit(
         zcol: np.ndarray | None = None
         adj = None
         nrow_i = ncol_i = 0
+        eff_id = None
 
         if model == "rw2d" or model == "matern2d":
             if nrow_kw is None or ncol_kw is None:
@@ -1080,7 +1163,7 @@ def _fit(
             nrow_i = int(nrow_kw)
             ncol_i = int(ncol_kw)
             n_main = nrow_i * ncol_i
-            zcol = idx.copy()
+            zcol = idx.copy().astype(int)
             if int(zcol.min()) >= 1:
                 zcol = zcol - 1
             if int(zcol.min()) < 0 or int(zcol.max()) >= n_main:
@@ -1088,19 +1171,22 @@ def _fit(
                     f"{model} index for '{ft.index}' out of range for {nrow_i}x{ncol_i}"
                 )
             adj = None
+            eff_id = np.arange(1, n_main + 1)
         elif model in ("besag", "bym", "bym2"):
             adj = _resolve_graph(ft, data)
             n_graph = len(adj)
-            umin = int(idx.min())
-            zcol = idx - umin
+            arr = np.asarray(idx, dtype=int)
+            umin = int(arr.min())
+            zcol = arr - umin
             if int(zcol.min()) < 0 or int(zcol.max()) >= n_graph:
-                zcol = idx.copy()
+                zcol = arr.copy()
                 if int(zcol.min()) < 0 or int(zcol.max()) >= n_graph:
                     raise ValueError(
                         f"{model} index for '{ft.index}' out of range for graph size {n_graph}"
                     )
             n_main = n_graph  # spatial size; BYM expands latent below
             nrow_i = ncol_i = 0
+            eff_id = np.arange(1, n_graph + 1) if umin == 1 else np.arange(n_graph)
         elif model == "spde":
             verts = ft.kwargs.get("vertices")
             tris = ft.kwargs.get("triangles")
@@ -1154,7 +1240,8 @@ def _fit(
             n_e = n_main
             adj = None
             nrow_i = ncol_i = 0
-            zcol: np.ndarray | None = None  # already mapped into A
+            zcol = None  # already mapped into A
+            eff_id = np.arange(1, n_main + 1)
         elif model == "fgn" and order in (3, 4):
             levels = np.sort(np.unique(idx))
             n_time = int(levels.size)
@@ -1162,22 +1249,30 @@ def _fit(
             n_main = (order + 1) * n_time
             adj = None
             nrow_i = ncol_i = 0
+            eff_id = levels
         else:
-            raw_idx = data[ft.index]
-            if hasattr(raw_idx, "cat"):
-                levels = np.asarray(raw_idx.cat.categories)
+            raw_idx_val = data[ft.index] if isinstance(ft.index, str) and ft.index in data else idx
+            if hasattr(raw_idx_val, "cat"):
+                levels = np.asarray(raw_idx_val.cat.categories)
                 n_main = int(levels.size)
-                zcol = np.asarray(raw_idx.cat.codes)
-            elif hasattr(raw_idx, "categories"):
-                levels = np.asarray(raw_idx.categories)
+                zcol = np.asarray(raw_idx_val.cat.codes)
+            elif hasattr(raw_idx_val, "categories"):
+                levels = np.asarray(raw_idx_val.categories)
                 n_main = int(levels.size)
-                zcol = np.asarray(raw_idx.codes)
+                zcol = np.asarray(raw_idx_val.codes)
             else:
-                levels = np.sort(np.unique(idx))
-                n_main = int(levels.size)
-                zcol = np.searchsorted(levels, idx)
+                arr = np.asarray(raw_idx_val)
+                if np.issubdtype(arr.dtype, np.integer) and int(arr.min()) == 1 and int(arr.max()) == len(np.unique(arr)):
+                    n_main = int(arr.max())
+                    zcol = arr - 1
+                    levels = np.arange(1, n_main + 1)
+                else:
+                    levels = np.sort(np.unique(arr))
+                    n_main = int(levels.size)
+                    zcol = np.searchsorted(levels, arr)
             adj = None
             nrow_i = ncol_i = 0
+            eff_id = levels
 
         if model != "spde":
             if zcol is None:
@@ -1185,7 +1280,7 @@ def _fit(
             if group_model is not None:
                 if group_key is None:
                     raise ValueError(f"f({ft.index}): control_group=... requires group= column")
-                gcol = _get_col(data, str(group_key)).astype(int)
+                gcol = _get_col(data, str(group_key))
                 g_levels = np.sort(np.unique(gcol))
                 n_group = int(g_levels.size)
                 g_z = np.searchsorted(g_levels, gcol)
@@ -1229,6 +1324,7 @@ def _fit(
         effect_cyclic.append(cyclic)
         effect_meshes.append(mesh_store)
         effect_nus.append(nu_i)
+        effect_ids.append(eff_id)
 
         raw_pos = ft.kwargs.get("positions")
         if raw_pos is not None:
@@ -1236,8 +1332,17 @@ def _fit(
                 pos_arr = _get_col(data, raw_pos).tolist()
             else:
                 pos_arr = [float(p) for p in np.asarray(raw_pos, dtype=float).reshape(-1)]
+        elif group_model is not None:
+            pos_arr = None
         else:
-            pos_arr = [float(p) for p in range(n_main)]
+            try:
+                cand = np.asarray(eff_id, dtype=float).reshape(-1)
+                if cand.size == n_main and np.all(np.isfinite(cand)):
+                    pos_arr = [float(p) for p in cand]
+                else:
+                    pos_arr = [float(p) for p in range(n_main)]
+            except (TypeError, ValueError):
+                pos_arr = [float(p) for p in range(n_main)]
         effect_positions.append(pos_arr)
         effect_layouts.append(layout)
         season = int(ft.kwargs.get("season", ft.kwargs.get("s", order if order > 0 else 4)))
@@ -1297,17 +1402,24 @@ def _fit(
     has_intercept = bool(parsed.intercept)
 
     precomputed_scales = []
-    for t, n_main, g, scale_flag in zip(types, n_mains, graphs, effect_scale):
+    for ei, (t, n_main, g, scale_flag) in enumerate(zip(types, n_mains, graphs, effect_scale)):
         if not scale_flag:
             precomputed_scales.append(1.0)
             continue
         q_base = None
+        pos = positions_list[ei] if ei < len(positions_list) else None
         if t == "iid":
             q_base = core.iid_precision_matrix(n_main, 1.0)
         elif t == "rw1":
-            q_base = core.rw1_precision_matrix(n_main, 1.0)
+            if pos is not None and len(pos) == n_main:
+                q_base = core.crw1_precision_matrix(pos, 1.0)
+            else:
+                q_base = core.rw1_precision_matrix(n_main, 1.0)
         elif t == "rw2":
-            q_base = core.rw2_precision_matrix(n_main, 1.0)
+            if pos is not None and len(pos) == n_main:
+                q_base = core.crw2_precision_matrix(pos, 1.0, layout="simple")
+            else:
+                q_base = core.rw2_precision_matrix(n_main, 1.0)
         elif t == "besag":
             assert g is not None
             q_base = core.besag_precision_matrix(g, 1.0)
@@ -1366,9 +1478,15 @@ def _fit(
             return core.iid_precision_matrix(n_main, tau)
         if typ == "rw1":
             tau = float(np.exp(ti[0])) if ti else 1.0
+            pos = positions_list[ei]
+            if pos is not None and len(pos) == n_main:
+                return core.crw1_precision_matrix(pos, tau)
             return core.rw1_precision_matrix(n_main, tau)
         if typ == "rw2":
             tau = float(np.exp(ti[0])) if ti else 1.0
+            pos = positions_list[ei]
+            if pos is not None and len(pos) == n_main:
+                return core.crw2_precision_matrix(pos, tau, layout="simple")
             return core.rw2_precision_matrix(n_main, tau)
         if typ == "rw2d":
             tau = float(np.exp(ti[0])) if ti else 1.0
@@ -1444,17 +1562,17 @@ def _fit(
         raise ValueError(f"unsupported effect type {typ}")
 
     def build_prior(th):
-        th = list(th)
+        latent_th = list(th[1:]) if family_free_prec else list(th)
         if use_shared_q:
             return core.build_structured_precision(
-                _structured_effect_dicts(), th, float(fixed_prec)
+                _structured_effect_dicts(), latent_th, float(fixed_prec)
             )
         blocks = []
         off = 0
         for ei, typ in enumerate(types):
             n_e = ns[ei]
             tlen = theta_lens[ei]
-            ti = th[off : off + tlen]
+            ti = latent_th[off : off + tlen]
             off += tlen
             if typ == "fixed":
                 blocks.append(sparse.eye(n_e, format="csc") * float(fixed_prec))
@@ -1482,6 +1600,11 @@ def _fit(
                 if isinstance(q, core.PyCscMatrix):
                     q = q.to_scipy()
                 blocks[-1] = q * precomputed_scales[ei]
+            if typ == "rw2":
+                q = blocks[-1]
+                if isinstance(q, core.PyCscMatrix):
+                    q = q.to_scipy()
+                blocks[-1] = q + sparse.eye(n_e, format="csc") * 1e-4
         if len(blocks) == 1:
             b0 = blocks[0]
             if isinstance(b0, core.PyCscMatrix):
@@ -1521,6 +1644,9 @@ def _fit(
             season = int(seasons_list[ei])
             if typ == "seasonal":
                 k = max(season - 1, 1)
+            elif typ == "rw2":
+                # Match R-INLA constr=TRUE: sum-to-zero only (linear trend is a ridge).
+                k = 1
             else:
                 k = _rank_deficiency(typ, cyclic=cyclic_flag)
             if k == 0 and typ == "iid" and has_intercept:
@@ -1543,10 +1669,19 @@ def _fit(
     def log_prior_density(th):
         th = list(th)
         lp = 0.0
+        if family_free_prec:
+            fam_th = [float(th[0])]
+            try:
+                lp += float(core.hyper_prior_stack_log_density([family_prior_spec[0]], [family_prior_spec[1]], fam_th))
+            except Exception:
+                lp += float(fam_th[0] - 5e-5 * np.exp(fam_th[0]))
+            latent_th = th[1:]
+        else:
+            latent_th = th
         off = 0
         for ei, typ in enumerate(types):
             tlen = theta_lens[ei]
-            ti = th[off : off + tlen]
+            ti = latent_th[off : off + tlen]
             off += tlen
             if typ == "fixed" or tlen == 0:
                 continue
@@ -1566,6 +1701,26 @@ def _fit(
                 except Exception:
                     lp += float(-0.05 * sum(v * v for v in ti))
         return lp
+
+    total_latent_dim = sum(theta_lens)
+    if initial_theta is not None:
+        init_arr = list(np.asarray(initial_theta, dtype=float).reshape(-1))
+        if family_free_prec:
+            if len(init_arr) == 1 + total_latent_dim:
+                theta = init_arr
+            elif len(init_arr) == total_latent_dim:
+                theta = [family_initial_theta] + init_arr
+            else:
+                raise ValueError(
+                    f"initial_theta length {len(init_arr)} != expected {1 + total_latent_dim} (or {total_latent_dim})"
+                )
+        else:
+            if len(init_arr) == total_latent_dim:
+                theta = init_arr
+            else:
+                raise ValueError(
+                    f"initial_theta length {len(init_arr)} != expected {total_latent_dim}"
+                )
 
     if verbose:
         print(f"inla: family={family} n_obs={n_obs} n_latent={col_off}")
@@ -1605,6 +1760,7 @@ def _fit(
         constraints_a=constraints_a,
         constraints_e=constraints_e,
         deterministic=bool(deterministic),
+        gaussian_free_prec=bool(family_free_prec),
     )
 
     # Attach R-like summary slices (Gaussian interim) via a thin wrapper
@@ -1613,9 +1769,11 @@ def _fit(
     summary_random = {}
     summary_fixed = None
     off = 0
-    for name, typ, n_e in zip(effect_names, effect_types, effect_ns):
+    for ei, (name, typ, n_e) in enumerate(zip(effect_names, effect_types, effect_ns)):
         sl = slice(off, off + n_e)
+        eff_ids = effect_ids[ei]
         tab = {
+            "ID": eff_ids if eff_ids is not None else np.arange(1, n_e + 1),
             "mean": means[sl],
             "sd": sds[sl],
             "0.025quant": means[sl] - 1.96 * sds[sl],
@@ -1639,8 +1797,15 @@ def _fit(
         theta_lens[ei] if typ == "rgeneric" else effect_orders[ei]
         for ei, typ in enumerate(effect_types)
     ]
+    family_labels = ["Precision for the Gaussian observations"] if family_free_prec else None
+    family_transforms = ["exp"] if family_free_prec else None
     hyper_labels, hyper_transforms = _hyper_labels(
-        effect_types, effect_names, label_orders, group_models
+        effect_types,
+        effect_names,
+        label_orders,
+        group_models,
+        family_labels=family_labels,
+        family_transforms=family_transforms,
     )
     summary_hyperpar_internal = _internal_hyperpar_table(result)
     summary_hyperpar = _natural_hyperpar_table(
