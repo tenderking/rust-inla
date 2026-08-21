@@ -82,6 +82,10 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             family="poisson",
             initial_theta=[1.0],
         ),
+        "iid2d": fit(
+            "y ~ -1 + f(idx, model='iid2d', n=24, obs_precision=25.0, initial=[0, 0, 0])",
+            data,
+        ),
     }
 
 
@@ -100,7 +104,7 @@ def conformance(tmp_path_factory):
     return _run_r(csv_path), _python_fits(data)
 
 
-MODELS = ["ar1", "rw2", "iid", "seasonal", "poisson_iid"]
+MODELS = ["ar1", "rw2", "iid", "seasonal", "poisson_iid", "iid2d"]
 
 
 @pytest.mark.parametrize("model", MODELS)
