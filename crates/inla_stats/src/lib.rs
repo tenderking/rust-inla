@@ -6,6 +6,7 @@ pub mod besag;
 pub mod crw;
 pub mod fgn;
 pub mod hyper_opt;
+pub mod iidkd;
 pub mod inference;
 pub mod latent;
 pub mod latent_models;
@@ -31,6 +32,10 @@ pub use fgn::{
     fgn_intern_from_hurst,
 };
 pub use hyper_opt::{ModelConfig, compute_hessian, evaluate_neg_log_posterior, nelder_mead};
+pub use iidkd::{
+    iidkd_default_wishart_param, iidkd_dim, iidkd_nparam, iidkd_precision_csc,
+    precision_from_theta, wishart_logdens_theta,
+};
 pub use inference::{
     BinomialObs, ExponentialSurvivalObs, GammaPrior, GaussianObs, GaussianPrior, InferenceResult,
     LaplaceObs, Link, NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs,
