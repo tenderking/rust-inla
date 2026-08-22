@@ -77,3 +77,8 @@ report("ar1_pc", inla_rs(
   )),
   data = df
 ))
+
+report("iid2d", inla_rs(
+  y ~ -1 + f(idx, model = "iid2d", n = 24L, obs_precision = 25.0, initial = c(0, 0, 0)),
+  data = df
+))

@@ -17,6 +17,7 @@ use crate::arp::arp_precision_csc;
 use crate::besag::{besag_precision_csc, bym_precision_csc, bym2_precision_csc};
 use crate::crw::{crw1_precision_csc, crw2_precision_csc};
 use crate::fgn::{fgn_approx_precision_csc, fgn_hurst_from_intern};
+use crate::iidkd::{iidkd_dim, iidkd_precision_csc};
 use crate::latent_models::{
     fgn_precision_csc, iid_precision_csc, rw1_precision_csc, rw2_precision_csc,
     seasonal_precision_csc,
@@ -294,6 +295,10 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
                 apply_tau(&q0, tau)
             }
         }
+        "iid2d" | "iid3d" | "iid4d" | "iid5d" => {
+            let d = iidkd_dim(&typ).ok_or_else(|| format!("iidkd: bad model {typ}"))?;
+            iidkd_precision_csc(n_e, d, th)
+        }
         other => Err(format!("unsupported effect type: {other}")),
     }
 }
@@ -526,6 +531,18 @@ mod tests {
         ];
         let q = build_structured_precision(&effects, &[0.0, 0.0], 1e-4).unwrap();
         assert_eq!(q.rows(), 9);
+    }
+
+    #[test]
+    fn iid2d_block_length_and_nnz() {
+        let effects = [StructuredEffect::simple("iid2d", 8, 3)];
+        let q = build_structured_precision(&effects, &[0.0, 0.0, 0.0], 1e-4).unwrap();
+        assert_eq!(q.rows(), 8);
+        // 4 units × 2×2 block, uncorrelated ⇒ 8 diagonal entries
+        assert_eq!(q.nnz(), 8);
+        let stack = structured_prior_stack(&effects);
+        assert_eq!(stack.theta_dim(), 3);
+        assert!(stack.log_density(&[0.0, 0.0, 0.0]).unwrap().is_finite());
     }
 
     #[test]

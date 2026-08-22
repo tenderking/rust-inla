@@ -845,3 +845,38 @@ fn port_copy_beta() {
     assert_eq!(draws.len(), 24 * 2 * n);
     assert!(draws.iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn iid2d_stacked_bivariate_gaussian() {
+    // R-INLA iid.pdf first example: each component is its own row, n = 2m.
+    let m = 40usize;
+    let n = 2 * m;
+    let tau_a = 1.0_f64;
+    let tau_b = 4.0_f64;
+    let rho = 0.5_f64;
+    // Deterministic "observations" of the pair mean (essentially noiseless).
+    let mut y = vec![0.0; n];
+    for i in 0..m {
+        let z0 = ((i as f64 + 0.5) / m as f64 - 0.5) * 0.4;
+        let z1 = -0.2 * z0;
+        y[i] = z0;
+        y[m + i] = z1;
+    }
+    let effects = [StructuredEffect::simple("iid2d", n, 3)];
+    let stack = inla_stats::structured_prior_stack(&effects);
+    let build_prior = move |theta: &[f64]| build_structured_precision(&effects, theta, 1e-4);
+    let log_prior = move |theta: &[f64]| stack.log_density(theta).unwrap_or(f64::NEG_INFINITY);
+    let obs = gaussian_obs(&y, 100.0);
+    let t_rho = ((1.0 + rho) / (1.0 - rho)).ln();
+    let result = run_inla_inference(
+        &[tau_a.ln(), tau_b.ln(), t_rho],
+        &build_prior,
+        &log_prior,
+        &obs,
+        "eb",
+        1.0,
+    )
+    .expect("iid2d");
+    assert_finite_result(&result, n, 3);
+    assert_eq!(result.mode.len(), 3);
+}

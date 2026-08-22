@@ -12,7 +12,8 @@ use crate::priors::{HyperPriorStack, PriorSpec};
 /// Latent models understood by the structured/formula paths.
 pub const SUPPORTED_MODELS: &[&str] = &[
     "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "besag2", "bym", "bym2", "fgn",
-    "seasonal", "crw1", "crw2", "matern2d", "spde", "fixed", "rgeneric", "copy",
+    "seasonal", "crw1", "crw2", "matern2d", "spde", "fixed", "rgeneric", "copy", "iid2d", "iid3d",
+    "iid4d", "iid5d",
 ];
 
 /// Group (`control.group`) models understood by the Kronecker path.
@@ -179,6 +180,27 @@ pub fn model_metadata(
                 HyperTransformKind::Identity,
             ));
             default_theta.push(1.0);
+        }
+        "iid2d" | "iid3d" | "iid4d" | "iid5d" => {
+            let d = crate::iidkd::iidkd_dim(&m).expect("iidkd dim");
+            for i in 1..=d {
+                hyper.push(HyperSlotMeta::new(
+                    &format!("log_precision{i}"),
+                    &format!("Precision (component {i})"),
+                    HyperTransformKind::Exp,
+                ));
+                default_theta.push(4.0);
+            }
+            for i in 1..=d {
+                for j in (i + 1)..=d {
+                    hyper.push(HyperSlotMeta::new(
+                        &format!("logit_rho{i}{j}"),
+                        &format!("Rho{i}:{j}"),
+                        HyperTransformKind::RhoCor1,
+                    ));
+                    default_theta.push(if d == 2 { 4.0 } else { 0.0 });
+                }
+            }
         }
         "rgeneric" => {
             let n_th = if order > 0 { order } else { 1 };
@@ -389,5 +411,18 @@ mod tests {
         assert_eq!(meta.hyper[0].transform_tag(), "identity");
         assert_eq!(meta.rank_deficiency, 0);
         assert!(!meta.default_scale_model);
+    }
+
+    #[test]
+    fn iid2d_metadata() {
+        let meta = model_metadata("iid2d", 0, None, false).unwrap();
+        assert_eq!(meta.theta_len, 3);
+        assert_eq!(meta.default_theta.len(), 3);
+        assert_eq!(meta.hyper.len(), 3);
+        assert_eq!(meta.rank_deficiency, 0);
+        assert_eq!(meta.hyper[0].transform_tag(), "exp");
+        assert_eq!(meta.hyper[2].transform_tag(), "rho");
+        assert_eq!(meta.hyper[2].label, "Rho1:2");
+        assert_eq!(meta.default_priors[0].0, "wishart2d");
     }
 }

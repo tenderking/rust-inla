@@ -86,6 +86,10 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             "y ~ -1 + f(idx, model='ar1', obs_precision=25.0, hyper={'prec': {'prior': 'pc.prec', 'param': [1.0, 0.01]}, 'rho': {'prior': 'pc.cor1', 'param': [0.5, 0.75]}})",
             data,
         ),
+        "iid2d": fit(
+            "y ~ -1 + f(idx, model='iid2d', n=24, obs_precision=25.0, initial=[0, 0, 0])",
+            data,
+        ),
     }
 
 
@@ -104,7 +108,7 @@ def conformance(tmp_path_factory):
     return _run_r(csv_path), _python_fits(data)
 
 
-MODELS = ["ar1", "rw2", "iid", "seasonal", "poisson_iid", "ar1_pc"]
+MODELS = ["ar1", "rw2", "iid", "seasonal", "poisson_iid", "ar1_pc", "iid2d"]
 
 
 @pytest.mark.parametrize("model", MODELS)
