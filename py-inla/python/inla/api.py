@@ -32,6 +32,10 @@ SUPPORTED_F_MODELS = (
     "matern2d",
     "spde",
     "copy",
+    "iid2d",
+    "iid3d",
+    "iid4d",
+    "iid5d",
 )
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
 
@@ -55,6 +59,31 @@ def _get_col(data: Mapping[str, Any], key: str) -> np.ndarray:
     if key not in data:
         raise KeyError(f"column '{key}' not found in data")
     return _as_1d(data[key], key)
+
+
+def _iidkd_dim(model: str) -> int | None:
+    return {"iid2d": 2, "iid3d": 3, "iid4d": 4, "iid5d": 5}.get(str(model).lower())
+
+
+def _as_weight_vec(spec: Any, data: Mapping[str, Any], n_obs: int) -> np.ndarray:
+    """R-INLA-style f() weights: None/'1'/1 → ones; column name or length-n vector."""
+    if spec is None or spec == 1 or spec == 1.0 or spec == "1":
+        return np.ones(n_obs, dtype=float)
+    if isinstance(spec, str):
+        arr = _get_col(data, spec)
+        if arr.size != n_obs:
+            raise ValueError(f"weights column '{spec}' length {arr.size} != n_obs {n_obs}")
+        return arr
+    arr = np.asarray(spec, dtype=float).reshape(-1)
+    if arr.size == 1:
+        return np.full(n_obs, float(arr[0]))
+    if arr.size != n_obs:
+        raise ValueError(f"weights length {arr.size} != n_obs {n_obs}")
+    return arr
+
+
+def _is_component_weights(spec: Any, dim: int) -> bool:
+    return isinstance(spec, (list, tuple)) and len(spec) == dim
 
 
 def _adj_from_matrix(mat) -> list[list[int]]:
@@ -309,49 +338,222 @@ def _as_param_list(val) -> list[float]:
     return [float(x) for x in np.asarray(val, dtype=float).reshape(-1)]
 
 
+def _hyper_slot_keys(internal_label: str) -> frozenset[str]:
+    """User-facing aliases for a registry `hyper_internal` label."""
+    lab = internal_label.lower()
+    keys = {lab}
+    short = lab
+    for prefix in ("log_", "logit_"):
+        if short.startswith(prefix):
+            short = short[len(prefix) :]
+            keys.add(short)
+    if "precision" in lab:
+        keys.update({"prec", "precision"})
+    if "rho" in lab:
+        keys.update({"rho", "cor0", "cor1", "rho1"})
+    if "phi" in lab:
+        keys.update({"phi", "bym2"})
+    if "range" in lab:
+        keys.add("range")
+    if "hurst" in lab:
+        keys.update({"h", "hurst"})
+    if lab.endswith("kappa") or "kappa" in lab:
+        keys.add("kappa")
+    if lab.endswith("tau") or lab == "log_tau":
+        keys.add("tau")
+    return frozenset(keys)
+
+
+def _match_hyper_slot(key: str, internals: Sequence[str]) -> int | None:
+    """Map a formula/hyper key onto a registry slot index, or None if unknown."""
+    k = str(key).lower().replace(".", "_").replace("-", "_")
+    for i, intern in enumerate(internals):
+        if k == intern.lower():
+            return i
+    hits = [i for i, intern in enumerate(internals) if k in _hyper_slot_keys(intern)]
+    if len(hits) == 1:
+        return hits[0]
+    if k in {"prec", "precision"}:
+        for i, intern in enumerate(internals):
+            if intern.lower() == "log_precision":
+                return i
+        prec_hits = [i for i, intern in enumerate(internals) if "precision" in intern.lower()]
+        if len(prec_hits) == 1:
+            return prec_hits[0]
+    return None
+
+
 def _resolve_effect_priors(
     model: str, kwargs: Mapping[str, Any] | None
 ) -> list[tuple[str, list[float]]]:
     """Build (name, param) list for an effect from f() kwargs or model defaults."""
     kw = dict(kwargs or {})
-    # Flat f(..., prior=..., param=...) → first hyper slot
-    if "prior" in kw:
-        name = str(kw["prior"])
-        param = _as_param_list(kw.get("param"))
-        defaults = core.default_hyper_priors(model)
-        if not defaults:
-            return [(name, param)]
-        out = [(name, param)]
-        # keep remaining default slots (e.g. AR1 rho) if only prec overridden
-        for i, (dn, dp) in enumerate(defaults):
-            if i == 0:
-                continue
-            out.append((dn, dp))
-        return out
+    m = model.lower()
+    defaults = list(core.default_hyper_priors(m))
+    internals: list[str] = []
+    try:
+        internals = list(_model_meta(m).get("hyper_internal") or [])
+    except Exception:
+        internals = []
+
+    def _parse_prior_val(val: Any) -> tuple[str, list[float]]:
+        if hasattr(val, "to_tuple"):
+            return val.to_tuple()
+        if isinstance(val, Mapping):
+            pname = str(val.get("prior", "gaussian"))
+            pparam = _as_param_list(val.get("param"))
+            return (pname, pparam)
+        if isinstance(val, str):
+            return (val, [])
+        return ("gaussian", [])
+
+    # Special handling for SPDE joint prior
+    if m == "spde":
+        if "prior" in kw and kw["prior"] is not None:
+            p_val = kw["prior"]
+            if hasattr(p_val, "to_tuple"):
+                return [p_val.to_tuple()]
+            elif isinstance(p_val, Mapping):
+                p_name = str(p_val.get("prior", "pc.spde"))
+                p_param = _as_param_list(p_val.get("param", [1.0, 0.05, 1.0, 0.01, 2.0]))
+                return [(p_name, p_param)]
+            else:
+                p_param = _as_param_list(kw.get("param", [1.0, 0.05, 1.0, 0.01, 2.0]))
+                return [(str(p_val), p_param)]
+        if "prior_range" in kw or "prior_sigma" in kw:
+            pr = kw.get("prior_range")
+            ps = kw.get("prior_sigma")
+            r0, alpha_r, d = 1.0, 0.05, 2.0
+            s0, alpha_s = 1.0, 0.01
+            if pr is not None:
+                if hasattr(pr, "r0"):
+                    r0 = float(getattr(pr, "r0", 1.0))
+                    alpha_r = float(getattr(pr, "alpha_r", 0.05))
+                    d = float(getattr(pr, "d", 2.0))
+                elif isinstance(pr, Mapping):
+                    r0 = float(pr.get("r0", 1.0))
+                    alpha_r = float(pr.get("alpha_r", 0.05))
+                    d = float(pr.get("d", 2.0))
+            if ps is not None:
+                if hasattr(ps, "u"):
+                    s0 = float(getattr(ps, "u", 1.0))
+                    alpha_s = float(getattr(ps, "alpha", 0.01))
+                elif hasattr(ps, "s0"):
+                    s0 = float(getattr(ps, "s0", 1.0))
+                    alpha_s = float(getattr(ps, "alpha_s", 0.01))
+                elif isinstance(ps, Mapping):
+                    s0 = float(ps.get("s0", ps.get("u", 1.0)))
+                    alpha_s = float(ps.get("alpha_s", ps.get("alpha", 0.01)))
+            return [("pc.spde", [r0, alpha_r, s0, alpha_s, d])]
+        if "hyper" in kw and isinstance(kw["hyper"], Mapping):
+            h = kw["hyper"]
+            if "range" in h or "sigma" in h or "prec" in h:
+                pr = h.get("range")
+                ps = h.get("sigma") or h.get("prec")
+                r0, alpha_r, d = 1.0, 0.05, 2.0
+                s0, alpha_s = 1.0, 0.01
+                if isinstance(pr, Mapping) and "param" in pr:
+                    params = _as_param_list(pr["param"])
+                    if len(params) >= 1:
+                        r0 = params[0]
+                    if len(params) >= 2:
+                        alpha_r = params[1]
+                    if len(params) >= 3:
+                        d = params[2]
+                if isinstance(ps, Mapping) and "param" in ps:
+                    params = _as_param_list(ps["param"])
+                    if len(params) >= 1:
+                        s0 = params[0]
+                    if len(params) >= 2:
+                        alpha_s = params[1]
+                return [("pc.spde", [r0, alpha_r, s0, alpha_s, d])]
+
+    slot_overrides: dict[str, tuple[str, list[float]]] = {}
+    if "prior_prec" in kw and kw["prior_prec"] is not None:
+        slot_overrides["prec"] = _parse_prior_val(kw["prior_prec"])
+    if "prior_rho" in kw and kw["prior_rho"] is not None:
+        slot_overrides["rho"] = _parse_prior_val(kw["prior_rho"])
+    if "prior_phi" in kw and kw["prior_phi"] is not None:
+        slot_overrides["phi"] = _parse_prior_val(kw["prior_phi"])
+    if "prior_range" in kw and kw["prior_range"] is not None:
+        slot_overrides["range"] = _parse_prior_val(kw["prior_range"])
+    if "prior_sigma" in kw and kw["prior_sigma"] is not None:
+        slot_overrides["sigma"] = _parse_prior_val(kw["prior_sigma"])
+
+    # Flat f(..., prior=..., param=...) → first hyper slot or full joint prior
+    if "prior" in kw and kw["prior"] is not None:
+        p_val = kw["prior"]
+        if hasattr(p_val, "to_tuple"):
+            p_name, p_param = p_val.to_tuple()
+            if defaults:
+                out = [(p_name, p_param)]
+                out.extend(defaults[1:])
+                return out
+            return [(p_name, p_param)]
+        else:
+            name = str(p_val)
+            param = _as_param_list(kw.get("param"))
+            if not defaults:
+                return [(name, param)]
+            out = [(name, param)]
+            for i, (dn, dp) in enumerate(defaults):
+                if i == 0:
+                    continue
+                out.append((dn, dp))
+            return out
+
     hyper = kw.get("hyper")
     if isinstance(hyper, Mapping):
-        defaults = core.default_hyper_priors(model)
-        # Map R-style keys onto default slots by order: prec, rho/rho1, ...
-        key_order = []
-        for k in ("prec", "rho", "rho1", "cor1", "h", "hurst"):
-            if k in hyper:
-                key_order.append(k)
-        for k in hyper:
-            if k not in key_order:
-                key_order.append(k)
-        out: list[tuple[str, list[float]]] = []
-        for i, k in enumerate(key_order):
-            h = hyper[k]
-            if not isinstance(h, Mapping):
-                raise ValueError(f"hyper['{k}'] must be a mapping with prior=/param=")
-            name = str(h.get("prior") or (defaults[i][0] if i < len(defaults) else "gaussian"))
-            param = _as_param_list(h.get("param"))
-            out.append((name, param))
-        # If fewer keys than default slots, append remaining defaults
+        if internals and len(defaults) == len(internals):
+            out = list(defaults)
+            for k, h in hyper.items():
+                idx = _match_hyper_slot(str(k), internals)
+                if idx is None:
+                    raise ValueError(
+                        f"unknown hyper slot {k!r} for model {m!r}; "
+                        f"expected one of {list(internals)}"
+                    )
+                if hasattr(h, "to_tuple"):
+                    out[idx] = h.to_tuple()
+                elif isinstance(h, Mapping):
+                    name = str(h.get("prior") or defaults[idx][0])
+                    param = _as_param_list(h.get("param"))
+                    out[idx] = (name, param)
+                else:
+                    out[idx] = (str(h), [])
+            return out
+        if internals and len(defaults) != len(internals):
+            raise ValueError(
+                f"hyper={{...}} for model {m!r} needs one prior per θ slot "
+                f"({len(internals)} labels); this model uses a joint prior. "
+                "Pass prior=PCSpde(...) or prior_range/prior_sigma."
+            )
+        # Unregistered model: apply values in dict order onto the default stack.
+        out = []
+        for i, (_k, h) in enumerate(hyper.items()):
+            if hasattr(h, "to_tuple"):
+                out.append(h.to_tuple())
+            elif isinstance(h, Mapping):
+                name = str(h.get("prior") or (defaults[i][0] if i < len(defaults) else "gaussian"))
+                param = _as_param_list(h.get("param"))
+                out.append((name, param))
+            else:
+                out.append((str(h), []))
         if len(out) < len(defaults):
             out.extend(defaults[len(out) :])
         return out
-    return list(core.default_hyper_priors(model))
+
+    if slot_overrides:
+        out = list(defaults)
+        if len(out) == len(internals):
+            for user_key, parsed in slot_overrides.items():
+                idx = _match_hyper_slot(user_key, internals)
+                if idx is not None:
+                    out[idx] = parsed
+            return out
+        return out
+
+    return defaults
 
 
 def _control_get(cc: Mapping[str, Any], *keys: str) -> Any:
@@ -896,6 +1098,10 @@ def _fit(
                 if ft.kwargs.get("obs_precision") is not None:
                     obs_precision = float(ft.kwargs["obs_precision"])
             family_free_prec = False
+        elif prec_cfg is not None and hasattr(prec_cfg, "to_tuple"):
+            family_free_prec = True
+            prior_name, prior_param = prec_cfg.to_tuple()
+            family_prior_spec = (prior_name, prior_param)
         elif prec_cfg is not None and isinstance(prec_cfg, Mapping):
             is_fixed = bool(prec_cfg.get("fixed", False))
             init = prec_cfg.get("initial")
@@ -1065,10 +1271,11 @@ def _fit(
                         f"copy index for '{ft.index}' incompatible with source n={n_src}"
                     )
                 zcol = np.searchsorted(levels, idx)
+            wvec = _as_weight_vec(ft.kwargs.get("weights"), data, n_obs)
             for r in range(n_obs):
                 rows.append(r)
                 cols.append(col_off + int(zcol[r]))
-                vals.append(1.0)
+                vals.append(float(wvec[r]))
             effect_graphs.append(None)
             effect_ns.append(n_src)
             effect_types.append("copy")
@@ -1188,14 +1395,24 @@ def _fit(
             nrow_i = ncol_i = 0
             eff_id = np.arange(1, n_graph + 1) if umin == 1 else np.arange(n_graph)
         elif model == "spde":
+            spde_mod = ft.kwargs.get("spde_model") or ft.kwargs.get("mesh")
             verts = ft.kwargs.get("vertices")
             tris = ft.kwargs.get("triangles")
+            if spde_mod is not None:
+                if isinstance(spde_mod, Mapping):
+                    verts = spde_mod.get("vertices", verts)
+                    tris = spde_mod.get("triangles", tris)
+                elif hasattr(spde_mod, "vertices") and hasattr(spde_mod, "triangles"):
+                    verts = getattr(spde_mod, "vertices", verts)
+                    tris = getattr(spde_mod, "triangles", tris)
             if isinstance(verts, str):
                 verts = data[verts]
             if isinstance(tris, str):
                 tris = data[tris]
             if verts is None or tris is None:
-                raise ValueError("f(..., model='spde') requires vertices= and triangles=")
+                raise ValueError(
+                    "f(..., model='spde') requires vertices= and triangles= (or spde_model=)"
+                )
             verts_arr = np.asarray(verts, dtype=float)
             tris_arr = np.asarray(tris)
             if verts_arr.ndim != 2 or verts_arr.shape[1] != 2:
@@ -1306,18 +1523,61 @@ def _fit(
                     vals.append(1.0)
                 n_e = 2 * n_main
             elif model == "crw2" and layout in ("pairs", "block"):
+                wvec = _as_weight_vec(ft.kwargs.get("weights"), data, n_obs)
                 for r in range(n_obs):
                     zi = int(zcol[r])
                     col = (2 * zi) if layout == "pairs" else zi
                     rows.append(r)
                     cols.append(col_off + col)
-                    vals.append(1.0)
+                    vals.append(float(wvec[r]))
                 n_e = 2 * n_main
+            elif (d_iid := _iidkd_dim(model)) is not None:
+                wspec = ft.kwargs.get("weights")
+                n_kw = ft.kwargs.get("n")
+                if _is_component_weights(wspec, d_iid):
+                    n_units = n_main
+                    n_e = d_iid * n_units
+                    for k, spec in enumerate(wspec):
+                        wv = _as_weight_vec(spec, data, n_obs)
+                        for r in range(n_obs):
+                            rows.append(r)
+                            cols.append(col_off + k * n_units + int(zcol[r]))
+                            vals.append(float(wv[r]))
+                else:
+                    if n_kw is None:
+                        raise ValueError(
+                            f"f({ft.index}, model='{model}') requires n= (latent length "
+                            f"{d_iid}*n_units) or weights=[...] of length {d_iid}"
+                        )
+                    n_e = int(n_kw)
+                    if n_e <= 0 or n_e % d_iid != 0:
+                        raise ValueError(
+                            f"f({ft.index}, model='{model}'): n={n_e} must be positive "
+                            f"and divisible by {d_iid}"
+                        )
+                    n_units = n_e // d_iid
+                    wv = _as_weight_vec(wspec, data, n_obs)
+                    z_raw = np.asarray(idx, dtype=float)
+                    z_try = z_raw - 1.0 if float(np.nanmin(z_raw)) >= 1.0 else z_raw
+                    if float(np.nanmin(z_try)) >= 0.0 and float(np.nanmax(z_try)) < n_e:
+                        z_map = z_try.astype(int)
+                    elif n_main == n_units:
+                        z_map = zcol.astype(int)
+                    else:
+                        raise ValueError(
+                            f"f({ft.index}, model='{model}'): index does not map into "
+                            f"n={n_e} or first-component size {n_units}"
+                        )
+                    for r in range(n_obs):
+                        rows.append(r)
+                        cols.append(col_off + int(z_map[r]))
+                        vals.append(float(wv[r]))
             else:
+                wvec = _as_weight_vec(ft.kwargs.get("weights"), data, n_obs)
                 for r in range(n_obs):
                     rows.append(r)
                     cols.append(col_off + int(zcol[r]))
-                    vals.append(1.0)
+                    vals.append(float(wvec[r]))
                 n_e = n_main
 
         effect_graphs.append(adj)

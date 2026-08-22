@@ -291,23 +291,7 @@ fn default_prior_pairs(model: &str) -> Vec<(String, Vec<f64>)> {
 }
 
 fn prior_to_pair(p: &PriorSpec) -> (String, Vec<f64>) {
-    use crate::priors::PriorFamily::*;
-    let params = match &p.family {
-        PcPrec { u, alpha } => vec![*u, *alpha],
-        PcCor1 { u, alpha } => vec![*u, *alpha],
-        PcMatern {
-            lambda1,
-            lambda2,
-            d,
-        } => vec![*lambda1, *lambda2, *d],
-        LogGamma { shape, rate } => vec![*shape, *rate],
-        Gaussian { mean, precision } => vec![*mean, *precision],
-        Flat => vec![],
-        LogitBeta { a, b } => vec![*a, *b],
-        WishartKd { param, .. } => param.clone(),
-        NonePrior => vec![],
-    };
-    (p.name.clone(), params)
+    p.to_pair()
 }
 
 #[cfg(test)]

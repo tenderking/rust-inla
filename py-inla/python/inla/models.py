@@ -38,11 +38,27 @@ class Gaussian(Family):
         self,
         *,
         obs_precision: float | None = None,
+        prior_prec: Any = None,
         control_family: Mapping[str, Any] | None = None,
     ):
         ctrl = dict(control_family) if control_family is not None else {}
+        hyper = dict(ctrl.get("hyper") or {})
+        prec_cfg = dict(hyper.get("prec") or {})
         if obs_precision is not None:
-            ctrl.setdefault("hyper", {}).setdefault("prec", {})["initial"] = float(obs_precision)
+            prec_cfg["initial"] = float(obs_precision)
+        if prior_prec is not None:
+            if hasattr(prior_prec, "to_tuple"):
+                pname, pparam = prior_prec.to_tuple()
+                prec_cfg["prior"] = pname
+                prec_cfg["param"] = pparam
+            elif isinstance(prior_prec, Mapping):
+                prec_cfg.update(prior_prec)
+            else:
+                prec_cfg["prior"] = str(prior_prec)
+        if prec_cfg:
+            hyper["prec"] = prec_cfg
+        if hyper:
+            ctrl["hyper"] = hyper
         super().__init__(name="gaussian", control_family=ctrl if ctrl else None)
 
 
@@ -119,6 +135,11 @@ class Effect:
     replicate: str | None = None
     cyclic: bool = False
     prior: Any = None
+    prior_prec: Any = None
+    prior_rho: Any = None
+    prior_phi: Any = None
+    prior_range: Any = None
+    prior_sigma: Any = None
     kwargs: dict[str, Any] = field(default_factory=dict)
 
     def to_fterm(self) -> FTerm:
@@ -137,6 +158,16 @@ class Effect:
             kw["cyclic"] = True
         if self.prior is not None:
             kw["prior"] = self.prior
+        if self.prior_prec is not None:
+            kw["prior_prec"] = self.prior_prec
+        if self.prior_rho is not None:
+            kw["prior_rho"] = self.prior_rho
+        if self.prior_phi is not None:
+            kw["prior_phi"] = self.prior_phi
+        if self.prior_range is not None:
+            kw["prior_range"] = self.prior_range
+        if self.prior_sigma is not None:
+            kw["prior_sigma"] = self.prior_sigma
         return FTerm(
             index=self.index,
             model=self.model.lower(),
@@ -158,6 +189,7 @@ class IID(Effect):
         *,
         initial: Any = None,
         prior: Any = None,
+        prior_prec: Any = None,
         group: str | None = None,
         group_model: str | None = None,
         replicate: str | None = None,
@@ -168,9 +200,122 @@ class IID(Effect):
             model="iid",
             initial=initial,
             prior=prior,
+            prior_prec=prior_prec,
             group=group,
             group_model=group_model,
             replicate=replicate,
+            kwargs=kwargs,
+        )
+
+
+@dataclass
+class IID2D(Effect):
+    """Bivariate correlated IID random effects (R-INLA ``iid2d``).
+
+    Latent length is ``2 * n_units``. Pass ``weights=["1", "time"]`` for a
+    random intercept and slope, or ``n=2*n_units`` with stacked indices.
+    """
+
+    def __init__(
+        self,
+        index: str,
+        *,
+        weights: Any = None,
+        n: int | None = None,
+        initial: Any = None,
+        prior: Any = None,
+        **kwargs: Any,
+    ):
+        if weights is not None:
+            kwargs["weights"] = weights
+        if n is not None:
+            kwargs["n"] = int(n)
+        super().__init__(
+            index=index,
+            model="iid2d",
+            initial=initial,
+            prior=prior,
+            kwargs=kwargs,
+        )
+
+
+@dataclass
+class IID3D(Effect):
+    """Trivariate correlated IID random effects (R-INLA ``iid3d``)."""
+
+    def __init__(
+        self,
+        index: str,
+        *,
+        weights: Any = None,
+        n: int | None = None,
+        initial: Any = None,
+        prior: Any = None,
+        **kwargs: Any,
+    ):
+        if weights is not None:
+            kwargs["weights"] = weights
+        if n is not None:
+            kwargs["n"] = int(n)
+        super().__init__(
+            index=index,
+            model="iid3d",
+            initial=initial,
+            prior=prior,
+            kwargs=kwargs,
+        )
+
+
+@dataclass
+class IID4D(Effect):
+    """4-dimensional correlated IID random effects (R-INLA ``iid4d``)."""
+
+    def __init__(
+        self,
+        index: str,
+        *,
+        weights: Any = None,
+        n: int | None = None,
+        initial: Any = None,
+        prior: Any = None,
+        **kwargs: Any,
+    ):
+        if weights is not None:
+            kwargs["weights"] = weights
+        if n is not None:
+            kwargs["n"] = int(n)
+        super().__init__(
+            index=index,
+            model="iid4d",
+            initial=initial,
+            prior=prior,
+            kwargs=kwargs,
+        )
+
+
+@dataclass
+class IID5D(Effect):
+    """5-dimensional correlated IID random effects (R-INLA ``iid5d``)."""
+
+    def __init__(
+        self,
+        index: str,
+        *,
+        weights: Any = None,
+        n: int | None = None,
+        initial: Any = None,
+        prior: Any = None,
+        **kwargs: Any,
+    ):
+        if weights is not None:
+            kwargs["weights"] = weights
+        if n is not None:
+            kwargs["n"] = int(n)
+        super().__init__(
+            index=index,
+            model="iid5d",
+            initial=initial,
+            prior=prior,
             kwargs=kwargs,
         )
 
@@ -186,6 +331,8 @@ class Besag(Effect):
         graph: Any = None,
         scale_model: bool | None = None,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
         weights: Any = None,
         group: str | None = None,
         group_model: str | None = None,
@@ -198,6 +345,8 @@ class Besag(Effect):
             graph=graph,
             scale_model=scale_model,
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
             weights=weights,
             group=group,
             group_model=group_model,
@@ -217,6 +366,8 @@ class BYM(Effect):
         graph: Any = None,
         scale_model: bool | None = None,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -225,6 +376,8 @@ class BYM(Effect):
             graph=graph,
             scale_model=scale_model,
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
             kwargs=kwargs,
         )
 
@@ -240,6 +393,9 @@ class BYM2(Effect):
         graph: Any = None,
         scale_model: bool | None = None,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
+        prior_phi: Any = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -248,6 +404,9 @@ class BYM2(Effect):
             graph=graph,
             scale_model=scale_model,
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
+            prior_phi=prior_phi,
             kwargs=kwargs,
         )
 
@@ -263,6 +422,8 @@ class RW1(Effect):
         cyclic: bool = False,
         scale_model: bool | None = None,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -271,6 +432,8 @@ class RW1(Effect):
             cyclic=cyclic,
             scale_model=scale_model,
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
             kwargs=kwargs,
         )
 
@@ -286,6 +449,8 @@ class RW2(Effect):
         cyclic: bool = False,
         scale_model: bool | None = None,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -294,6 +459,8 @@ class RW2(Effect):
             cyclic=cyclic,
             scale_model=scale_model,
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
             kwargs=kwargs,
         )
 
@@ -307,6 +474,9 @@ class AR1(Effect):
         index: str,
         *,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
+        prior_rho: Any = None,
         group: str | None = None,
         replicate: str | None = None,
         **kwargs: Any,
@@ -315,6 +485,9 @@ class AR1(Effect):
             index=index,
             model="ar1",
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
+            prior_rho=prior_rho,
             group=group,
             replicate=replicate,
             kwargs=kwargs,
@@ -331,6 +504,9 @@ class AR(Effect):
         *,
         order: int = 1,
         initial: Any = None,
+        prior: Any = None,
+        prior_prec: Any = None,
+        prior_rho: Any = None,
         **kwargs: Any,
     ):
         super().__init__(
@@ -338,6 +514,9 @@ class AR(Effect):
             model="ar",
             order=order,
             initial=initial,
+            prior=prior,
+            prior_prec=prior_prec,
+            prior_rho=prior_rho,
             kwargs=kwargs,
         )
 
@@ -352,6 +531,9 @@ class SPDE(Effect):
         *,
         spde_model: Any = None,
         initial: Any = None,
+        prior: Any = None,
+        prior_range: Any = None,
+        prior_sigma: Any = None,
         group: str | None = None,
         replicate: str | None = None,
         **kwargs: Any,
@@ -363,6 +545,9 @@ class SPDE(Effect):
             index=index,
             model="spde",
             initial=initial,
+            prior=prior,
+            prior_range=prior_range,
+            prior_sigma=prior_sigma,
             group=group,
             replicate=replicate,
             kwargs=kw,

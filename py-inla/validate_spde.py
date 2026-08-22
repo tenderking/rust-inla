@@ -17,7 +17,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "python"))
 
 from inla import _native as core  # noqa: E402
-from inla.spde import fem_blocks_mesh, lattice_mesh, precision_matrix, projector_matrix  # noqa: E402
+from inla.spde import (  # noqa: E402
+    fem_blocks_mesh,
+    lattice_mesh,
+    precision_matrix,
+    projector_matrix,
+)
 
 try:
     import matplotlib
@@ -87,10 +92,7 @@ def main() -> None:
     def log_prior(theta):
         return float(-0.05 * (theta[0] ** 2 + theta[1] ** 2))
 
-    obs = [
-        {"family": "gaussian", "y": float(yi), "precision": 1.0 / (0.15**2)}
-        for yi in y_obs
-    ]
+    obs = [{"family": "gaussian", "y": float(yi), "precision": 1.0 / (0.15**2)} for yi in y_obs]
     a_py = core.spde_projector_matrix(
         vert_tuples, tri_tuples, coords[:, 0].tolist(), coords[:, 1].tolist()
     )
