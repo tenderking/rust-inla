@@ -69,3 +69,11 @@ report("poisson_iid", inla_rs(
   family = "poisson",
   initial_theta = 1.0
 ))
+
+report("ar1_pc", inla_rs(
+  y ~ -1 + f(idx, model = "ar1", obs_precision = 25.0, hyper = list(
+    prec = list(prior = "pc.prec", param = c(1.0, 0.01)),
+    rho = list(prior = "pc.cor1", param = c(0.5, 0.75))
+  )),
+  data = df
+))

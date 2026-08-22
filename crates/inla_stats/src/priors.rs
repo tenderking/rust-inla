@@ -9,16 +9,31 @@ use crate::inference::log_gamma;
 
 const LOG_NORMC_GAUSSIAN: f64 = -0.918_938_533_204_672_8; // -½ log(2π)
 
-/// Named prior family with R-INLA parameter conventions.
+/// Named prior family with R-INLA parameter conventions and cached calibrated λ.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PriorFamily {
     /// PC prior on precision: `P(σ > u) = α`, θ = log τ, σ = τ^{-1/2}.
-    PcPrec { u: f64, alpha: f64 },
+    PcPrec { u: f64, alpha: f64, lambda: f64 },
+    /// PC prior on AR(1) correlation (base ρ=0): `P(|ρ| > u) = α`.
+    /// θ = logit((1+ρ)/2). R name: `pc.cor0` / `pc.rho0`.
+    PcCor0 { u: f64, alpha: f64, lambda: f64 },
     /// PC prior on AR(1) correlation (base ρ=1): `P(ρ > u) = α`.
     /// θ = logit((1+ρ)/2). R name: `pc.cor1` / `pc.rho1`.
-    PcCor1 { u: f64, alpha: f64 },
-    /// PC Matérn on (log range, log σ) after λ packing: param `(λ1, λ2, d)`.
-    PcMatern { lambda1: f64, lambda2: f64, d: f64 },
+    PcCor1 { u: f64, alpha: f64, lambda: f64 },
+    /// PC prior on BYM2 spatial mixing parameter ϕ (base ϕ=0): `P(ϕ < u) = α`.
+    /// θ = logit(ϕ). R name: `pc.bym2` / `pc.phi`.
+    PcBym2 { u: f64, alpha: f64, lambda: f64 },
+    /// PC prior on Matérn / SPDE range parameter: `P(ρ < r_0) = α_r`.
+    /// θ = log ρ. R name: `pc.range`.
+    PcRange {
+        r0: f64,
+        alpha_r: f64,
+        d: f64,
+        lambda: f64,
+    },
+    /// PC prior for 2D SPDE Matérn on internal θ = (log τ, log κ) mapped to (log ρ, log σ).
+    /// R name: `pc.spde` / `pc.matern`.
+    PcSpde { lambda1: f64, lambda2: f64, d: f64 },
     /// Gamma on τ = e^θ with **rate** `b` (R-INLA): mean = a/b.
     LogGamma { shape: f64, rate: f64 },
     /// Gaussian directly on θ: mean μ, precision τ (`τ=0` ⇒ flat).
@@ -27,13 +42,16 @@ pub enum PriorFamily {
     Flat,
     /// Beta(a,b) on p ∈ (0,1); θ = logit(p).
     LogitBeta { a: f64, b: f64 },
+    /// Placeholder for remaining slots (`prior = "none"`): contributes 0 θ.
+    NonePrior,
 }
 
 impl PriorFamily {
     /// Dimension of θ this prior expects.
     pub fn theta_dim(&self) -> usize {
         match self {
-            PriorFamily::PcMatern { .. } => 2,
+            PriorFamily::PcSpde { .. } => 2,
+            PriorFamily::NonePrior => 0,
             _ => 1,
         }
     }
@@ -52,12 +70,77 @@ impl PriorSpec {
         Self { family, name }
     }
 
-    pub fn pc_prec(u: f64, alpha: f64) -> Self {
-        Self::new(PriorFamily::PcPrec { u, alpha })
+    pub fn pc_prec(u: f64, alpha: f64) -> Result<Self, String> {
+        if !(u > 0.0 && alpha > 0.0 && alpha < 1.0) {
+            return Err(format!(
+                "pc.prec: need u>0 and 0<alpha<1, got u={u}, alpha={alpha}"
+            ));
+        }
+        let lambda = -alpha.ln() / u;
+        Ok(Self::new(PriorFamily::PcPrec { u, alpha, lambda }))
     }
 
-    pub fn pc_cor1(u: f64, alpha: f64) -> Self {
-        Self::new(PriorFamily::PcCor1 { u, alpha })
+    pub fn pc_cor0(u: f64, alpha: f64) -> Result<Self, String> {
+        let lambda = solve_pc_cor0_lambda(u, alpha)?;
+        Ok(Self::new(PriorFamily::PcCor0 { u, alpha, lambda }))
+    }
+
+    pub fn pc_cor1(u: f64, alpha: f64) -> Result<Self, String> {
+        let lambda = solve_pc_cor1_lambda(u, alpha)?;
+        Ok(Self::new(PriorFamily::PcCor1 { u, alpha, lambda }))
+    }
+
+    pub fn pc_bym2(u: f64, alpha: f64) -> Result<Self, String> {
+        let lambda = solve_pc_bym2_lambda(u, alpha)?;
+        Ok(Self::new(PriorFamily::PcBym2 { u, alpha, lambda }))
+    }
+
+    pub fn pc_range(r0: f64, alpha_r: f64, d: f64) -> Result<Self, String> {
+        if !(r0 > 0.0 && alpha_r > 0.0 && alpha_r < 1.0 && d > 0.0) {
+            return Err(format!(
+                "pc.range: need r0>0, 0<alpha_r<1, d>0, got r0={r0}, alpha_r={alpha_r}, d={d}"
+            ));
+        }
+        let lambda = -alpha_r.ln() * r0.powf(d / 2.0);
+        Ok(Self::new(PriorFamily::PcRange {
+            r0,
+            alpha_r,
+            d,
+            lambda,
+        }))
+    }
+
+    pub fn pc_spde(lambda1: f64, lambda2: f64, d: f64) -> Self {
+        Self::new(PriorFamily::PcSpde {
+            lambda1,
+            lambda2,
+            d,
+        })
+    }
+
+    pub fn pc_spde_quantiles(
+        r0: f64,
+        alpha_r: f64,
+        s0: f64,
+        alpha_s: f64,
+        d: f64,
+    ) -> Result<Self, String> {
+        if !(r0 > 0.0 && alpha_r > 0.0 && alpha_r < 1.0) {
+            return Err(format!(
+                "pc.spde quantiles: need r0>0 and 0<alpha_r<1, got r0={r0}, alpha_r={alpha_r}"
+            ));
+        }
+        if !(s0 > 0.0 && alpha_s > 0.0 && alpha_s < 1.0) {
+            return Err(format!(
+                "pc.spde quantiles: need s0>0 and 0<alpha_s<1, got s0={s0}, alpha_s={alpha_s}"
+            ));
+        }
+        if d <= 0.0 {
+            return Err(format!("pc.spde quantiles: need d>0, got d={d}"));
+        }
+        let lambda1 = -alpha_r.ln() * r0.powf(d / 2.0);
+        let lambda2 = -alpha_s.ln() / s0;
+        Ok(Self::pc_spde(lambda1, lambda2, d))
     }
 
     pub fn loggamma(shape: f64, rate: f64) -> Self {
@@ -79,45 +162,65 @@ impl PriorSpec {
     /// Parse R-INLA `prior=` name + `param=` vector (defaults when `param` empty).
     pub fn from_name_params(name: &str, param: &[f64]) -> Result<Self, String> {
         let key = trim_family(name);
-        let family = match key.as_str() {
+        let spec = match key.as_str() {
             "pcprec" => {
                 let (u, alpha) = take2(param, 1.0, 0.01)?;
-                PriorFamily::PcPrec { u, alpha }
+                Self::pc_prec(u, alpha)?
+            }
+            "pccor0" | "pcrho0" => {
+                let (u, alpha) = take2(param, 0.5, 0.05)?;
+                Self::pc_cor0(u, alpha)?
             }
             "pccor1" | "pcrho1" => {
                 let (u, alpha) = take2(param, 0.5, 0.75)?;
-                PriorFamily::PcCor1 { u, alpha }
+                Self::pc_cor1(u, alpha)?
             }
-            "pcmatern" => {
-                if param.len() < 3 {
-                    return Err("pc.matern requires param=c(lambda1, lambda2, d)".into());
-                }
-                PriorFamily::PcMatern {
-                    lambda1: param[0],
-                    lambda2: param[1],
-                    d: param[2],
+            "pcbym2" | "pcphi" => {
+                let (u, alpha) = take2(param, 0.5, 0.5)?;
+                Self::pc_bym2(u, alpha)?
+            }
+            "pcrange" => {
+                let r0 = param.first().copied().unwrap_or(1.0);
+                let alpha_r = param.get(1).copied().unwrap_or(0.05);
+                let d = param.get(2).copied().unwrap_or(2.0);
+                Self::pc_range(r0, alpha_r, d)?
+            }
+            "pcspde" | "pcmatern" => {
+                if param.len() == 5 {
+                    Self::pc_spde_quantiles(param[0], param[1], param[2], param[3], param[4])?
+                } else if param.len() >= 3 {
+                    Self::pc_spde(param[0], param[1], param[2])
+                } else {
+                    // Default for 2D SPDE Matérn
+                    Self::pc_spde_quantiles(1.0, 0.05, 1.0, 0.01, 2.0)?
                 }
             }
             "loggamma" => {
                 let (shape, rate) = take2(param, 1.0, 5e-5)?;
-                PriorFamily::LogGamma { shape, rate }
+                Self::loggamma(shape, rate)
             }
             "gaussian" | "normal" => {
                 let (mean, precision) = take2(param, 0.0, 0.001)?;
-                PriorFamily::Gaussian { mean, precision }
+                Self::gaussian(mean, precision)
             }
-            "flat" | "uniform" => PriorFamily::Flat,
+            "flat" | "uniform" => Self::flat(),
             "logitbeta" => {
                 let (a, b) = take2(param, 1.0, 1.0)?;
-                PriorFamily::LogitBeta { a, b }
+                Self::logitbeta(a, b)
             }
+            "none" => Self::new(PriorFamily::NonePrior),
             other => return Err(format!("unknown prior '{other}' (from '{name}')")),
         };
-        Ok(Self { name: key, family })
+        Ok(spec)
     }
 
     pub fn theta_dim(&self) -> usize {
         self.family.theta_dim()
+    }
+
+    /// Convert prior to `(canonical_name, param_vec)` pair.
+    pub fn to_pair(&self) -> (String, Vec<f64>) {
+        (self.name.clone(), family_param_vec(&self.family))
     }
 
     /// Log-density on internal θ (length must match [`Self::theta_dim`]).
@@ -131,13 +234,16 @@ impl PriorSpec {
             ));
         }
         match &self.family {
-            PriorFamily::PcPrec { u, alpha } => Ok(pc_prec_log_dens(theta[0], *u, *alpha)?),
-            PriorFamily::PcCor1 { u, alpha } => Ok(pc_cor1_log_dens(theta[0], *u, *alpha)?),
-            PriorFamily::PcMatern {
+            PriorFamily::PcPrec { lambda, .. } => Ok(pc_prec_log_dens(theta[0], *lambda)?),
+            PriorFamily::PcCor0 { lambda, .. } => Ok(pc_cor0_log_dens(theta[0], *lambda)?),
+            PriorFamily::PcCor1 { lambda, .. } => Ok(pc_cor1_log_dens(theta[0], *lambda)?),
+            PriorFamily::PcBym2 { lambda, .. } => Ok(pc_bym2_log_dens(theta[0], *lambda)?),
+            PriorFamily::PcRange { d, lambda, .. } => Ok(pc_range_log_dens(theta[0], *d, *lambda)?),
+            PriorFamily::PcSpde {
                 lambda1,
                 lambda2,
                 d,
-            } => Ok(pc_matern_log_dens(
+            } => Ok(pc_spde_log_dens(
                 theta[0], theta[1], *lambda1, *lambda2, *d,
             )?),
             PriorFamily::LogGamma { shape, rate } => {
@@ -148,6 +254,7 @@ impl PriorSpec {
             }
             PriorFamily::Flat => Ok(0.0),
             PriorFamily::LogitBeta { a, b } => Ok(logitbeta_log_dens(theta[0], *a, *b)?),
+            PriorFamily::NonePrior => Ok(0.0),
         }
     }
 
@@ -161,17 +268,11 @@ impl PriorSpec {
             ));
         }
         match &self.family {
-            PriorFamily::PcPrec { u, alpha } => pc_prec_eval(theta, *u, *alpha),
-            PriorFamily::PcCor1 { u, alpha } => {
-                // Analytic hess is messy; FD hess from analytic grad.
-                let logp = pc_cor1_log_dens(theta, *u, *alpha)?;
-                let eps = 1e-5;
-                let g0 = pc_cor1_log_dens(theta - eps, *u, *alpha)?;
-                let g1 = pc_cor1_log_dens(theta + eps, *u, *alpha)?;
-                let grad = (g1 - g0) / (2.0 * eps);
-                let hess = (g1 - 2.0 * logp + g0) / (eps * eps);
-                Ok(Eval1D { logp, grad, hess })
-            }
+            PriorFamily::PcPrec { lambda, .. } => pc_prec_eval(theta, *lambda),
+            PriorFamily::PcCor0 { lambda, .. } => pc_cor0_eval(theta, *lambda),
+            PriorFamily::PcCor1 { lambda, .. } => pc_cor1_eval(theta, *lambda),
+            PriorFamily::PcBym2 { lambda, .. } => pc_bym2_eval(theta, *lambda),
+            PriorFamily::PcRange { d, lambda, .. } => pc_range_eval(theta, *d, *lambda),
             PriorFamily::LogGamma { shape, rate } => loggamma_eval(theta, *shape, *rate),
             PriorFamily::Gaussian { mean, precision } => gaussian_eval(theta, *mean, *precision),
             PriorFamily::Flat => Ok(Eval1D {
@@ -180,7 +281,12 @@ impl PriorSpec {
                 hess: 0.0,
             }),
             PriorFamily::LogitBeta { a, b } => logitbeta_eval(theta, *a, *b),
-            PriorFamily::PcMatern { .. } => unreachable!(),
+            PriorFamily::PcSpde { .. } => unreachable!(),
+            PriorFamily::NonePrior => Ok(Eval1D {
+                logp: 0.0,
+                grad: 0.0,
+                hess: 0.0,
+            }),
         }
     }
 }
@@ -223,40 +329,39 @@ impl HyperPriorStack {
         let m = model.to_ascii_lowercase();
         match m.as_str() {
             "iid" | "rw1" | "rw2" | "rw2d" | "besag" | "besag2" | "seasonal" | "crw1" | "crw2" => {
-                Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)]))
+                Ok(Self::new(vec![PriorSpec::pc_prec(1.0, 0.01)?]))
             }
             "bym" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01),
-                PriorSpec::pc_prec(1.0, 0.01),
+                PriorSpec::pc_prec(1.0, 0.01)?,
+                PriorSpec::pc_prec(1.0, 0.01)?,
             ])),
-            // θ = [log_tau, logit_phi]
+            // θ = [log_tau, logit_phi]; PC prior on spatial proportion ϕ (base ϕ=0)
             "bym2" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01),
-                PriorSpec::gaussian(0.0, 0.5),
+                PriorSpec::pc_prec(1.0, 0.01)?,
+                PriorSpec::pc_bym2(0.5, 0.5)?,
             ])),
-            // θ = [log_prec, log_range]
+            // θ = [log_prec, log_range]; PC precision and PC range (d=2)
             "matern2d" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01),
-                PriorSpec::gaussian(0.0, 0.1),
+                PriorSpec::pc_prec(1.0, 0.01)?,
+                PriorSpec::pc_range(1.0, 0.05, 2.0)?,
             ])),
+            // θ = [log_tau, logit_rho]; PC precision and PC correlation (base ρ=1)
             "ar1" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01),
-                PriorSpec::pc_cor1(0.5, 0.75),
+                PriorSpec::pc_prec(1.0, 0.01)?,
+                PriorSpec::pc_cor1(0.5, 0.75)?,
             ])),
             "ar" | "arp" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01),
+                PriorSpec::pc_prec(1.0, 0.01)?,
                 PriorSpec::gaussian(0.0, 0.1),
                 PriorSpec::gaussian(0.0, 0.1),
             ])),
             "fgn" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01),
-                // Hurst on internal scale: weak Gaussian (no dedicated PC yet)
+                PriorSpec::pc_prec(1.0, 0.01)?,
                 PriorSpec::gaussian(0.0, 0.1),
             ])),
-            // θ = [log_tau, log_kappa]; PC Matérn on range/σ scale (d=2).
-            "spde" => Ok(Self::new(vec![PriorSpec::from_name_params(
-                "pc.matern",
-                &[1.0, 1.0, 2.0],
+            // θ = [log_tau, log_kappa]; Joint PC Matérn on 2D SPDE
+            "spde" => Ok(Self::new(vec![PriorSpec::pc_spde_quantiles(
+                1.0, 0.05, 1.0, 0.01, 2.0,
             )?])),
             "fixed" => Ok(Self::new(vec![])),
             // Free scaling on a copied field: N(1, prec=0.1) on β (identity scale).
@@ -283,18 +388,18 @@ impl HyperPriorStack {
 
     /// Serialize each prior as `(canonical_name, param_vec)` for frontend round-trips.
     pub fn to_names_params(&self) -> Vec<(String, Vec<f64>)> {
-        self.priors
-            .iter()
-            .map(|p| (p.name.clone(), family_param_vec(&p.family)))
-            .collect()
+        self.priors.iter().map(|p| p.to_pair()).collect()
     }
 }
 
-fn family_param_vec(f: &PriorFamily) -> Vec<f64> {
+pub fn family_param_vec(f: &PriorFamily) -> Vec<f64> {
     match f {
-        PriorFamily::PcPrec { u, alpha } => vec![*u, *alpha],
-        PriorFamily::PcCor1 { u, alpha } => vec![*u, *alpha],
-        PriorFamily::PcMatern {
+        PriorFamily::PcPrec { u, alpha, .. } => vec![*u, *alpha],
+        PriorFamily::PcCor0 { u, alpha, .. } => vec![*u, *alpha],
+        PriorFamily::PcCor1 { u, alpha, .. } => vec![*u, *alpha],
+        PriorFamily::PcBym2 { u, alpha, .. } => vec![*u, *alpha],
+        PriorFamily::PcRange { r0, alpha_r, d, .. } => vec![*r0, *alpha_r, *d],
+        PriorFamily::PcSpde {
             lambda1,
             lambda2,
             d,
@@ -303,6 +408,7 @@ fn family_param_vec(f: &PriorFamily) -> Vec<f64> {
         PriorFamily::Gaussian { mean, precision } => vec![*mean, *precision],
         PriorFamily::Flat => vec![],
         PriorFamily::LogitBeta { a, b } => vec![*a, *b],
+        PriorFamily::NonePrior => vec![],
     }
 }
 
@@ -316,15 +422,19 @@ fn trim_family(name: &str) -> String {
         .collect()
 }
 
-fn family_canonical_name(f: &PriorFamily) -> &'static str {
+pub fn family_canonical_name(f: &PriorFamily) -> &'static str {
     match f {
-        PriorFamily::PcPrec { .. } => "pcprec",
-        PriorFamily::PcCor1 { .. } => "pccor1",
-        PriorFamily::PcMatern { .. } => "pcmatern",
+        PriorFamily::PcPrec { .. } => "pc.prec",
+        PriorFamily::PcCor0 { .. } => "pc.cor0",
+        PriorFamily::PcCor1 { .. } => "pc.cor1",
+        PriorFamily::PcBym2 { .. } => "pc.bym2",
+        PriorFamily::PcRange { .. } => "pc.range",
+        PriorFamily::PcSpde { .. } => "pc.spde",
         PriorFamily::LogGamma { .. } => "loggamma",
         PriorFamily::Gaussian { .. } => "gaussian",
         PriorFamily::Flat => "flat",
         PriorFamily::LogitBeta { .. } => "logitbeta",
+        PriorFamily::NonePrior => "none",
     }
 }
 
@@ -336,41 +446,92 @@ fn take2(param: &[f64], d0: f64, d1: f64) -> Result<(f64, f64), String> {
     }
 }
 
-fn pc_prec_lambda(u: f64, alpha: f64) -> Result<f64, String> {
-    if !(u > 0.0 && alpha > 0.0 && alpha < 1.0) {
-        return Err(format!(
-            "pc.prec: need u>0 and 0<alpha<1, got u={u} alpha={alpha}"
-        ));
-    }
-    Ok(-alpha.ln() / u)
-}
+// --- Density & Derivative Solvers -------------------------------------------
 
-fn pc_prec_log_dens(theta: f64, u: f64, alpha: f64) -> Result<f64, String> {
+fn pc_prec_log_dens(theta: f64, lambda: f64) -> Result<f64, String> {
     if !theta.is_finite() {
         return Err("pc.prec: θ must be finite".into());
     }
-    let lambda = pc_prec_lambda(u, alpha)?;
     // log(λ/2) - λ e^{-θ/2} - θ/2
     Ok(lambda.ln() - std::f64::consts::LN_2 - lambda * (-0.5 * theta).exp() - 0.5 * theta)
 }
 
-fn pc_prec_eval(theta: f64, u: f64, alpha: f64) -> Result<Eval1D, String> {
-    let lambda = pc_prec_lambda(u, alpha)?;
+fn pc_prec_eval(theta: f64, lambda: f64) -> Result<Eval1D, String> {
     let e = (-0.5 * theta).exp();
     let logp = lambda.ln() - std::f64::consts::LN_2 - lambda * e - 0.5 * theta;
-    // d/dθ [-λ e^{-θ/2}] = λ*(1/2)*e^{-θ/2}
     let grad = 0.5 * lambda * e - 0.5;
     let hess = -0.25 * lambda * e;
     Ok(Eval1D { logp, grad, hess })
 }
 
+/// Solve λ for `pc.cor0`: P(|ρ| > u) = α where d(ρ) = √(-ln(1-ρ²)).
+/// Base model ρ=0. λ = -ln(α) / √(-ln(1-u²)).
+fn solve_pc_cor0_lambda(u: f64, alpha: f64) -> Result<f64, String> {
+    if !(u > 0.0 && u < 1.0) {
+        return Err(format!("pc.cor0: u must be in (0,1), got {u}"));
+    }
+    if !(alpha > 0.0 && alpha < 1.0) {
+        return Err(format!("pc.cor0: alpha must be in (0,1), got {alpha}"));
+    }
+    let d_u = (-(1.0 - u * u).ln()).sqrt();
+    Ok(-alpha.ln() / d_u)
+}
+
+fn pc_cor0_log_dens(theta: f64, lambda: f64) -> Result<f64, String> {
+    if !theta.is_finite() {
+        return Err("pc.cor0: θ must be finite".into());
+    }
+    if theta.abs() < 1e-7 {
+        // As θ → 0, ρ → 0, |ρ|/d(ρ) → 1, d(ρ) → 0, log π(0) = ln(λ) - 2 ln(2)
+        return Ok(lambda.ln() - 2.0 * std::f64::consts::LN_2);
+    }
+    let e = theta.exp();
+    let p = e / (1.0 + e);
+    let rho = 2.0 * p - 1.0;
+    let rho2 = rho * rho;
+    if rho2 >= 1.0 {
+        return Ok(f64::NEG_INFINITY);
+    }
+    let d_rho = (-(1.0 - rho2).ln()).sqrt();
+    // log π(θ) = ln λ - 2 ln 2 + ln(|ρ|/d(ρ)) - λ d(ρ)
+    Ok(lambda.ln() - 2.0 * std::f64::consts::LN_2 + (rho.abs() / d_rho).ln() - lambda * d_rho)
+}
+
+fn pc_cor0_eval(theta: f64, lambda: f64) -> Result<Eval1D, String> {
+    let logp = pc_cor0_log_dens(theta, lambda)?;
+    let e = theta.exp();
+    let p = e / (1.0 + e);
+    let rho = 2.0 * p - 1.0;
+    if rho.abs() < 1e-6 {
+        // Near zero: grad = 0, hessian evaluated smoothly
+        let eps = 1e-5;
+        let g0 = pc_cor0_log_dens(theta - eps, lambda)?;
+        let g1 = pc_cor0_log_dens(theta + eps, lambda)?;
+        let hess = (g1 - 2.0 * logp + g0) / (eps * eps);
+        return Ok(Eval1D {
+            logp,
+            grad: 0.0,
+            hess,
+        });
+    }
+    let rho2 = rho * rho;
+    let d_rho = (-(1.0 - rho2).ln()).sqrt();
+    // d/dθ log π = (1-ρ²)/(2ρ) - ρ/(2 d(ρ)²) - λ ρ / (2 d(ρ))
+    let grad =
+        (1.0 - rho2) / (2.0 * rho) - rho / (2.0 * d_rho * d_rho) - lambda * rho / (2.0 * d_rho);
+    let eps = 1e-5;
+    let g0 = pc_cor0_log_dens(theta - eps, lambda)?;
+    let g1 = pc_cor0_log_dens(theta + eps, lambda)?;
+    let hess = (g1 - 2.0 * logp + g0) / (eps * eps);
+    Ok(Eval1D { logp, grad, hess })
+}
+
 /// Solve λ from (1-e^{-λ√(1-u)})/(1-e^{-λ√2}) = α (R `inla.pc.cor1.lambda`).
-fn pc_cor1_lambda(u: f64, alpha: f64) -> Result<f64, String> {
+fn solve_pc_cor1_lambda(u: f64, alpha: f64) -> Result<f64, String> {
     if !(-1.0..1.0).contains(&u) {
         return Err(format!("pc.cor1: u must be in (-1,1), got {u}"));
     }
     let alpha_min = ((1.0 - u) / 2.0).sqrt();
-    // R: alpha > alpha.min (strict)
     if !(alpha > alpha_min && alpha < 1.0) {
         return Err(format!(
             "pc.cor1: need alpha_min < alpha < 1 with alpha_min={alpha_min}, got {alpha}"
@@ -396,7 +557,6 @@ fn pc_cor1_lambda(u: f64, alpha: f64) -> Result<f64, String> {
             best_lam = lam;
         }
     }
-    // Local golden-section refine
     let mut lo = (best_lam * 0.5).max(1e-8);
     let mut hi = best_lam * 2.0;
     for _ in 0..60 {
@@ -430,40 +590,157 @@ fn pc_cor1_log_dens_rho(rho: f64, lambda: f64) -> Result<f64, String> {
         - (2.0 * s).ln())
 }
 
-fn pc_cor1_log_dens(theta: f64, u: f64, alpha: f64) -> Result<f64, String> {
+fn pc_cor1_log_dens(theta: f64, lambda: f64) -> Result<f64, String> {
     if !theta.is_finite() {
         return Err("pc.cor1: θ must be finite".into());
     }
-    let lambda = pc_cor1_lambda(u, alpha)?;
-    // ρ = 2/(1+e^{-θ}) - 1 = tanh(θ/2) style via logit
     let e = theta.exp();
     let rho = 2.0 * e / (1.0 + e) - 1.0;
     let log_pi_rho = pc_cor1_log_dens_rho(rho, lambda)?;
-    // log|dρ/dθ| = log 2 + θ - 2 log(1+e^θ)
     let log_j = std::f64::consts::LN_2 + theta - 2.0 * (1.0 + e).ln();
     Ok(log_pi_rho + log_j)
 }
 
-fn pc_matern_log_dens(
+fn pc_cor1_eval(theta: f64, lambda: f64) -> Result<Eval1D, String> {
+    let logp = pc_cor1_log_dens(theta, lambda)?;
+    let eps = 1e-5;
+    let g0 = pc_cor1_log_dens(theta - eps, lambda)?;
+    let g1 = pc_cor1_log_dens(theta + eps, lambda)?;
+    let grad = (g1 - g0) / (2.0 * eps);
+    let hess = (g1 - 2.0 * logp + g0) / (eps * eps);
+    Ok(Eval1D { logp, grad, hess })
+}
+
+/// Solve λ for `pc.bym2`: P(ϕ < u) = α where d(ϕ) = √ϕ.
+/// Equation: (1 - e^{-λ√u}) / (1 - e^{-λ}) = α.
+fn solve_pc_bym2_lambda(u: f64, alpha: f64) -> Result<f64, String> {
+    if !(u > 0.0 && u < 1.0) {
+        return Err(format!("pc.bym2: u must be in (0,1), got {u}"));
+    }
+    if !(alpha > 0.0 && alpha < 1.0) {
+        return Err(format!("pc.bym2: need 0 < alpha < 1, got {alpha}"));
+    }
+    let sqrt_u = u.sqrt();
+    let fun = |lam: f64| -> f64 {
+        let ff = if lam.abs() < 1e-6 {
+            sqrt_u
+        } else {
+            (1.0 - (-lam * sqrt_u).exp()) / (1.0 - (-lam).exp())
+        };
+        let d = ff - alpha;
+        d * d
+    };
+    let mut best_lam = 0.0;
+    let mut best_f = fun(best_lam);
+    for i in -100..=100 {
+        let lam = (i as f64) * 0.2;
+        let f = fun(lam);
+        if f < best_f {
+            best_f = f;
+            best_lam = lam;
+        }
+    }
+    let mut lo = best_lam - 0.5;
+    let mut hi = best_lam + 0.5;
+    for _ in 0..60 {
+        let m1 = lo + 0.382 * (hi - lo);
+        let m2 = lo + 0.618 * (hi - lo);
+        if fun(m1) < fun(m2) {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let lambda = 0.5 * (lo + hi);
+    if fun(lambda) > 1e-5 {
+        return Err(format!(
+            "pc.bym2: failed to solve λ (resid={})",
+            fun(lambda).sqrt()
+        ));
+    }
+    Ok(lambda)
+}
+
+fn pc_bym2_log_dens(theta: f64, lambda: f64) -> Result<f64, String> {
+    if !theta.is_finite() {
+        return Err("pc.bym2: θ must be finite".into());
+    }
+    let e = theta.exp();
+    let phi = e / (1.0 + e);
+    let norm = if lambda.abs() < 1e-6 {
+        -std::f64::consts::LN_2
+    } else {
+        lambda.abs().ln() - (2.0 * (1.0 - (-lambda).exp()).abs()).ln()
+    };
+    Ok(norm + 0.5 * phi.ln() + (1.0 - phi).ln() - lambda * phi.sqrt())
+}
+
+fn pc_bym2_eval(theta: f64, lambda: f64) -> Result<Eval1D, String> {
+    let logp = pc_bym2_log_dens(theta, lambda)?;
+    let e = theta.exp();
+    let phi = e / (1.0 + e);
+    let sqrt_phi = phi.sqrt();
+    // Analytic exact gradient: 1/2 - 3/2 ϕ - 1/2 λ √ϕ (1-ϕ)
+    let grad = 0.5 - 1.5 * phi - 0.5 * lambda * sqrt_phi * (1.0 - phi);
+    // Analytic exact hessian: (-3/2 - λ(1-3ϕ)/(4√ϕ)) ϕ(1-ϕ)
+    let hess = if sqrt_phi < 1e-6 {
+        -1.5 * phi * (1.0 - phi)
+    } else {
+        (-1.5 - lambda * (1.0 - 3.0 * phi) / (4.0 * sqrt_phi)) * phi * (1.0 - phi)
+    };
+    Ok(Eval1D { logp, grad, hess })
+}
+
+/// PC prior on spatial range parameter ρ (base ρ=∞): P(ρ < r_0) = α_r.
+/// θ = ln ρ, λ = -ln(α_r) * r_0^{d/2}.
+/// log π(θ) = ln(λ d / 2) - (d/2) θ - λ exp(-(d/2) θ).
+fn pc_range_log_dens(theta: f64, d: f64, lambda: f64) -> Result<f64, String> {
+    if !theta.is_finite() {
+        return Err("pc.range: θ must be finite".into());
+    }
+    let d_half = d / 2.0;
+    Ok((lambda * d_half).ln() - d_half * theta - lambda * (-d_half * theta).exp())
+}
+
+fn pc_range_eval(theta: f64, d: f64, lambda: f64) -> Result<Eval1D, String> {
+    if !theta.is_finite() {
+        return Err("pc.range: θ must be finite".into());
+    }
+    let d_half = d / 2.0;
+    let e = (-d_half * theta).exp();
+    let logp = (lambda * d_half).ln() - d_half * theta - lambda * e;
+    let grad = -d_half + lambda * d_half * e;
+    let hess = -lambda * d_half * d_half * e;
+    Ok(Eval1D { logp, grad, hess })
+}
+
+/// PC prior on 2D SPDE Matérn: internal hyperparameters are (θ1, θ2) = (log τ, log κ).
+/// Maps (log τ, log κ) → (log ρ, log σ) with |det J| = 1:
+///   log ρ = 1/2 ln(8) - θ2
+///   log σ = -1/2 ln(4π) - θ1 - θ2
+fn pc_spde_log_dens(
     theta1: f64,
     theta2: f64,
     lambda1: f64,
     lambda2: f64,
     d: f64,
 ) -> Result<f64, String> {
-    if !d.is_finite() || d <= 0.0 {
-        return Err(format!("pc.matern: d must be > 0, got {d}"));
+    if !theta1.is_finite() || !theta2.is_finite() {
+        return Err("pc.spde: θ parameters must be finite".into());
     }
-    let mut s = 0.0;
-    if lambda1 > 0.0 && theta1.is_finite() {
-        // log(λ1 d / 2) - (d/2) θ1 - λ1 exp(-(d/2) θ1)
-        s += (lambda1 * d / 2.0).ln() - (d / 2.0) * theta1 - lambda1 * (-(d / 2.0) * theta1).exp();
+    if d <= 0.0 {
+        return Err(format!("pc.spde: d must be > 0, got {d}"));
     }
-    if lambda2 > 0.0 && theta2.is_finite() {
-        // log λ2 + θ2 - λ2 exp(θ2)
-        s += lambda2.ln() + theta2 - lambda2 * theta2.exp();
-    }
-    Ok(s)
+    // Mapping from SPDE (log_tau, log_kappa) to (log_rho, log_sigma)
+    let log_rho = 0.5 * (8.0_f64).ln() - theta2;
+    let log_sigma = -0.5 * (4.0 * std::f64::consts::PI).ln() - theta1 - theta2;
+
+    let d_half = d / 2.0;
+    // Range part: log π(log ρ) = ln(λ1 d/2) - (d/2) log ρ - λ1 exp(-(d/2) log ρ)
+    let s_rho = (lambda1 * d_half).ln() - d_half * log_rho - lambda1 * (-d_half * log_rho).exp();
+    // Sigma part: log π(log σ) = ln λ2 + log σ - λ2 exp(log σ)
+    let s_sigma = lambda2.ln() + log_sigma - lambda2 * log_sigma.exp();
+    Ok(s_rho + s_sigma)
 }
 
 fn loggamma_log_dens(theta: f64, shape: f64, rate: f64) -> Result<f64, String> {
@@ -555,17 +832,28 @@ mod tests {
     }
 
     #[test]
-    fn trim_aliases() {
+    fn trim_aliases_and_canonical_names() {
         let p = PriorSpec::from_name_params("pc.prec", &[1.0, 0.01]).unwrap();
-        assert_eq!(p.name, "pcprec");
+        assert_eq!(p.name, "pc.prec");
+        assert_eq!(p.to_pair(), ("pc.prec".to_string(), vec![1.0, 0.01]));
+
         let g = PriorSpec::from_name_params("normal", &[]).unwrap();
-        assert!(matches!(
-            g.family,
-            PriorFamily::Gaussian {
-                mean: 0.0,
-                precision: 0.001
-            }
-        ));
+        assert_eq!(g.name, "gaussian");
+
+        let c0 = PriorSpec::from_name_params("pc.cor0", &[0.5, 0.05]).unwrap();
+        assert_eq!(c0.name, "pc.cor0");
+
+        let c1 = PriorSpec::from_name_params("pc.cor1", &[0.5, 0.75]).unwrap();
+        assert_eq!(c1.name, "pc.cor1");
+
+        let bym = PriorSpec::from_name_params("pc.bym2", &[0.5, 0.5]).unwrap();
+        assert_eq!(bym.name, "pc.bym2");
+
+        let r = PriorSpec::from_name_params("pc.range", &[10.0, 0.05, 2.0]).unwrap();
+        assert_eq!(r.name, "pc.range");
+
+        let spde = PriorSpec::from_name_params("pc.spde", &[10.0, 0.05, 1.0, 0.01, 2.0]).unwrap();
+        assert_eq!(spde.name, "pc.spde");
     }
 
     #[test]
@@ -576,26 +864,90 @@ mod tests {
         let theta = 0.5_f64;
         let expect =
             lambda.ln() - std::f64::consts::LN_2 - lambda * (-0.5 * theta).exp() - 0.5 * theta;
-        let got = PriorSpec::pc_prec(u, alpha).log_density(&[theta]).unwrap();
+        let p = PriorSpec::pc_prec(u, alpha).unwrap();
+        let got = p.log_density(&[theta]).unwrap();
         approx(got, expect, 1e-12);
-        let e = PriorSpec::pc_prec(u, alpha).eval1d(theta).unwrap();
+        let e = p.eval1d(theta).unwrap();
         approx(e.logp, expect, 1e-12);
-        // FD grad
         let eps = 1e-6;
-        let fd = (PriorSpec::pc_prec(u, alpha)
-            .log_density(&[theta + eps])
-            .unwrap()
-            - PriorSpec::pc_prec(u, alpha)
-                .log_density(&[theta - eps])
-                .unwrap())
+        let fd = (p.log_density(&[theta + eps]).unwrap() - p.log_density(&[theta - eps]).unwrap())
             / (2.0 * eps);
         approx(e.grad, fd, 1e-5);
     }
 
     #[test]
+    fn pc_cor0_finite_and_symmetric() {
+        let p = PriorSpec::pc_cor0(0.5, 0.05).unwrap();
+        let lp0 = p.log_density(&[0.0]).unwrap();
+        assert!(lp0.is_finite());
+        // Symmetry about 0
+        let lp_pos = p.log_density(&[1.5]).unwrap();
+        let lp_neg = p.log_density(&[-1.5]).unwrap();
+        approx(lp_pos, lp_neg, 1e-12);
+
+        let e = p.eval1d(0.5).unwrap();
+        assert!(e.grad.is_finite() && e.hess.is_finite());
+    }
+
+    #[test]
+    fn pc_cor1_golden_and_finite() {
+        let p = PriorSpec::pc_cor1(0.5, 0.75).unwrap();
+        let lp0 = p.log_density(&[0.0]).unwrap();
+        assert!(lp0.is_finite());
+        let e = p.eval1d(0.0).unwrap();
+        assert!(e.grad.is_finite() && e.hess.is_finite());
+    }
+
+    #[test]
+    fn pc_bym2_eval_and_analytic_derivatives() {
+        let p = PriorSpec::pc_bym2(0.5, 0.5).unwrap();
+        let lp0 = p.log_density(&[0.0]).unwrap();
+        assert!(lp0.is_finite());
+        let e = p.eval1d(0.5).unwrap();
+        assert!(e.grad.is_finite() && e.hess.is_finite());
+
+        // Check analytic grad against finite differences
+        let eps = 1e-6;
+        let theta = 0.5;
+        let fd_grad = (p.log_density(&[theta + eps]).unwrap()
+            - p.log_density(&[theta - eps]).unwrap())
+            / (2.0 * eps);
+        approx(e.grad, fd_grad, 1e-5);
+    }
+
+    #[test]
+    fn pc_range_eval_matches_fd() {
+        let p = PriorSpec::pc_range(20.0, 0.05, 2.0).unwrap();
+        let theta = (20.0_f64).ln();
+        let e = p.eval1d(theta).unwrap();
+        assert!(e.logp.is_finite());
+        let eps = 1e-6;
+        let fd_grad = (p.log_density(&[theta + eps]).unwrap()
+            - p.log_density(&[theta - eps]).unwrap())
+            / (2.0 * eps);
+        approx(e.grad, fd_grad, 1e-5);
+    }
+
+    #[test]
+    fn pc_spde_mapping_from_theta() {
+        let p = PriorSpec::pc_spde_quantiles(50.0, 0.05, 2.0, 0.01, 2.0).unwrap();
+        assert_eq!(p.theta_dim(), 2);
+        // At theta = (log_tau, log_kappa) = (0.0, 0.0)
+        let lp = p.log_density(&[0.0, 0.0]).unwrap();
+        assert!(lp.is_finite());
+
+        // Compute expected directly on (log_rho, log_sigma)
+        let log_rho = 0.5 * 8.0_f64.ln();
+        let log_sigma = -0.5 * (4.0 * std::f64::consts::PI).ln();
+        let lambda1 = -0.05_f64.ln() * 50.0;
+        let lambda2 = -0.01_f64.ln() / 2.0;
+        let expect_rho = lambda1.ln() - log_rho - lambda1 * (-log_rho).exp();
+        let expect_sigma = lambda2.ln() + log_sigma - lambda2 * log_sigma.exp();
+        approx(lp, expect_rho + expect_sigma, 1e-12);
+    }
+
+    #[test]
     fn loggamma_rate_convention() {
-        // shape=3, rate=0.5 ⇒ scale=2 in old API; θ=0 → τ=1
-        // logp = 3*log(0.5) - logΓ(3) + 2*0 - 0.5*1
         let shape = 3.0_f64;
         let rate = 0.5_f64;
         let theta = 0.0_f64;
@@ -616,20 +968,9 @@ mod tests {
 
     #[test]
     fn logitbeta_uniform_at_zero() {
-        // Beta(1,1) flat on p; at θ=0, p=0.5, Jacobian log|J|=log(p(1-p))= -log(4)
-        // log dens = 0 + 0 - 2 log(2) = -2 ln 2  (Beta dens=1)
         let p = PriorSpec::logitbeta(1.0, 1.0);
         let got = p.log_density(&[0.0]).unwrap();
         approx(got, -2.0 * std::f64::consts::LN_2, 1e-10);
-    }
-
-    #[test]
-    fn pc_cor1_lambda_and_density_finite() {
-        let lam = pc_cor1_lambda(0.5, 0.75).unwrap();
-        assert!(lam > 0.0 && lam.is_finite(), "lam={lam}");
-        let p = PriorSpec::pc_cor1(0.5, 0.75);
-        let lp = p.log_density(&[0.0]).unwrap();
-        assert!(lp.is_finite(), "lp={lp}");
     }
 
     #[test]
@@ -681,13 +1022,5 @@ mod tests {
         assert!(result.marginal_log_lik.is_finite());
         let s: f64 = result.latent_means.iter().sum();
         assert!(s.abs() < 1e-4, "sum={s}");
-    }
-
-    #[test]
-    fn pc_matern_two_theta() {
-        let p = PriorSpec::from_name_params("pc.matern", &[1.0, 1.0, 2.0]).unwrap();
-        assert_eq!(p.theta_dim(), 2);
-        let lp = p.log_density(&[0.0, 0.0]).unwrap();
-        assert!(lp.is_finite());
     }
 }

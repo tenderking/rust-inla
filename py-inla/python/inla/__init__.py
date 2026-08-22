@@ -34,6 +34,7 @@ import types
 
 from inla import generic as _generic
 from inla import models as _models_mod
+from inla import priors as _priors_mod
 from inla import spde as _spde
 from inla._native import (
     PyCscMatrix,
@@ -67,6 +68,10 @@ from inla.models import (
     CRW2,
     FGN,
     IID,
+    IID2D,
+    IID3D,
+    IID4D,
+    IID5D,
     RW1,
     RW2,
     SPDE,
@@ -83,6 +88,25 @@ from inla.models import (
     NegativeBinomial,
     Poisson,
     Seasonal,
+)
+from inla.priors import (
+    Flat,
+    GaussianPrior,
+    LogGamma,
+    LogitBeta,
+    Normal,
+    PCBym2,
+    PCCor0,
+    PCCor1,
+    PCMatern,
+    PCPhi,
+    PCPrec,
+    PCRange,
+    PCRho0,
+    PCRho1,
+    PCSpde,
+    Prior,
+    Uniform,
 )
 
 
@@ -105,6 +129,10 @@ class _InlaModule(types.ModuleType):
     @property
     def models(self):
         return _models_mod
+
+    @property
+    def priors(self):
+        return _priors_mod
 
     @property
     def spde(self):
@@ -132,12 +160,17 @@ _mod.__dict__.update(
             "Model",
             "spde",
             "models",
+            "priors",
             # ModelSpec & Effects
             "ModelSpec",
             "Effect",
             "Linear",
             "Intercept",
             "IID",
+            "IID2D",
+            "IID3D",
+            "IID4D",
+            "IID5D",
             "Besag",
             "BYM",
             "BYM2",
@@ -158,6 +191,24 @@ _mod.__dict__.update(
             "Poisson",
             "NegativeBinomial",
             "Gamma",
+            # Priors
+            "Prior",
+            "PCPrec",
+            "PCCor0",
+            "PCCor1",
+            "PCRho0",
+            "PCRho1",
+            "PCBym2",
+            "PCPhi",
+            "PCRange",
+            "PCSpde",
+            "PCMatern",
+            "LogGamma",
+            "Flat",
+            "Uniform",
+            "Normal",
+            "GaussianPrior",
+            "LogitBeta",
             # Precision matrix functions
             "ar1_precision_matrix",
             "ar1_precision_matrix_csc",
@@ -185,6 +236,7 @@ _mod.__dict__.update(
         "generic": _generic,
         "spde": _spde,
         "models": _models_mod,
+        "priors": _priors_mod,
         "define": define,
         "GenericModel": GenericModel,
         "Model": Model,
@@ -193,6 +245,10 @@ _mod.__dict__.update(
         "Linear": Linear,
         "Intercept": Intercept,
         "IID": IID,
+        "IID2D": IID2D,
+        "IID3D": IID3D,
+        "IID4D": IID4D,
+        "IID5D": IID5D,
         "Besag": Besag,
         "BYM": BYM,
         "BYM2": BYM2,
@@ -212,6 +268,23 @@ _mod.__dict__.update(
         "Poisson": Poisson,
         "NegativeBinomial": NegativeBinomial,
         "Gamma": Gamma,
+        "Prior": Prior,
+        "PCPrec": PCPrec,
+        "PCCor0": PCCor0,
+        "PCCor1": PCCor1,
+        "PCRho0": PCRho0,
+        "PCRho1": PCRho1,
+        "PCBym2": PCBym2,
+        "PCPhi": PCPhi,
+        "PCRange": PCRange,
+        "PCSpde": PCSpde,
+        "PCMatern": PCMatern,
+        "LogGamma": LogGamma,
+        "Flat": Flat,
+        "Uniform": Uniform,
+        "Normal": Normal,
+        "GaussianPrior": GaussianPrior,
+        "LogitBeta": LogitBeta,
         "ar1_precision_matrix": ar1_precision_matrix,
         "ar1_precision_matrix_csc": ar1_precision_matrix_csc,
         "arp_precision_matrix": arp_precision_matrix,
