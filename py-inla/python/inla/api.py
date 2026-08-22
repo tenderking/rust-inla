@@ -338,6 +338,51 @@ def _as_param_list(val) -> list[float]:
     return [float(x) for x in np.asarray(val, dtype=float).reshape(-1)]
 
 
+def _hyper_slot_keys(internal_label: str) -> frozenset[str]:
+    """User-facing aliases for a registry `hyper_internal` label."""
+    lab = internal_label.lower()
+    keys = {lab}
+    short = lab
+    for prefix in ("log_", "logit_"):
+        if short.startswith(prefix):
+            short = short[len(prefix) :]
+            keys.add(short)
+    if "precision" in lab:
+        keys.update({"prec", "precision"})
+    if "rho" in lab:
+        keys.update({"rho", "cor0", "cor1", "rho1"})
+    if "phi" in lab:
+        keys.update({"phi", "bym2"})
+    if "range" in lab:
+        keys.add("range")
+    if "hurst" in lab:
+        keys.update({"h", "hurst"})
+    if lab.endswith("kappa") or "kappa" in lab:
+        keys.add("kappa")
+    if lab.endswith("tau") or lab == "log_tau":
+        keys.add("tau")
+    return frozenset(keys)
+
+
+def _match_hyper_slot(key: str, internals: Sequence[str]) -> int | None:
+    """Map a formula/hyper key onto a registry slot index, or None if unknown."""
+    k = str(key).lower().replace(".", "_").replace("-", "_")
+    for i, intern in enumerate(internals):
+        if k == intern.lower():
+            return i
+    hits = [i for i, intern in enumerate(internals) if k in _hyper_slot_keys(intern)]
+    if len(hits) == 1:
+        return hits[0]
+    if k in {"prec", "precision"}:
+        for i, intern in enumerate(internals):
+            if intern.lower() == "log_precision":
+                return i
+        prec_hits = [i for i, intern in enumerate(internals) if "precision" in intern.lower()]
+        if len(prec_hits) == 1:
+            return prec_hits[0]
+    return None
+
+
 def _resolve_effect_priors(
     model: str, kwargs: Mapping[str, Any] | None
 ) -> list[tuple[str, list[float]]]:
@@ -345,6 +390,11 @@ def _resolve_effect_priors(
     kw = dict(kwargs or {})
     m = model.lower()
     defaults = list(core.default_hyper_priors(m))
+    internals: list[str] = []
+    try:
+        internals = list(_model_meta(m).get("hyper_internal") or [])
+    except Exception:
+        internals = []
 
     def _parse_prior_val(val: Any) -> tuple[str, list[float]]:
         if hasattr(val, "to_tuple"):
@@ -373,15 +423,15 @@ def _resolve_effect_priors(
         if "prior_range" in kw or "prior_sigma" in kw:
             pr = kw.get("prior_range")
             ps = kw.get("prior_sigma")
-            r0, alpha_r, d = 50.0, 0.05, 2.0
+            r0, alpha_r, d = 1.0, 0.05, 2.0
             s0, alpha_s = 1.0, 0.01
             if pr is not None:
                 if hasattr(pr, "r0"):
-                    r0 = float(getattr(pr, "r0", 50.0))
+                    r0 = float(getattr(pr, "r0", 1.0))
                     alpha_r = float(getattr(pr, "alpha_r", 0.05))
                     d = float(getattr(pr, "d", 2.0))
                 elif isinstance(pr, Mapping):
-                    r0 = float(pr.get("r0", 50.0))
+                    r0 = float(pr.get("r0", 1.0))
                     alpha_r = float(pr.get("alpha_r", 0.05))
                     d = float(pr.get("d", 2.0))
             if ps is not None:
@@ -400,7 +450,7 @@ def _resolve_effect_priors(
             if "range" in h or "sigma" in h or "prec" in h:
                 pr = h.get("range")
                 ps = h.get("sigma") or h.get("prec")
-                r0, alpha_r, d = 50.0, 0.05, 2.0
+                r0, alpha_r, d = 1.0, 0.05, 2.0
                 s0, alpha_s = 1.0, 0.01
                 if isinstance(pr, Mapping) and "param" in pr:
                     params = _as_param_list(pr["param"])
@@ -454,28 +504,33 @@ def _resolve_effect_priors(
 
     hyper = kw.get("hyper")
     if isinstance(hyper, Mapping):
-        key_order = []
-        for k in (
-            "prec",
-            "rho",
-            "rho1",
-            "cor0",
-            "cor1",
-            "phi",
-            "bym2",
-            "range",
-            "sigma",
-            "h",
-            "hurst",
-        ):
-            if k in hyper:
-                key_order.append(k)
-        for k in hyper:
-            if k not in key_order:
-                key_order.append(k)
-        out: list[tuple[str, list[float]]] = []
-        for i, k in enumerate(key_order):
-            h = hyper[k]
+        if internals and len(defaults) == len(internals):
+            out = list(defaults)
+            for k, h in hyper.items():
+                idx = _match_hyper_slot(str(k), internals)
+                if idx is None:
+                    raise ValueError(
+                        f"unknown hyper slot {k!r} for model {m!r}; "
+                        f"expected one of {list(internals)}"
+                    )
+                if hasattr(h, "to_tuple"):
+                    out[idx] = h.to_tuple()
+                elif isinstance(h, Mapping):
+                    name = str(h.get("prior") or defaults[idx][0])
+                    param = _as_param_list(h.get("param"))
+                    out[idx] = (name, param)
+                else:
+                    out[idx] = (str(h), [])
+            return out
+        if internals and len(defaults) != len(internals):
+            raise ValueError(
+                f"hyper={{...}} for model {m!r} needs one prior per θ slot "
+                f"({len(internals)} labels); this model uses a joint prior. "
+                "Pass prior=PCSpde(...) or prior_range/prior_sigma."
+            )
+        # Unregistered model: apply values in dict order onto the default stack.
+        out = []
+        for i, (_k, h) in enumerate(hyper.items()):
             if hasattr(h, "to_tuple"):
                 out.append(h.to_tuple())
             elif isinstance(h, Mapping):
@@ -490,15 +545,12 @@ def _resolve_effect_priors(
 
     if slot_overrides:
         out = list(defaults)
-        if "prec" in slot_overrides and len(out) > 0:
-            out[0] = slot_overrides["prec"]
-        if len(out) > 1:
-            if "rho" in slot_overrides:
-                out[1] = slot_overrides["rho"]
-            elif "phi" in slot_overrides:
-                out[1] = slot_overrides["phi"]
-            elif "range" in slot_overrides:
-                out[1] = slot_overrides["range"]
+        if len(out) == len(internals):
+            for user_key, parsed in slot_overrides.items():
+                idx = _match_hyper_slot(user_key, internals)
+                if idx is not None:
+                    out[idx] = parsed
+            return out
         return out
 
     return defaults

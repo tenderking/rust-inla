@@ -110,12 +110,13 @@ impl PriorSpec {
         }))
     }
 
-    pub fn pc_spde(lambda1: f64, lambda2: f64, d: f64) -> Self {
-        Self::new(PriorFamily::PcSpde {
+    pub fn pc_spde(lambda1: f64, lambda2: f64, d: f64) -> Result<Self, String> {
+        check_pc_spde_params(lambda1, lambda2, d)?;
+        Ok(Self::new(PriorFamily::PcSpde {
             lambda1,
             lambda2,
             d,
-        })
+        }))
     }
 
     pub fn pc_spde_quantiles(
@@ -135,12 +136,10 @@ impl PriorSpec {
                 "pc.spde quantiles: need s0>0 and 0<alpha_s<1, got s0={s0}, alpha_s={alpha_s}"
             ));
         }
-        if d <= 0.0 {
-            return Err(format!("pc.spde quantiles: need d>0, got d={d}"));
-        }
+        check_pc_spde_dimension(d)?;
         let lambda1 = -alpha_r.ln() * r0.powf(d / 2.0);
         let lambda2 = -alpha_s.ln() / s0;
-        Ok(Self::pc_spde(lambda1, lambda2, d))
+        Self::pc_spde(lambda1, lambda2, d)
     }
 
     pub fn loggamma(shape: f64, rate: f64) -> Self {
@@ -189,9 +188,9 @@ impl PriorSpec {
                 if param.len() == 5 {
                     Self::pc_spde_quantiles(param[0], param[1], param[2], param[3], param[4])?
                 } else if param.len() >= 3 {
-                    Self::pc_spde(param[0], param[1], param[2])
+                    Self::pc_spde(param[0], param[1], param[2])?
                 } else {
-                    // Default for 2D SPDE Matérn
+                    // Default for 2D SPDE Matérn (ν=1): P(ρ<1)=0.05, P(σ>1)=0.01
                     Self::pc_spde_quantiles(1.0, 0.05, 1.0, 0.01, 2.0)?
                 }
             }
@@ -446,6 +445,26 @@ fn take2(param: &[f64], d0: f64, d1: f64) -> Result<(f64, f64), String> {
     }
 }
 
+/// 2D Matérn SPDE (ν = 1): (log τ, log κ) → (log ρ, log σ) with |det J| = 1.
+fn check_pc_spde_dimension(d: f64) -> Result<(), String> {
+    if (d - 2.0).abs() > 1e-12 {
+        return Err(format!(
+            "pc.spde: only the 2D ν=1 map (d=2) is supported, got d={d}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_pc_spde_params(lambda1: f64, lambda2: f64, d: f64) -> Result<(), String> {
+    check_pc_spde_dimension(d)?;
+    if !(lambda1 > 0.0 && lambda1.is_finite() && lambda2 > 0.0 && lambda2.is_finite()) {
+        return Err(format!(
+            "pc.spde: need lambda1>0 and lambda2>0, got lambda1={lambda1}, lambda2={lambda2}"
+        ));
+    }
+    Ok(())
+}
+
 // --- Density & Derivative Solvers -------------------------------------------
 
 fn pc_prec_log_dens(theta: f64, lambda: f64) -> Result<f64, String> {
@@ -603,11 +622,22 @@ fn pc_cor1_log_dens(theta: f64, lambda: f64) -> Result<f64, String> {
 
 fn pc_cor1_eval(theta: f64, lambda: f64) -> Result<Eval1D, String> {
     let logp = pc_cor1_log_dens(theta, lambda)?;
-    let eps = 1e-5;
-    let g0 = pc_cor1_log_dens(theta - eps, lambda)?;
-    let g1 = pc_cor1_log_dens(theta + eps, lambda)?;
-    let grad = (g1 - g0) / (2.0 * eps);
-    let hess = (g1 - 2.0 * logp + g0) / (eps * eps);
+    let e = theta.exp();
+    let rho = 2.0 * e / (1.0 + e) - 1.0;
+    let s = (1.0 - rho).max(0.0).sqrt();
+    if s < 1e-8 {
+        let eps = 1e-5;
+        let g0 = pc_cor1_log_dens(theta - eps, lambda)?;
+        let g1 = pc_cor1_log_dens(theta + eps, lambda)?;
+        let grad = (g1 - g0) / (2.0 * eps);
+        let hess = (g1 - 2.0 * logp + g0) / (eps * eps);
+        return Ok(Eval1D { logp, grad, hess });
+    }
+    let drho = (1.0 - rho * rho) / 2.0;
+    let ds = -drho / (2.0 * s);
+    // d/dθ [log π(ρ) + log|dρ/dθ|] with ρ = tanh(θ/2)
+    let grad = (lambda * s + 1.0) * (1.0 + rho) / 4.0 - rho;
+    let hess = 0.25 * (lambda * ds * (1.0 + rho) + (lambda * s + 1.0) * drho) - drho;
     Ok(Eval1D { logp, grad, hess })
 }
 
@@ -715,7 +745,7 @@ fn pc_range_eval(theta: f64, d: f64, lambda: f64) -> Result<Eval1D, String> {
 }
 
 /// PC prior on 2D SPDE Matérn: internal hyperparameters are (θ1, θ2) = (log τ, log κ).
-/// Maps (log τ, log κ) → (log ρ, log σ) with |det J| = 1:
+/// Maps (log τ, log κ) → (log ρ, log σ) with |det J| = 1 (ν = 1, d = 2 only):
 ///   log ρ = 1/2 ln(8) - θ2
 ///   log σ = -1/2 ln(4π) - θ1 - θ2
 fn pc_spde_log_dens(
@@ -728,9 +758,7 @@ fn pc_spde_log_dens(
     if !theta1.is_finite() || !theta2.is_finite() {
         return Err("pc.spde: θ parameters must be finite".into());
     }
-    if d <= 0.0 {
-        return Err(format!("pc.spde: d must be > 0, got {d}"));
-    }
+    check_pc_spde_params(lambda1, lambda2, d)?;
     // Mapping from SPDE (log_tau, log_kappa) to (log_rho, log_sigma)
     let log_rho = 0.5 * (8.0_f64).ln() - theta2;
     let log_sigma = -0.5 * (4.0 * std::f64::consts::PI).ln() - theta1 - theta2;
@@ -890,12 +918,68 @@ mod tests {
     }
 
     #[test]
-    fn pc_cor1_golden_and_finite() {
+    fn pc_cor1_golden_and_analytic_derivatives() {
         let p = PriorSpec::pc_cor1(0.5, 0.75).unwrap();
         let lp0 = p.log_density(&[0.0]).unwrap();
         assert!(lp0.is_finite());
-        let e = p.eval1d(0.0).unwrap();
+        let theta = 0.4_f64;
+        let e = p.eval1d(theta).unwrap();
         assert!(e.grad.is_finite() && e.hess.is_finite());
+        let eps = 1e-6;
+        let fd_grad = (p.log_density(&[theta + eps]).unwrap()
+            - p.log_density(&[theta - eps]).unwrap())
+            / (2.0 * eps);
+        approx(e.grad, fd_grad, 1e-5);
+        let eps_h = 1e-4;
+        let fd_hess = (p.log_density(&[theta + eps_h]).unwrap()
+            - 2.0 * p.log_density(&[theta]).unwrap()
+            + p.log_density(&[theta - eps_h]).unwrap())
+            / (eps_h * eps_h);
+        approx(e.hess, fd_hess, 2e-3);
+    }
+
+    #[test]
+    fn pc_prior_golden_internal_log_density() {
+        // Closed forms on internal θ, matching R-INLA PRIOR_EVAL / inla.pc.d* after Jacobian.
+        let prec = PriorSpec::pc_prec(1.0, 0.01).unwrap();
+        let lam_p = -0.01_f64.ln();
+        approx(
+            prec.log_density(&[0.0]).unwrap(),
+            lam_p.ln() - std::f64::consts::LN_2 - lam_p,
+            1e-14,
+        );
+
+        let cor0 = PriorSpec::pc_cor0(0.5, 0.05).unwrap();
+        let d_u = (-(1.0 - 0.25_f64).ln()).sqrt();
+        let lam0 = -0.05_f64.ln() / d_u;
+        approx(
+            cor0.log_density(&[0.0]).unwrap(),
+            lam0.ln() - 2.0 * std::f64::consts::LN_2,
+            1e-14,
+        );
+
+        let cor1 = PriorSpec::pc_cor1(0.5, 0.75).unwrap();
+        approx(
+            cor1.log_density(&[0.0]).unwrap(),
+            -2.381_562_305_990_987,
+            1e-8,
+        );
+
+        let bym2 = PriorSpec::pc_bym2(0.5, 0.5).unwrap();
+        approx(
+            bym2.log_density(&[0.0]).unwrap(),
+            -1.486_482_918_057_251,
+            1e-8,
+        );
+    }
+
+    #[test]
+    fn pc_spde_rejects_non_2d_and_nonpositive_lambda() {
+        assert!(PriorSpec::pc_spde(1.0, 1.0, 1.0).is_err());
+        assert!(PriorSpec::pc_spde(0.0, 1.0, 2.0).is_err());
+        assert!(PriorSpec::pc_spde(-1.0, 1.0, 2.0).is_err());
+        assert!(PriorSpec::pc_spde_quantiles(1.0, 0.05, 1.0, 0.01, 1.0).is_err());
+        assert!(PriorSpec::from_name_params("pc.spde", &[1.0, 1.0, 3.0]).is_err());
     }
 
     #[test]

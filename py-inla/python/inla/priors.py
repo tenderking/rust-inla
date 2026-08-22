@@ -196,7 +196,7 @@ class PCSpde(Prior):
     Parameters
     ----------
     r0 : float
-        Spatial range threshold. Default: 50.0.
+        Spatial range threshold. Default: 1.0 (matches the Rust SPDE default).
     alpha_r : float
         Probability P(range < r0). Default: 0.05.
     s0 : float
@@ -204,10 +204,10 @@ class PCSpde(Prior):
     alpha_s : float
         Probability P(σ > s0). Default: 0.01.
     d : float
-        Dimension of the spatial domain. Default: 2.0.
+        Spatial dimension. Only ``d=2`` (ν=1 Matérn) is supported.
     """
 
-    r0: float = 50.0
+    r0: float = 1.0
     alpha_r: float = 0.05
     s0: float = 1.0
     alpha_s: float = 0.01
@@ -215,14 +215,16 @@ class PCSpde(Prior):
 
     def __init__(
         self,
-        r0: float = 50.0,
+        r0: float = 1.0,
         alpha_r: float = 0.05,
         s0: float = 1.0,
         alpha_s: float = 0.01,
         d: float = 2.0,
     ):
-        if not (r0 > 0 and 0 < alpha_r < 1 and s0 > 0 and 0 < alpha_s < 1 and d > 0):
+        if not (r0 > 0 and 0 < alpha_r < 1 and s0 > 0 and 0 < alpha_s < 1):
             raise ValueError("PCSpde requires positive thresholds and probabilities in (0, 1)")
+        if abs(d - 2.0) > 1e-12:
+            raise ValueError(f"PCSpde only supports the 2D ν=1 map (d=2), got d={d}")
         super().__init__(
             name="pc.spde",
             params=[float(r0), float(alpha_r), float(s0), float(alpha_s), float(d)],

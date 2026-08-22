@@ -70,16 +70,15 @@ def test_pc_cor0_density_symmetry_and_zero():
 def test_pc_cor1_density():
     prior = PCCor1(u=0.5, alpha=0.75)
     assert prior.to_tuple() == ("pc.cor1", [0.5, 0.75])
-    lp = prior.log_density(0.0)
-    assert math.isfinite(lp)
+    # Internal θ=0 (ρ=0); λ from R-INLA inla.pc.cor1.lambda / PRIOR_EVAL
+    assert pytest.approx(prior.log_density(0.0), rel=1e-8) == -2.381562305990987
     assert PCRho1 is PCCor1
 
 
 def test_pc_bym2_density():
     prior = PCBym2(u=0.5, alpha=0.5)
     assert prior.to_tuple() == ("pc.bym2", [0.5, 0.5])
-    lp = prior.log_density(0.0)
-    assert math.isfinite(lp)
+    assert pytest.approx(prior.log_density(0.0), rel=1e-8) == -1.486482918057251
     assert PCPhi is PCBym2
 
 
@@ -214,3 +213,32 @@ def test_fit_spde_with_pc_priors():
     )
     assert res.latent_means is not None
     assert len(res.latent_means) == n_nodes
+
+
+def test_pc_spde_defaults_and_rejects_non_2d():
+    prior = PCSpde()
+    assert prior.to_tuple() == ("pc.spde", [1.0, 0.05, 1.0, 0.01, 2.0])
+    with pytest.raises(ValueError, match="d=2"):
+        PCSpde(d=1.0)
+
+
+def test_hyper_overlay_uses_registry_slot_labels():
+    from inla.api import _resolve_effect_priors
+
+    specs = _resolve_effect_priors(
+        "ar1",
+        {
+            "hyper": {
+                "rho": {"prior": "pc.cor0", "param": [0.5, 0.05]},
+            }
+        },
+    )
+    assert specs[0][0] == "pc.prec"
+    assert specs[1] == ("pc.cor0", [0.5, 0.05])
+
+    phi = _resolve_effect_priors("bym2", {"prior_phi": PCBym2(u=0.25, alpha=0.4)})
+    assert phi[0][0] == "pc.prec"
+    assert phi[1] == ("pc.bym2", [0.25, 0.4])
+
+    with pytest.raises(ValueError, match="unknown hyper slot"):
+        _resolve_effect_priors("ar1", {"hyper": {"not_a_slot": {"prior": "flat"}}})
