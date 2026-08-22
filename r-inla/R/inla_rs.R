@@ -703,13 +703,21 @@ inla_rs <- function(
   n_obs <- length(y)
 
   f_env <- new.env(parent = parent.frame())
-  f_env$f <- function(x, model = "iid", order = 0L, graph = NULL,
+  f_env$f <- function(x, w = NULL, model = "iid", order = 0L, graph = NULL,
                       scale.model = NULL, values = NULL, initial = NULL,
-                      group = NULL, control.group = NULL, ...) {
+                      group = NULL, control.group = NULL, copy = NULL, n = NULL,
+                      ...) {
     model_chr <- as.character(model)[1]
     # The shared Rust registry owns the scale.model default (intrinsic models).
     if (is.null(scale.model)) {
       scale.model <- isTRUE(.inla_rs_model_meta(model_chr)$default_scale_model)
+    }
+    extra <- list(...)
+    if (!is.null(copy)) extra$copy <- copy
+    if (!is.null(n)) extra$n <- n
+    if (!missing(w)) {
+      w_sub <- substitute(w)
+      extra$weights <- if (is.symbol(w_sub)) as.character(w_sub) else w
     }
     list(
       name = deparse(substitute(x)),
@@ -721,7 +729,7 @@ inla_rs <- function(
       initial = initial,
       group = if (is.null(group)) NULL else deparse(substitute(group)),
       control.group = control.group,
-      args = list(...)
+      args = extra
     )
   }
   f_env$inla.group <- inla_rs_group
@@ -835,6 +843,24 @@ inla_rs <- function(
     a_x <<- c(a_x, as.numeric(vals))
   }
 
+  iidkd_dim <- function(model) {
+    switch(model, iid2d = 2L, iid3d = 3L, iid4d = 4L, iid5d = 5L, NA_integer_)
+  }
+
+  weight_vec <- function(spec) {
+    if (is.null(spec)) return(rep(1.0, n_obs))
+    if (is.character(spec) && length(spec) == 1L) {
+      if (spec %in% c("1", "Intercept")) return(rep(1.0, n_obs))
+      if (is.null(data[[spec]])) {
+        stop("weights column '", spec, "' not found in data", call. = FALSE)
+      }
+      return(as.numeric(data[[spec]]))
+    }
+    if (is.numeric(spec) && length(spec) == 1L) return(rep(as.numeric(spec), n_obs))
+    if (is.numeric(spec) && length(spec) == n_obs) return(as.numeric(spec))
+    stop("weights must be 1, a column name, or a length-n numeric vector", call. = FALSE)
+  }
+
   for (fs in f_structs) {
     model <- if (!is.null(fs$args$copy)) "copy" else tolower(fs$model)
     supported <- .inla_rs_supported_f_models()
@@ -879,7 +905,7 @@ inla_rs <- function(
         }
         zcol <- match(idx, lev) - 1L
       }
-      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, weight_vec(fs$args$weights))
       graph <- NULL
       order_enc <- 0L
       effect_copy_of <- c(effect_copy_of, as.integer(src_i - 1L))
@@ -937,12 +963,50 @@ inla_rs <- function(
       }
       order_enc <- as.integer(order)
       effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_graph)
+    } else if (!is.na(iidkd_dim(model))) {
+      d <- iidkd_dim(model)
+      wspec <- fs$args$weights
+      n_req <- if (!is.null(fs$args$n)) as.integer(fs$args$n)[1] else NA_integer_
+      lev <- sort(unique(idx))
+      n_units <- length(lev)
+      zcol <- match(idx, lev) - 1L
+      if (is.list(wspec) && length(wspec) == d) {
+        n_e <- as.integer(d * n_units)
+        for (k in seq_len(d)) {
+          wv <- weight_vec(wspec[[k]])
+          add_triplets(seq_len(n_obs) - 1L, col_off + (k - 1L) * n_units + zcol, wv)
+        }
+        effect_ids[[length(effect_ids) + 1L]] <- lev
+      } else {
+        if (is.na(n_req)) {
+          stop(model, " requires n= (latent length ", d, "*n_units) or weights=list(...) of length ",
+               d, call. = FALSE)
+        }
+        if (n_req <= 0L || (n_req %% d) != 0L) {
+          stop(model, ": n=", n_req, " must be positive and divisible by ", d, call. = FALSE)
+        }
+        n_e <- n_req
+        n_u <- as.integer(n_e / d)
+        z_try <- as.integer(idx)
+        if (min(z_try) >= 1L) z_try <- z_try - 1L
+        if (min(z_try) >= 0L && max(z_try) < n_e) {
+          z_map <- z_try
+        } else if (n_units == n_u) {
+          z_map <- zcol
+        } else {
+          stop(model, " index does not map into n=", n_e, call. = FALSE)
+        }
+        add_triplets(seq_len(n_obs) - 1L, col_off + z_map, weight_vec(wspec))
+        effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
+      }
+      graph <- NULL
+      order_enc <- as.integer(order)
     } else {
       # Generic: unique sorted levels → latent size
       lev <- sort(unique(idx))
       n_e <- length(lev)
       zcol <- match(idx, lev) - 1L
-      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
+      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, weight_vec(fs$args$weights))
       graph <- NULL
       order_enc <- if (identical(model, "seasonal")) {
         # Rust reads the season length out of `order` for seasonal blocks.

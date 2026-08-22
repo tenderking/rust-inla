@@ -115,6 +115,11 @@ pub mod structured {
     pub use inla_stats::structured::*;
 }
 
+/// Correlated iid (`iid2d`…`iid5d`) — [`inla_stats::iidkd`].
+pub mod iidkd {
+    pub use inla_stats::iidkd::*;
+}
+
 /// Per-model metadata registry — [`inla_stats::registry`].
 pub mod registry {
     pub use inla_stats::registry::*;
@@ -159,15 +164,15 @@ pub use inla_stats::{
     fgn_approx_latent_len, fgn_approx_precision_csc, fgn_ar_coeffs, fgn_hurst_from_intern,
     fgn_intern_from_hurst, fgn_precision_csc, find_latent_mode, find_latent_mode_a,
     find_latent_mode_a_with_solver, gaussian_mixture_marginal, hyperpar_marginals,
-    iid_precision_csc, lincomb_summaries, marginal_cdf, marginal_quantiles,
-    marginal_summary_quantiles, matern2d_precision_csc, model_metadata, model_rank_deficiency,
-    nelder_mead, plane_constraint_2d, project_constraints, read_graph_file, resolve,
-    resolve_compute_options, run_gaussian_ar1_plan, run_inla_inference, run_inla_inference_a,
-    run_inla_inference_a_cancellable, run_inla_inference_model, rw1_cyclic_precision_csc,
-    rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc, rw2d_precision_csc,
-    sample_latent_gaussian, seasonal_constraint, seasonal_precision_csc, spde_params_from_theta,
-    spde_precision_csc, spde_projector_csc, spde_projector_from_xy, structured_constraints,
-    structured_prior_stack, sum_to_zero_constraint, two_diid_precision_csc,
+    iid_precision_csc, iidkd_dim, iidkd_nparam, iidkd_precision_csc, lincomb_summaries,
+    marginal_cdf, marginal_quantiles, marginal_summary_quantiles, matern2d_precision_csc,
+    model_metadata, model_rank_deficiency, nelder_mead, plane_constraint_2d, project_constraints,
+    read_graph_file, resolve, resolve_compute_options, run_gaussian_ar1_plan, run_inla_inference,
+    run_inla_inference_a, run_inla_inference_a_cancellable, run_inla_inference_model,
+    rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
+    rw2d_precision_csc, sample_latent_gaussian, seasonal_constraint, seasonal_precision_csc,
+    spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
+    structured_constraints, structured_prior_stack, sum_to_zero_constraint, two_diid_precision_csc,
 };
 
 pub mod marginals {

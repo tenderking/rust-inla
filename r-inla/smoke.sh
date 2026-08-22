@@ -78,6 +78,38 @@ stopifnot(is.finite(lc$mean), is.finite(lc$sd), lc$sd > 0)
 draws <- inla_rs_posterior_sample_fit(res_copy, n = 8L, seed = 7)
 stopifnot(nrow(draws) == 8L, ncol(draws) == length(res_copy$latent_means))
 ex2 <- inla_rs_emarginal(c(-2, 0, 2), c(0.05, 0.4, 0.05), c(4, 0, 4))
+
+cat("\n--- Testing iid2d correlated random effects ---\n")
+set.seed(19)
+m <- 20L
+n2 <- 2L * m
+yy <- matrix(rnorm(n2), ncol = 2L)
+df_iid2d <- data.frame(y = c(yy[, 1], yy[, 2]), i = seq_len(n2))
+res_iid2d <- inla_rs(
+  y ~ -1 + f(i, model = "iid2d", n = n2, obs_precision = 25.0, initial = c(0, 0, 0)),
+  data = df_iid2d
+)
+cat("iid2d mode:", paste(round(res_iid2d$mode, 4), collapse = ", "), "\n")
+stopifnot(length(res_iid2d$mode) == 3L, is.finite(res_iid2d$marginal_log_lik))
+stopifnot(length(res_iid2d$latent_means) == n2)
+stopifnot(any(grepl("Rho1:2", rownames(res_iid2d$summary.hyperpar), fixed = TRUE)))
+
+n_subj <- 12L
+n_rep <- 5L
+time <- rep(seq(-1, 1, length.out = n_rep), n_subj)
+id <- rep(seq_len(n_subj), each = n_rep)
+df_rs <- data.frame(
+  y = rnorm(n_subj * n_rep),
+  id = id,
+  time = time
+)
+res_rs <- inla_rs(
+  y ~ -1 + f(id, model = "iid2d", weights = list(1, "time"), initial = c(0, 0, 0)),
+  data = df_rs,
+  control.family = list(hyper = list(prec = list(initial = log(25), fixed = TRUE)))
+)
+stopifnot(length(res_rs$mode) == 3L, length(res_rs$latent_means) == 2L * n_subj)
+cat("iid2d intercept+slope latent n=", length(res_rs$latent_means), "\n", sep = "")
 stopifnot(is.finite(ex2))
 
 cat("\n--- Testing Formula Parser & Inference (FGN) ---\n")

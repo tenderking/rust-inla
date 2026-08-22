@@ -27,6 +27,13 @@ pub enum PriorFamily {
     Flat,
     /// Beta(a,b) on p ∈ (0,1); θ = logit(p).
     LogitBeta { a: f64, b: f64 },
+    /// Joint Wishart prior on the `iidkd` precision `W = Σ^{-1}`.
+    ///
+    /// `param = (r, packed R)` with diagonals of `R` first, then `i < j`.
+    /// θ length is `d(d+1)/2`. R names: `wishart2d` … `wishart5d`.
+    WishartKd { dim: usize, param: Vec<f64> },
+    /// Remaining iidkd slots (`prior = "none"`): contributes 0 θ.
+    NonePrior,
 }
 
 impl PriorFamily {
@@ -34,6 +41,8 @@ impl PriorFamily {
     pub fn theta_dim(&self) -> usize {
         match self {
             PriorFamily::PcMatern { .. } => 2,
+            PriorFamily::WishartKd { dim, .. } => crate::iidkd::iidkd_nparam(*dim),
+            PriorFamily::NonePrior => 0,
             _ => 1,
         }
     }
@@ -76,6 +85,10 @@ impl PriorSpec {
         Self::new(PriorFamily::LogitBeta { a, b })
     }
 
+    pub fn wishart_kd(dim: usize, param: Vec<f64>) -> Self {
+        Self::new(PriorFamily::WishartKd { dim, param })
+    }
+
     /// Parse R-INLA `prior=` name + `param=` vector (defaults when `param` empty).
     pub fn from_name_params(name: &str, param: &[f64]) -> Result<Self, String> {
         let key = trim_family(name);
@@ -111,6 +124,11 @@ impl PriorSpec {
                 let (a, b) = take2(param, 1.0, 1.0)?;
                 PriorFamily::LogitBeta { a, b }
             }
+            "none" => PriorFamily::NonePrior,
+            "wishart2d" => wishart_family(2, param)?,
+            "wishart3d" => wishart_family(3, param)?,
+            "wishart4d" => wishart_family(4, param)?,
+            "wishart5d" => wishart_family(5, param)?,
             other => return Err(format!("unknown prior '{other}' (from '{name}')")),
         };
         Ok(Self { name: key, family })
@@ -148,6 +166,10 @@ impl PriorSpec {
             }
             PriorFamily::Flat => Ok(0.0),
             PriorFamily::LogitBeta { a, b } => Ok(logitbeta_log_dens(theta[0], *a, *b)?),
+            PriorFamily::WishartKd { dim, param } => {
+                crate::iidkd::wishart_logdens_theta(*dim, theta, param)
+            }
+            PriorFamily::NonePrior => Ok(0.0),
         }
     }
 
@@ -180,7 +202,12 @@ impl PriorSpec {
                 hess: 0.0,
             }),
             PriorFamily::LogitBeta { a, b } => logitbeta_eval(theta, *a, *b),
-            PriorFamily::PcMatern { .. } => unreachable!(),
+            PriorFamily::PcMatern { .. } | PriorFamily::WishartKd { .. } => unreachable!(),
+            PriorFamily::NonePrior => Ok(Eval1D {
+                logp: 0.0,
+                grad: 0.0,
+                hess: 0.0,
+            }),
         }
     }
 }
@@ -261,6 +288,22 @@ impl HyperPriorStack {
             "fixed" => Ok(Self::new(vec![])),
             // Free scaling on a copied field: N(1, prec=0.1) on β (identity scale).
             "copy" => Ok(Self::new(vec![PriorSpec::gaussian(1.0, 0.1)])),
+            "iid2d" => Ok(Self::new(vec![PriorSpec::wishart_kd(
+                2,
+                crate::iidkd::iidkd_default_wishart_param(2),
+            )])),
+            "iid3d" => Ok(Self::new(vec![PriorSpec::wishart_kd(
+                3,
+                crate::iidkd::iidkd_default_wishart_param(3),
+            )])),
+            "iid4d" => Ok(Self::new(vec![PriorSpec::wishart_kd(
+                4,
+                crate::iidkd::iidkd_default_wishart_param(4),
+            )])),
+            "iid5d" => Ok(Self::new(vec![PriorSpec::wishart_kd(
+                5,
+                crate::iidkd::iidkd_default_wishart_param(5),
+            )])),
             other => Err(format!("no default hyperprior for effect type '{other}'")),
         }
     }
@@ -303,6 +346,8 @@ fn family_param_vec(f: &PriorFamily) -> Vec<f64> {
         PriorFamily::Gaussian { mean, precision } => vec![*mean, *precision],
         PriorFamily::Flat => vec![],
         PriorFamily::LogitBeta { a, b } => vec![*a, *b],
+        PriorFamily::WishartKd { param, .. } => param.clone(),
+        PriorFamily::NonePrior => vec![],
     }
 }
 
@@ -325,6 +370,13 @@ fn family_canonical_name(f: &PriorFamily) -> &'static str {
         PriorFamily::Gaussian { .. } => "gaussian",
         PriorFamily::Flat => "flat",
         PriorFamily::LogitBeta { .. } => "logitbeta",
+        PriorFamily::WishartKd { dim, .. } => match dim {
+            2 => "wishart2d",
+            3 => "wishart3d",
+            4 => "wishart4d",
+            _ => "wishart5d",
+        },
+        PriorFamily::NonePrior => "none",
     }
 }
 
@@ -334,6 +386,22 @@ fn take2(param: &[f64], d0: f64, d1: f64) -> Result<(f64, f64), String> {
         1 => Ok((param[0], d1)),
         _ => Ok((param[0], param[1])),
     }
+}
+
+fn wishart_family(dim: usize, param: &[f64]) -> Result<PriorFamily, String> {
+    let default = crate::iidkd::iidkd_default_wishart_param(dim);
+    let packed = if param.is_empty() {
+        default
+    } else if param.len() < default.len() {
+        return Err(format!(
+            "wishart{dim}d: param length {} < {}",
+            param.len(),
+            default.len()
+        ));
+    } else {
+        param[..default.len()].to_vec()
+    };
+    Ok(PriorFamily::WishartKd { dim, param: packed })
 }
 
 fn pc_prec_lambda(u: f64, alpha: f64) -> Result<f64, String> {
@@ -688,6 +756,15 @@ mod tests {
         let p = PriorSpec::from_name_params("pc.matern", &[1.0, 1.0, 2.0]).unwrap();
         assert_eq!(p.theta_dim(), 2);
         let lp = p.log_density(&[0.0, 0.0]).unwrap();
+        assert!(lp.is_finite());
+    }
+
+    #[test]
+    fn wishart2d_stack_covers_three_theta() {
+        let stack = HyperPriorStack::default_for_effect("iid2d").unwrap();
+        assert_eq!(stack.theta_dim(), 3);
+        assert_eq!(stack.priors[0].name, "wishart2d");
+        let lp = stack.log_density(&[0.0, 0.0, 0.0]).unwrap();
         assert!(lp.is_finite());
     }
 }

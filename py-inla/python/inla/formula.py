@@ -108,6 +108,29 @@ def _parse_f_kwargs(rest: str) -> dict[str, Any]:
     tree = ast.parse(stub, mode="eval")
     assert isinstance(tree.body, ast.Call)
     out: dict[str, Any] = {}
+    # Positional args after the index are R-INLA weights: f(i, z, model=...) or f(j, z, copy=...).
+    for arg in tree.body.args[1:]:
+        if "weights" in out:
+            break
+        try:
+            out["weights"] = ast.literal_eval(arg)
+        except Exception:
+            if isinstance(arg, ast.Name):
+                out["weights"] = arg.id
+            elif isinstance(arg, (ast.List, ast.Tuple)):
+                vals = []
+                elts = arg.elts
+                for el in elts:
+                    try:
+                        vals.append(ast.literal_eval(el))
+                    except Exception:
+                        if isinstance(el, ast.Name):
+                            vals.append(el.id)
+                        elif isinstance(el, ast.Constant) and el.value == 1:
+                            vals.append(1)
+                        else:
+                            raise ValueError("unsupported f() positional weights") from None
+                out["weights"] = vals
     for kw in tree.body.keywords:
         if kw.arg is None:
             continue
