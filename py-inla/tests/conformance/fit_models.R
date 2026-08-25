@@ -90,3 +90,9 @@ report("iid2d", inla_rs(
   y ~ -1 + f(idx, model = "iid2d", n = 24L, obs_precision = 25.0, initial = c(0, 0, 0)),
   data = df
 ))
+
+report("grouped_iid_ar1", inla_rs(
+  y ~ -1 + f(space, model = "iid", group = time,
+             control.group = list(model = "ar1"), obs_precision = 25.0),
+  data = df
+))

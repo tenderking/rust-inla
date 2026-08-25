@@ -418,6 +418,10 @@ fn inla_rs_run_inla_structured(
     effect_theta_lens: Vec<i32>,
     effect_orders: Vec<i32>,
     effect_copy_of: Vec<i32>,
+    effect_n_main: Vec<i32>,
+    effect_group_models: Vec<String>,
+    effect_group_ns: Vec<i32>,
+    effect_group_scales: Vec<i32>,
     adj_lists: List,
     effect_positions: List,
     prior_names: Vec<String>,
@@ -450,6 +454,10 @@ fn inla_rs_run_inla_structured(
         || effect_types.len() != effect_theta_lens.len()
         || effect_types.len() != effect_orders.len()
         || (!effect_copy_of.is_empty() && effect_copy_of.len() != effect_types.len())
+        || effect_n_main.len() != effect_types.len()
+        || effect_group_models.len() != effect_types.len()
+        || effect_group_ns.len() != effect_types.len()
+        || effect_group_scales.len() != effect_types.len()
     {
         return Err(Error::Other(
             "effect_* vectors must have equal length".to_string(),
@@ -574,6 +582,14 @@ fn inla_rs_run_inla_structured(
                 ncol,
                 cyclic,
                 matern_nu: 1,
+                n_main: usize::try_from(effect_n_main[ei]).unwrap_or(0),
+                group_model: if effect_group_models[ei].is_empty() {
+                    None
+                } else {
+                    Some(effect_group_models[ei].to_lowercase())
+                },
+                group_n: usize::try_from(effect_group_ns[ei]).unwrap_or(0),
+                group_scale_model: effect_group_scales[ei] != 0,
                 copy_of,
             }
         })

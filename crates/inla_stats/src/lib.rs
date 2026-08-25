@@ -80,7 +80,8 @@ pub use spde::{
     spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
 };
 pub use structured::{
-    StructuredEffect, build_structured_precision, structured_constraints, structured_prior_stack,
+    StructuredEffect, StructuredPlan, build_structured_precision, resolve_structured_plan,
+    structured_constraints, structured_prior_stack,
 };
 
 pub use latent::{ClosureLatentModel, DynClosureLatentModel, LatentModel};

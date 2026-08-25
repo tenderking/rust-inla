@@ -5,16 +5,16 @@
 //! model `match` arms in each binding.
 
 use inla_math::{
-    ConstraintSpec, CscMatrix, add_csc, block_diag_csc, identity_csc, model_rank_deficiency,
-    plane_constraint_2d, scale_csc, scale_model_csc, seasonal_constraint, sparse_from_triplets,
-    sum_to_zero_constraint,
+    ConstraintMethod, ConstraintSpec, CscMatrix, add_csc, block_diag_csc, identity_csc,
+    kronecker_csc, model_rank_deficiency, plane_constraint_2d, scale_csc, scale_model_csc,
+    seasonal_constraint, sparse_from_triplets, sum_to_zero_constraint,
 };
 
 use crate::posterior::COPY_PRECISION;
 
 use crate::ar1::ar1_precision_csc;
 use crate::arp::arp_precision_csc;
-use crate::besag::{besag_precision_csc, bym_precision_csc, bym2_precision_csc};
+use crate::besag::{besag_precision_csc, bym_precision_csc, bym2_precision_csc, graph_components};
 use crate::crw::{crw1_precision_csc, crw2_precision_csc};
 use crate::fgn::{fgn_approx_precision_csc, fgn_hurst_from_intern};
 use crate::iidkd::{iidkd_dim, iidkd_precision_csc};
@@ -45,6 +45,12 @@ pub struct StructuredEffect {
     pub ncol: usize,
     pub cyclic: bool,
     pub matern_nu: usize,
+    /// Main-model latent dimension when `group_model` is present.
+    pub n_main: usize,
+    /// Optional `control.group` model; θ and latent ordering are main then group.
+    pub group_model: Option<String>,
+    pub group_n: usize,
+    pub group_scale_model: bool,
     /// Index of the source effect when `model == "copy"` (source must appear first).
     pub copy_of: Option<usize>,
 }
@@ -64,6 +70,10 @@ impl StructuredEffect {
             ncol: 0,
             cyclic: false,
             matern_nu: 1,
+            n_main: 0,
+            group_model: None,
+            group_n: 0,
+            group_scale_model: false,
             copy_of: None,
         }
     }
@@ -241,15 +251,31 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
         }
         "crw2" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
-            let positions = effect
-                .positions
-                .clone()
-                .unwrap_or_else(|| (0..n_e).map(|i| i as f64).collect());
             let layout = if effect.crw2_layout.is_empty() {
                 "simple"
             } else {
                 effect.crw2_layout.as_str()
             };
+            let n_knots = if layout == "simple" {
+                n_e
+            } else {
+                if !n_e.is_multiple_of(2) {
+                    return Err(format!(
+                        "crw2 layout '{layout}' requires an even latent size"
+                    ));
+                }
+                n_e / 2
+            };
+            let positions = effect
+                .positions
+                .clone()
+                .unwrap_or_else(|| (0..n_knots).map(|i| i as f64).collect());
+            if positions.len() != n_knots {
+                return Err(format!(
+                    "crw2 layout '{layout}': positions length {} != knot count {n_knots}",
+                    positions.len()
+                ));
+            }
             let q0 = maybe_scale(
                 crw2_precision_csc(&positions, 1.0, layout)?,
                 effect.scale_model,
@@ -304,6 +330,62 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
     }
 }
 
+fn effect_block(
+    effect: &StructuredEffect,
+    th: &[f64],
+    fixed_prec: f64,
+) -> Result<CscMatrix, String> {
+    let Some(group_model) = effect.group_model.as_deref() else {
+        return one_block(effect, th, fixed_prec);
+    };
+    if effect.model_key() == "copy" {
+        return Err("copy effects cannot also define a group model".into());
+    }
+    let group_model = group_model.trim().to_ascii_lowercase();
+    if !crate::registry::SUPPORTED_GROUP_MODELS.contains(&group_model.as_str()) {
+        return Err(format!("unsupported control.group model '{group_model}'"));
+    }
+    if effect.n_main == 0 || effect.group_n == 0 || effect.n != effect.n_main * effect.group_n {
+        return Err(format!(
+            "grouped effect {}: n={} must equal n_main={} * group_n={}",
+            effect.model_key(),
+            effect.n,
+            effect.n_main,
+            effect.group_n
+        ));
+    }
+
+    let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
+    let main_meta = model_metadata(&effect.model_key(), order, None, effect.cyclic)?;
+    let group_meta = model_metadata(&group_model, 0, None, false)?;
+    let expected = main_meta.theta_len + group_meta.theta_len;
+    if th.len() != expected {
+        return Err(format!(
+            "grouped effect {}: theta length {} != main {} + group {}",
+            effect.model_key(),
+            th.len(),
+            main_meta.theta_len,
+            group_meta.theta_len
+        ));
+    }
+
+    let mut main = effect.clone();
+    main.n = effect.n_main;
+    main.theta_len = main_meta.theta_len;
+    main.n_main = 0;
+    main.group_model = None;
+    main.group_n = 0;
+    main.group_scale_model = false;
+    let q_main = one_block(&main, &th[..main_meta.theta_len], fixed_prec)?;
+
+    let mut group = StructuredEffect::simple(&group_model, effect.group_n, group_meta.theta_len);
+    group.scale_model = effect.group_scale_model;
+    let q_group = one_block(&group, &th[main_meta.theta_len..], fixed_prec)?;
+
+    // Latent order is group-major with the main index varying fastest.
+    Ok(kronecker_csc(&q_group, &q_main))
+}
+
 fn rw2d_dims(effect: &StructuredEffect) -> Result<(usize, usize, bool), String> {
     if effect.nrow > 0 && effect.ncol > 0 {
         return Ok((effect.nrow, effect.ncol, effect.cyclic));
@@ -321,21 +403,38 @@ fn rw2d_dims(effect: &StructuredEffect) -> Result<(usize, usize, bool), String> 
     Ok((nrow, effect.n / nrow, cyclic))
 }
 
-/// Block-diagonal prior precision for concatenated θ across [`StructuredEffect`]s.
-pub fn build_structured_precision(
-    effects: &[StructuredEffect],
-    theta: &[f64],
-    fixed_prec: f64,
-) -> Result<CscMatrix, String> {
-    for effect in effects {
+/// Fully validated structured layout shared by Q, prior, and constraint paths.
+#[derive(Debug, Clone)]
+pub struct StructuredPlan {
+    pub effects: Vec<StructuredEffect>,
+    pub latent_offsets: Vec<usize>,
+    pub theta_offsets: Vec<usize>,
+    pub latent_len: usize,
+    pub theta_len: usize,
+}
+
+pub fn resolve_structured_plan(effects: &[StructuredEffect]) -> Result<StructuredPlan, String> {
+    if effects.is_empty() {
+        return Err("structured plan requires at least one effect".into());
+    }
+    let mut latent_offsets = Vec::with_capacity(effects.len());
+    let mut theta_offsets = Vec::with_capacity(effects.len());
+    let mut latent_len = 0usize;
+    let mut theta_len = 0usize;
+    for (i, effect) in effects.iter().enumerate() {
         let model = effect.model_key();
         if !SUPPORTED_MODELS.contains(&model.as_str()) {
             return Err(format!(
                 "effect {model}: model is not executable by the shared structured path"
             ));
         }
+        if effect.n == 0 {
+            return Err(format!(
+                "effect {i} ({model}): latent dimension must be positive"
+            ));
+        }
         let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
-        let meta = model_metadata(&model, order, None, effect.cyclic)?;
+        let meta = model_metadata(&model, order, effect.group_model.as_deref(), effect.cyclic)?;
         let allows_fixed_copy = model == "copy" && effect.theta_len == 0;
         if !allows_fixed_copy && effect.theta_len != meta.theta_len {
             return Err(format!(
@@ -343,8 +442,58 @@ pub fn build_structured_precision(
                 effect.theta_len, meta.theta_len
             ));
         }
+        if effect.group_model.is_some()
+            && (effect.n_main == 0
+                || effect.group_n == 0
+                || effect.n_main.checked_mul(effect.group_n) != Some(effect.n))
+        {
+            return Err(format!(
+                "effect {model}: n={} must equal n_main={} * group_n={}",
+                effect.n, effect.n_main, effect.group_n
+            ));
+        }
+        latent_offsets.push(latent_len);
+        theta_offsets.push(theta_len);
+        latent_len += effect.n;
+        theta_len += effect.theta_len;
     }
-    let expected: usize = effects.iter().map(|e| e.theta_len).sum();
+    for (i, effect) in effects.iter().enumerate() {
+        if effect.model_key() != "copy" {
+            continue;
+        }
+        let source = effect
+            .copy_of
+            .ok_or_else(|| format!("copy effect {i}: missing source"))?;
+        if source >= i {
+            return Err(format!(
+                "copy effect {i}: source {source} must appear first"
+            ));
+        }
+        if effects[source].n != effect.n {
+            return Err(format!(
+                "copy effect {i}: n={} != source n={}",
+                effect.n, effects[source].n
+            ));
+        }
+    }
+    Ok(StructuredPlan {
+        effects: effects.to_vec(),
+        latent_offsets,
+        theta_offsets,
+        latent_len,
+        theta_len,
+    })
+}
+
+/// Block-diagonal prior precision for concatenated θ across [`StructuredEffect`]s.
+pub fn build_structured_precision(
+    effects: &[StructuredEffect],
+    theta: &[f64],
+    fixed_prec: f64,
+) -> Result<CscMatrix, String> {
+    let plan = resolve_structured_plan(effects)?;
+    let effects = plan.effects.as_slice();
+    let expected = plan.theta_len;
     if theta.len() != expected {
         return Err(format!(
             "theta length {} != sum(effect theta_len) {expected}",
@@ -361,7 +510,7 @@ pub fn build_structured_precision(
             &theta[off..off + tlen]
         };
         off += tlen;
-        blocks.push(one_block(effect, th, fixed_prec)?);
+        blocks.push(effect_block(effect, th, fixed_prec)?);
     }
     let q = block_diag_csc(&blocks)?;
     apply_copy_couplings(q, effects, theta)
@@ -442,6 +591,7 @@ fn apply_copy_couplings(
 
 /// Default hyperprior stack, validated against each effect's declared θ block.
 pub fn structured_prior_stack(effects: &[StructuredEffect]) -> Result<HyperPriorStack, String> {
+    resolve_structured_plan(effects)?;
     let mut priors = Vec::new();
     for effect in effects {
         let m = effect.model_key();
@@ -453,7 +603,11 @@ pub fn structured_prior_stack(effects: &[StructuredEffect]) -> Result<HyperPrior
         } else {
             0
         };
-        let stack = HyperPriorStack::default_for_effect_order(&m, order)?;
+        let mut stack = HyperPriorStack::default_for_effect_order(&m, order)?;
+        if let Some(group_model) = effect.group_model.as_deref() {
+            let group_stack = HyperPriorStack::default_for_effect_order(group_model, 0)?;
+            stack.priors.extend(group_stack.priors);
+        }
         if stack.theta_dim() != effect.theta_len {
             return Err(format!(
                 "effect {m}: prior theta dimension {} != declared theta_len {}",
@@ -466,16 +620,236 @@ pub fn structured_prior_stack(effects: &[StructuredEffect]) -> Result<HyperPrior
     Ok(HyperPriorStack::new(priors))
 }
 
+fn component_constraints(adj: &[Vec<usize>]) -> Result<Option<ConstraintSpec>, String> {
+    let components = graph_components(adj)?;
+    let constrained = components
+        .iter()
+        .filter(|component| component.len() > 1)
+        .collect::<Vec<_>>();
+    if constrained.is_empty() {
+        return Ok(None);
+    }
+    let n = adj.len();
+    let k = constrained.len();
+    let mut a = vec![0.0; k * n];
+    for (r, component) in constrained.into_iter().enumerate() {
+        let weight = 1.0 / (component.len() as f64).sqrt();
+        for &node in component {
+            a[r * n + node] = weight;
+        }
+    }
+    Ok(Some(ConstraintSpec {
+        n,
+        k,
+        a,
+        e: vec![0.0; k],
+        method: ConstraintMethod::Augmented,
+    }))
+}
+
+fn crw2_constraints(effect: &StructuredEffect) -> Result<ConstraintSpec, String> {
+    let layout = if effect.crw2_layout.is_empty() {
+        "simple"
+    } else {
+        effect.crw2_layout.as_str()
+    };
+    let n_knots = if layout == "simple" {
+        effect.n
+    } else {
+        if !effect.n.is_multiple_of(2) {
+            return Err(format!(
+                "crw2 layout '{layout}' requires an even latent size"
+            ));
+        }
+        effect.n / 2
+    };
+    if n_knots < 3 {
+        return Err("crw2 requires at least three knot locations".into());
+    }
+    let positions = effect
+        .positions
+        .clone()
+        .unwrap_or_else(|| (0..n_knots).map(|i| i as f64).collect());
+    if positions.len() != n_knots {
+        return Err(format!(
+            "crw2 layout '{layout}': positions length {} != knot count {n_knots}",
+            positions.len()
+        ));
+    }
+    let mean = positions.iter().sum::<f64>() / n_knots as f64;
+    let mut a = vec![0.0; 2 * effect.n];
+    let constant_norm = (n_knots as f64).sqrt();
+    let mut trend_norm_sq = 0.0;
+    match layout {
+        "simple" => {
+            for (i, &t) in positions.iter().enumerate() {
+                a[i] = 1.0 / constant_norm;
+                a[effect.n + i] = t - mean;
+                trend_norm_sq += (t - mean).powi(2);
+            }
+        }
+        "pairs" => {
+            for (i, &t) in positions.iter().enumerate() {
+                a[2 * i] = 1.0 / constant_norm;
+                a[effect.n + 2 * i] = t - mean;
+                a[effect.n + 2 * i + 1] = 1.0;
+                trend_norm_sq += (t - mean).powi(2) + 1.0;
+            }
+        }
+        "block" => {
+            for (i, &t) in positions.iter().enumerate() {
+                a[i] = 1.0 / constant_norm;
+                a[effect.n + i] = t - mean;
+                a[effect.n + n_knots + i] = 1.0;
+                trend_norm_sq += (t - mean).powi(2) + 1.0;
+            }
+        }
+        other => return Err(format!("unknown crw2 layout '{other}'")),
+    }
+    if trend_norm_sq <= 0.0 {
+        return Err("crw2 positions do not define a linear trend".into());
+    }
+    let trend_norm = trend_norm_sq.sqrt();
+    for value in &mut a[effect.n..] {
+        *value /= trend_norm;
+    }
+    Ok(ConstraintSpec {
+        n: effect.n,
+        k: 2,
+        a,
+        e: vec![0.0; 2],
+        method: ConstraintMethod::Augmented,
+    })
+}
+
+fn grouped_constraints(effect: &StructuredEffect) -> Result<Option<ConstraintSpec>, String> {
+    let Some(group_model) = effect.group_model.as_deref() else {
+        return Ok(None);
+    };
+    if effect.n_main == 0 || effect.group_n == 0 || effect.n != effect.n_main * effect.group_n {
+        return Err(format!(
+            "grouped effect {}: invalid main/group dimensions",
+            effect.model_key()
+        ));
+    }
+    let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
+    let main_meta = model_metadata(&effect.model_key(), order, None, effect.cyclic)?;
+    let group_meta = model_metadata(group_model, 0, None, false)?;
+    let mut main = effect.clone();
+    main.n = effect.n_main;
+    main.theta_len = main_meta.theta_len;
+    main.n_main = 0;
+    main.group_model = None;
+    main.group_n = 0;
+    main.group_scale_model = false;
+    let mut group = StructuredEffect::simple(group_model, effect.group_n, group_meta.theta_len);
+    group.scale_model = effect.group_scale_model;
+
+    let main_c = structured_constraints(std::slice::from_ref(&main))?;
+    let group_c = structured_constraints(std::slice::from_ref(&group))?;
+    if main_c.is_none() && group_c.is_none() {
+        return Ok(None);
+    }
+
+    let n = effect.n;
+    let mut candidates: Vec<Vec<f64>> = Vec::new();
+    if let Some(c) = main_c {
+        for g in 0..effect.group_n {
+            for r in 0..c.k {
+                let mut row = vec![0.0; n];
+                let src = &c.a[r * effect.n_main..(r + 1) * effect.n_main];
+                row[g * effect.n_main..(g + 1) * effect.n_main].copy_from_slice(src);
+                candidates.push(row);
+            }
+        }
+    }
+    if let Some(c) = group_c {
+        for main_i in 0..effect.n_main {
+            for r in 0..c.k {
+                let mut row = vec![0.0; n];
+                for g in 0..effect.group_n {
+                    row[g * effect.n_main + main_i] = c.a[r * effect.group_n + g];
+                }
+                candidates.push(row);
+            }
+        }
+    }
+
+    // Remove the k_main*k_group duplicated intersection and normalize the basis.
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+    for mut row in candidates {
+        for prior in &basis {
+            let dot = row.iter().zip(prior).map(|(a, b)| a * b).sum::<f64>();
+            for (value, p) in row.iter_mut().zip(prior) {
+                *value -= dot * p;
+            }
+        }
+        let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm > 1e-10 {
+            for value in &mut row {
+                *value /= norm;
+            }
+            basis.push(row);
+        }
+    }
+    let k = basis.len();
+    let a = basis.into_iter().flatten().collect();
+    Ok(Some(ConstraintSpec {
+        n,
+        k,
+        a,
+        e: vec![0.0; k],
+        method: ConstraintMethod::Augmented,
+    }))
+}
+
 /// Hard linear constraints for intrinsic / BYM / rw2d blocks.
 pub fn structured_constraints(
     effects: &[StructuredEffect],
 ) -> Result<Option<ConstraintSpec>, String> {
+    resolve_structured_plan(effects)?;
     let full_n: usize = effects.iter().map(|e| e.n).sum();
     let mut stacked: Option<ConstraintSpec> = None;
     let mut offset = 0usize;
     for effect in effects {
         let typ = effect.model_key();
         let n_e = effect.n;
+        if effect.group_model.is_some() {
+            if let Some(block) = grouped_constraints(effect)? {
+                let embedded = block.embed(full_n, offset)?;
+                stacked = Some(match stacked {
+                    None => embedded,
+                    Some(prev) => prev.vstack(&embedded)?,
+                });
+            }
+            offset += n_e;
+            continue;
+        }
+        if typ == "besag" {
+            let adj = effect
+                .adj
+                .as_deref()
+                .ok_or_else(|| "besag missing adj".to_string())?;
+            if let Some(block) = component_constraints(adj)? {
+                let embedded = block.embed(full_n, offset)?;
+                stacked = Some(match stacked {
+                    None => embedded,
+                    Some(prev) => prev.vstack(&embedded)?,
+                });
+            }
+            offset += n_e;
+            continue;
+        }
+        if typ == "crw2" {
+            let block = crw2_constraints(effect)?;
+            let embedded = block.embed(full_n, offset)?;
+            stacked = Some(match stacked {
+                None => embedded,
+                Some(prev) => prev.vstack(&embedded)?,
+            });
+            offset += n_e;
+            continue;
+        }
         if typ == "rw2d" {
             let (nrow, ncol, cyclic) = rw2d_dims(effect)?;
             let block = if cyclic {
@@ -503,13 +877,22 @@ pub fn structured_constraints(
             continue;
         }
         if typ == "bym" {
-            let n_sp = effect.adj.as_ref().map(|a| a.len()).unwrap_or(n_e / 2);
-            let block = sum_to_zero_constraint(n_sp, 1)?;
-            let embedded = block.embed(full_n, offset)?;
-            stacked = Some(match stacked {
-                None => embedded,
-                Some(prev) => prev.vstack(&embedded)?,
-            });
+            let adj = effect
+                .adj
+                .as_deref()
+                .ok_or_else(|| "bym missing adj".to_string())?;
+            if let Some(block) = component_constraints(adj)? {
+                let embedded = block.embed(full_n, offset)?;
+                stacked = Some(match stacked {
+                    None => embedded,
+                    Some(prev) => prev.vstack(&embedded)?,
+                });
+            }
+            offset += n_e;
+            continue;
+        }
+        if typ == "bym2" {
+            // The current combined-field BYM2 precision is proper for φ < 1.
             offset += n_e;
             continue;
         }
@@ -625,6 +1008,48 @@ mod tests {
     }
 
     #[test]
+    fn grouped_iid_ar1_uses_group_major_kronecker_order() {
+        let mut effect = StructuredEffect::simple("iid", 12, 3);
+        effect.n_main = 4;
+        effect.group_model = Some("ar1".into());
+        effect.group_n = 3;
+        let theta = [0.2, -0.1, 0.6];
+        let q = build_structured_precision(std::slice::from_ref(&effect), &theta, 1e-4).unwrap();
+        let q_main = iid_precision_csc(4, theta[0].exp()).unwrap();
+        let rho = 2.0 / (1.0 + (-theta[2]).exp()) - 1.0;
+        let q_group = ar1_precision_csc(3, rho, theta[1].exp()).unwrap();
+        let expected = kronecker_csc(&q_group, &q_main);
+        assert_eq!(q.to_dense(), expected.to_dense());
+        assert_eq!(
+            structured_prior_stack(std::slice::from_ref(&effect))
+                .unwrap()
+                .theta_dim(),
+            3
+        );
+        assert!(structured_constraints(&[effect]).unwrap().is_none());
+    }
+
+    #[test]
+    fn grouped_intrinsic_constraints_remove_redundant_intersection() {
+        let mut effect = StructuredEffect::simple("rw1", 6, 2);
+        effect.n_main = 3;
+        effect.group_model = Some("rw1".into());
+        effect.group_n = 2;
+        let q = build_structured_precision(std::slice::from_ref(&effect), &[0.0, 0.0], 1e-4)
+            .unwrap()
+            .to_dense();
+        let c = structured_constraints(&[effect]).unwrap().unwrap();
+        assert_eq!(c.k, 4); // 2*1 + 3*1 - 1*1
+        for r in 0..c.k {
+            let row = &c.a[r * c.n..(r + 1) * c.n];
+            for i in 0..c.n {
+                let value = (0..c.n).map(|j| q[[i, j]] * row[j]).sum::<f64>();
+                assert!(value.abs() < 1e-8, "row {r}, i {i}: {value}");
+            }
+        }
+    }
+
+    #[test]
     fn iid_rw2_block_diag() {
         let effects = [
             StructuredEffect::simple("iid", 4, 1),
@@ -674,6 +1099,52 @@ mod tests {
         let c = structured_constraints(&effects).unwrap().unwrap();
         assert_eq!(c.k, 1);
         assert_eq!(c.n, 6);
+    }
+
+    #[test]
+    fn besag_constraints_follow_connected_components() {
+        let adj = vec![vec![1], vec![0, 2], vec![1], vec![4], vec![3], vec![]];
+        let mut effect = StructuredEffect::simple("besag", adj.len(), 1);
+        effect.adj = Some(adj);
+        let c = structured_constraints(&[effect]).unwrap().unwrap();
+        assert_eq!(c.k, 2);
+        assert_eq!(c.n, 6);
+        assert_eq!(c.a[5], 0.0, "singleton must not be constrained");
+        assert_eq!(c.a[6 + 5], 0.0, "singleton must not be constrained");
+        assert!(c.a[..3].iter().all(|v| *v > 0.0));
+        assert!(c.a[6 + 3..6 + 5].iter().all(|v| *v > 0.0));
+    }
+
+    #[test]
+    fn crw2_constraints_span_the_true_null_space_for_all_layouts() {
+        let positions = vec![0.0, 0.7, 2.0, 4.5, 8.0];
+        for layout in ["simple", "pairs", "block"] {
+            let n = if layout == "simple" {
+                positions.len()
+            } else {
+                2 * positions.len()
+            };
+            let mut effect = StructuredEffect::simple("crw2", n, 1);
+            effect.positions = Some(positions.clone());
+            effect.crw2_layout = layout.into();
+            let c = structured_constraints(std::slice::from_ref(&effect))
+                .unwrap()
+                .unwrap();
+            assert_eq!(c.k, 2, "layout {layout}");
+            let q = build_structured_precision(&[effect], &[0.0], 1e-4)
+                .unwrap()
+                .to_dense();
+            for r in 0..2 {
+                let row = &c.a[r * n..(r + 1) * n];
+                for i in 0..n {
+                    let value = (0..n).map(|j| q[[i, j]] * row[j]).sum::<f64>();
+                    assert!(
+                        value.abs() < 1e-8,
+                        "layout {layout}, row {r}, i {i}: {value}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

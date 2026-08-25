@@ -127,10 +127,6 @@ def _default_theta(model: str, order: int = 0, group_model: str | None = None) -
     return list(_model_meta(model, order, group_model)["default_theta"])
 
 
-def _rank_deficiency(model: str, cyclic: bool = False) -> int:
-    return int(_model_meta(model, 0, None, cyclic)["rank_deficiency"])
-
-
 def _hyper_labels(
     types: Sequence[str],
     names: Sequence[str],
@@ -189,33 +185,6 @@ def _group_model_from_ft(ft) -> str | None:
     if isinstance(cg, str):
         return cg.lower()
     raise ValueError("control_group must be a dict with model=... or a model name string")
-
-
-def _build_group_q(n_group: int, group_model: str, theta_g: list[float]):
-    g = group_model.lower()
-    if g == "iid":
-        tau = float(np.exp(theta_g[0])) if theta_g else 1.0
-        return core.iid_precision_matrix(n_group, tau)
-    if g == "rw1":
-        tau = float(np.exp(theta_g[0])) if theta_g else 1.0
-        return core.rw1_precision_matrix(n_group, tau)
-    if g == "rw2":
-        tau = float(np.exp(theta_g[0])) if theta_g else 1.0
-        return core.rw2_precision_matrix(n_group, tau)
-    if g == "ar1":
-        if len(theta_g) < 2:
-            raise ValueError("group ar1 needs [log_tau, logit_rho]")
-        tau = float(np.exp(theta_g[0]))
-        rho = 2.0 / (1.0 + np.exp(-theta_g[1])) - 1.0
-        rho = float(np.clip(rho, -0.999, 0.999))
-        return core.ar1_precision_matrix_csc(n_group, rho, tau)
-    raise ValueError(f"unsupported group model '{group_model}'")
-
-
-def _as_scipy_csc(q):
-    if isinstance(q, core.PyCscMatrix):
-        return q.to_scipy().tocsc().copy()
-    return sparse.csc_matrix(q).tocsc()
 
 
 def _sum_to_zero_a(n: int, k: int) -> tuple[list[float], list[float]]:
@@ -362,15 +331,21 @@ def _match_hyper_slot(key: str, internals: Sequence[str]) -> int | None:
 
 
 def _resolve_effect_priors(
-    model: str, kwargs: Mapping[str, Any] | None, order: int = 0
+    model: str,
+    kwargs: Mapping[str, Any] | None,
+    order: int = 0,
+    group_model: str | None = None,
 ) -> list[tuple[str, list[float]]]:
     """Build (name, param) list for an effect from f() kwargs or model defaults."""
     kw = dict(kwargs or {})
     m = model.lower()
-    defaults = list(core.default_hyper_priors(m, max(int(order), 0)))
+    meta = _model_meta(m, order, group_model)
+    defaults = [
+        (str(name), [float(v) for v in params]) for name, params in meta.get("default_priors", [])
+    ]
     internals: list[str] = []
     try:
-        internals = list(_model_meta(m, order).get("hyper_internal") or [])
+        internals = list(meta.get("hyper_internal") or [])
     except Exception:
         internals = []
 
@@ -632,35 +607,6 @@ def _resolve_f_model(
         f"unsupported f() model '{ft.model}'. Built-ins: {supported}. "
         f"Or pass models={{'{ft.model}': ...}} / inla.generic.define(...)."
     )
-
-
-def _compute_scale_factor(q_scipy) -> float:
-    n = q_scipy.shape[0]
-    if n <= 1:
-        return 1.0
-    a = q_scipy.toarray()
-    evals, evecs = np.linalg.eigh(a)
-    max_lam = max(np.max(np.abs(evals)), 1.0)
-    tol = np.sqrt(np.finfo(float).eps) * max_lam
-
-    valid = evals > tol
-    if not np.any(valid):
-        raise ValueError("scale_model: ginv has no positive diagonal")
-
-    evals_valid = evals[valid]
-    evecs_valid = evecs[:, valid]
-
-    ginv_diag = np.sum((evecs_valid**2) / evals_valid, axis=1)
-
-    valid_diag = (ginv_diag > 0.0) & np.isfinite(ginv_diag)
-    if not np.any(valid_diag):
-        raise ValueError("scale_model: ginv has no positive diagonal")
-
-    log_sum = np.sum(np.log(ginv_diag[valid_diag]))
-    count = np.sum(valid_diag)
-
-    fac = np.exp(log_sum / count)
-    return float(fac)
 
 
 def _build_obs(
@@ -1609,7 +1555,7 @@ def _fit(
             else bool(ft.scale_model)
         )
         effect_generics.append(None)
-        effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs, order))
+        effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs, order, group_model))
         effect_copy_of.append(None)
         tlen = _theta_len(model, order, group_model)
         if ft.initial is not None:
@@ -1654,41 +1600,8 @@ def _fit(
             theta_lens.append(_theta_len(t, o, gm))
     has_intercept = bool(parsed.intercept)
 
-    precomputed_scales = []
-    for ei, (t, n_main, g, scale_flag) in enumerate(zip(types, n_mains, graphs, effect_scale)):
-        if not scale_flag:
-            precomputed_scales.append(1.0)
-            continue
-        q_base = None
-        pos = positions_list[ei] if ei < len(positions_list) else None
-        if t == "iid":
-            q_base = core.iid_precision_matrix(n_main, 1.0)
-        elif t == "rw1":
-            if pos is not None and len(pos) == n_main:
-                q_base = core.crw1_precision_matrix(pos, 1.0)
-            else:
-                q_base = core.rw1_precision_matrix(n_main, 1.0)
-        elif t == "rw2":
-            if pos is not None and len(pos) == n_main:
-                q_base = core.crw2_precision_matrix(pos, 1.0, layout="simple")
-            else:
-                q_base = core.rw2_precision_matrix(n_main, 1.0)
-        elif t == "besag":
-            assert g is not None
-            q_base = core.besag_precision_matrix(g, 1.0)
-        if q_base is not None:
-            q_scipy = (
-                q_base.to_scipy()
-                if isinstance(q_base, core.PyCscMatrix)
-                else sparse.csc_matrix(q_base)
-            )
-            precomputed_scales.append(_compute_scale_factor(q_scipy))
-        else:
-            precomputed_scales.append(1.0)
-
     use_shared_q = (
         all(g is None for g in generics)
-        and all(gm is None for gm in group_models)
         and "spde" not in types
         and hasattr(core, "build_structured_precision")
     )
@@ -1714,6 +1627,10 @@ def _fit(
                 "cyclic": bool(cyclics[ei]),
                 "matern_nu": int(nus[ei]),
                 "crw2_layout": str(layouts_list[ei]),
+                "n_main": int(n_mains[ei]) if group_models[ei] is not None else 0,
+                "group_model": group_models[ei],
+                "group_n": (int(ns[ei] // n_mains[ei]) if group_models[ei] is not None else 0),
+                "group_scale_model": False,
             }
             if positions_list[ei] is not None:
                 d["positions"] = positions_list[ei]
@@ -1726,93 +1643,15 @@ def _fit(
         return out
 
     def _main_precision(typ, n_main, ti, ei):
-        if typ == "iid":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            return core.iid_precision_matrix(n_main, tau)
-        if typ == "rw1":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            pos = positions_list[ei]
-            if pos is not None and len(pos) == n_main:
-                return core.crw1_precision_matrix(pos, tau)
-            return core.rw1_precision_matrix(n_main, tau)
-        if typ == "rw2":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            pos = positions_list[ei]
-            if pos is not None and len(pos) == n_main:
-                return core.crw2_precision_matrix(pos, tau, layout="simple")
-            return core.rw2_precision_matrix(n_main, tau)
-        if typ == "rw2d":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            return core.rw2d_precision_matrix(nrows[ei], ncols[ei], tau, cyclic=cyclics[ei])
-        if typ == "ar1":
-            if len(ti) < 2:
-                raise ValueError("ar1 needs theta=[log_tau, logit_rho]")
-            tau = float(np.exp(ti[0]))
-            rho = float(np.clip(2.0 / (1.0 + np.exp(-ti[1])) - 1.0, -0.999, 0.999))
-            return core.ar1_precision_matrix_csc(n_main, rho, tau)
-        if typ in ("ar", "arp"):
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            pacf = [float(np.tanh(v * 0.5)) for v in ti[1:]] if len(ti) > 1 else [0.0]
-            return core.arp_precision_matrix(n_main, pacf, tau)
-        if typ == "seasonal":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            return core.seasonal_precision_matrix(n_main, season=seasons_list[ei], tau=tau)
-        if typ == "crw1":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            pos = positions_list[ei] or [float(i) for i in range(n_main)]
-            if len(pos) < 2:
-                pos = [float(i) for i in range(n_main)]
-            return core.crw1_precision_matrix(pos, tau)
-        if typ == "crw2":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            pos = positions_list[ei] or [float(i) for i in range(n_main)]
-            if len(pos) < 3:
-                pos = [float(i) for i in range(n_main)]
-            return core.crw2_precision_matrix(pos, tau, layout=layouts_list[ei])
-        if typ == "besag":
-            tau = float(np.exp(ti[0])) if ti else 1.0
-            assert graphs[ei] is not None
-            return core.besag_precision_matrix(graphs[ei], tau)
-        if typ == "bym":
-            if len(ti) < 2:
-                raise ValueError("bym needs [log_tau_spatial, log_tau_iid]")
-            assert graphs[ei] is not None
-            return core.bym_precision_matrix(graphs[ei], float(np.exp(ti[0])), float(np.exp(ti[1])))
-        if typ == "bym2":
-            if len(ti) < 2:
-                raise ValueError("bym2 needs [log_tau, logit_phi]")
-            assert graphs[ei] is not None
-            tau = float(np.exp(ti[0]))
-            phi = float(1.0 / (1.0 + np.exp(-ti[1])))
-            phi = float(np.clip(phi, 1e-6, 1.0 - 1e-6))
-            return core.bym2_precision_matrix(graphs[ei], tau, phi)
-        if typ == "matern2d":
-            if len(ti) < 2:
-                raise ValueError("matern2d needs [log_prec, log_range]")
-            prec = float(np.exp(ti[0]))
-            rng = float(np.exp(ti[1]))
-            return core.matern2d_precision_matrix(
-                nrows[ei], ncols[ei], nu=nus[ei], range=rng, prec=prec, cyclic=cyclics[ei]
-            )
-        if typ == "spde":
-            if len(ti) < 2:
-                raise ValueError("spde needs [log_tau, log_kappa]")
-            mesh = meshes[ei]
-            assert mesh is not None
-            tau = float(np.exp(ti[0]))
-            kappa = float(np.exp(ti[1]))
-            return core.spde_precision_matrix(mesh[0], mesh[1], kappa=kappa, tau=tau)
-        if typ == "fgn":
-            if len(ti) < 2:
-                raise ValueError("fgn needs two hyperparameters")
-            tau = float(np.exp(ti[0]))
-            if orders[ei] in (3, 4):
-                hurst = core.fgn_hurst_from_intern(ti[1])
-                n_time = n_main // (orders[ei] + 1)
-                return core.fgn_approx_precision_matrix(n_time, hurst, tau, order=orders[ei])
-            hurst = 1.0 / (1.0 + np.exp(-ti[1]))
-            return core.fgn_precision_matrix(n_main, hurst, tau)
-        raise ValueError(f"unsupported effect type {typ}")
+        if typ != "spde":
+            raise ValueError(f"{typ} must use the shared Rust structured path")
+        if len(ti) < 2:
+            raise ValueError("spde needs [log_tau, log_kappa]")
+        mesh = meshes[ei]
+        assert mesh is not None
+        tau = float(np.exp(ti[0]))
+        kappa = float(np.exp(ti[1]))
+        return core.spde_precision_matrix(mesh[0], mesh[1], kappa=kappa, tau=tau)
 
     def build_prior(th):
         latent_th = list(th[1:]) if family_free_prec else list(th)
@@ -1823,41 +1662,23 @@ def _fit(
         blocks = []
         off = 0
         for ei, typ in enumerate(types):
-            n_e = ns[ei]
             tlen = theta_lens[ei]
             ti = latent_th[off : off + tlen]
             off += tlen
-            if typ == "fixed":
-                blocks.append(sparse.eye(n_e, format="csc") * float(fixed_prec))
-            elif typ == "rgeneric":
+            if typ == "rgeneric":
                 g = generics[ei]
                 assert g is not None
                 blocks.append(g.precision(ti))
+            elif typ == "spde":
+                if group_models[ei] is not None:
+                    raise ValueError("grouped SPDE effects are not supported")
+                blocks.append(_main_precision(typ, n_mains[ei], ti, ei))
             else:
-                gm = group_models[ei]
-                n_main = n_mains[ei]
-                main_len = _theta_len(typ, orders[ei], None)
-                q_main = _main_precision(typ, n_main, ti[:main_len], ei)
-                if gm is not None:
-                    q_group = _build_group_q(n_e // n_main, gm, ti[main_len:])
-                    # Prefer native kronecker; fall back to SciPy.
-                    if hasattr(core, "kronecker_csc"):
-                        q = core.kronecker_csc(q_group, q_main)
-                    else:
-                        q = sparse.kron(_as_scipy_csc(q_group), _as_scipy_csc(q_main), format="csc")
-                else:
-                    q = q_main
-                blocks.append(q)
-            if precomputed_scales[ei] != 1.0:
-                q = blocks[-1]
-                if isinstance(q, core.PyCscMatrix):
-                    q = q.to_scipy()
-                blocks[-1] = q * precomputed_scales[ei]
-            if typ == "rw2":
-                q = blocks[-1]
-                if isinstance(q, core.PyCscMatrix):
-                    q = q.to_scipy()
-                blocks[-1] = q + sparse.eye(n_e, format="csc") * 1e-4
+                blocks.append(
+                    core.build_structured_precision(
+                        [_structured_effect_dicts()[ei]], ti, float(fixed_prec)
+                    )
+                )
         if len(blocks) == 1:
             b0 = blocks[0]
             if isinstance(b0, core.PyCscMatrix):
@@ -1893,27 +1714,16 @@ def _fit(
     else:
         constr_parts: list[tuple[list[float], list[float]]] = []
         off = 0
-        for ei, (typ, n_e, cyclic_flag) in enumerate(zip(types, ns, cyclics)):
-            season = int(seasons_list[ei])
-            if typ == "seasonal":
-                k = max(season - 1, 1)
-            elif typ == "rw2":
-                # Match R-INLA constr=TRUE: sum-to-zero only (linear trend is a ridge).
-                k = 1
-            else:
-                k = _rank_deficiency(typ, cyclic=cyclic_flag)
-            if k == 0 and typ == "iid" and has_intercept:
-                k = 1
-            if k > 0:
-                # Classic BYM: constrain spatial block u only (first n_main).
-                block_n = n_mains[ei] if typ == "bym" else n_e
-                if typ == "seasonal":
-                    ba, be = core.seasonal_constraint(block_n, min(season, block_n))
-                elif typ == "rw2d" and not cyclic_flag:
-                    ba, be = core.plane_constraint_2d(int(nrows[ei]), int(ncols[ei]))
-                else:
-                    ba, be = _sum_to_zero_a(block_n, k)
-                constr_parts.append(_embed_constraint(ba, be, block_n, col_off, off))
+        effect_dicts = _structured_effect_dicts()
+        for ei, (typ, n_e) in enumerate(zip(types, ns)):
+            if typ not in ("spde", "rgeneric"):
+                shared_c = core.structured_constraints([effect_dicts[ei]])
+                if shared_c is not None:
+                    ba, be = shared_c
+                    constr_parts.append(_embed_constraint(ba, be, n_e, col_off, off))
+            if typ == "iid" and has_intercept:
+                ba, be = _sum_to_zero_a(n_e, 1)
+                constr_parts.append(_embed_constraint(ba, be, n_e, col_off, off))
             off += n_e
         stacked = _vstack_constraints(constr_parts)
         constraints_a = stacked[0] if stacked is not None else None
@@ -1944,10 +1754,6 @@ def _fit(
                 lp += g.eval_log_prior(ti)
             else:
                 specs = list(prior_specs[ei])
-                gm = group_models[ei]
-                if gm is not None:
-                    # Append default priors for the group hyperparameter block.
-                    specs = specs + list(core.default_hyper_priors(gm))
                 names = [s[0] for s in specs]
                 params = [s[1] for s in specs]
                 lp += float(core.hyper_prior_stack_log_density(names, params, ti))

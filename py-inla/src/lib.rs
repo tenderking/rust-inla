@@ -730,6 +730,24 @@ fn supported_models() -> Vec<String> {
         .collect()
 }
 
+/// Models with registry metadata, including dedicated and metadata-only paths.
+#[pyfunction]
+fn registered_models() -> Vec<String> {
+    inla_core::REGISTERED_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Models executable as a `control.group` Kronecker factor.
+#[pyfunction]
+fn supported_group_models() -> Vec<String> {
+    inla_core::SUPPORTED_GROUP_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Validate + fill defaults for a control dict. Unknown keys raise.
 #[pyfunction]
 fn resolve_compute_options(py: Python<'_>, controls: &Bound<'_, PyDict>) -> PyResult<Py<PyDict>> {
@@ -867,6 +885,25 @@ fn parse_structured_effects(
             d.get_item("positions")?.map(|v| v.extract()).transpose()?;
         let adj: Option<Vec<Vec<usize>>> = d.get_item("adj")?.map(|v| v.extract()).transpose()?;
         let copy_of: Option<usize> = d.get_item("copy_of")?.map(|v| v.extract()).transpose()?;
+        let n_main: usize = d
+            .get_item("n_main")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let group_model: Option<String> = match d.get_item("group_model")? {
+            Some(value) if !value.is_none() => Some(value.extract()?),
+            _ => None,
+        };
+        let group_n: usize = d
+            .get_item("group_n")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let group_scale_model: bool = d
+            .get_item("group_scale_model")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(false);
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -880,6 +917,10 @@ fn parse_structured_effects(
             ncol,
             cyclic,
             matern_nu,
+            n_main,
+            group_model,
+            group_n,
+            group_scale_model,
             copy_of,
         });
     }
@@ -1453,6 +1494,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plane_constraint_2d, m)?)?;
     m.add_function(wrap_pyfunction!(seasonal_constraint, m)?)?;
     m.add_function(wrap_pyfunction!(supported_models, m)?)?;
+    m.add_function(wrap_pyfunction!(registered_models, m)?)?;
+    m.add_function(wrap_pyfunction!(supported_group_models, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_compute_options, m)?)?;
     Ok(())
 }

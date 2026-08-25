@@ -34,7 +34,9 @@ def _dataset() -> dict[str, np.ndarray]:
     idx = np.arange(1, n + 1, dtype=float)
     y = np.sin(0.5 * idx) + 0.15 * np.cos(1.7 * idx) + 0.02 * idx
     count = np.abs(np.round(2.0 + 1.5 * np.sin(0.3 * idx))).astype(float)
-    return {"y": y, "idx": idx, "count": count}
+    space = np.tile(np.arange(1, 7, dtype=float), 4)
+    time = np.repeat(np.arange(1, 5, dtype=float), 6)
+    return {"y": y, "idx": idx, "count": count, "space": space, "time": time}
 
 
 def _write_csv(data: dict[str, np.ndarray], path: Path) -> None:
@@ -95,6 +97,10 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             "y ~ -1 + f(idx, model='iid2d', n=24, obs_precision=25.0, initial=[0, 0, 0])",
             data,
         ),
+        "grouped_iid_ar1": fit(
+            "y ~ -1 + f(space, model='iid', group=time, control_group={'model': 'ar1'}, obs_precision=25.0)",
+            data,
+        ),
     }
 
 
@@ -122,6 +128,7 @@ MODELS = [
     "gaussian_family_pc",
     "ar1_pc",
     "iid2d",
+    "grouped_iid_ar1",
 ]
 
 

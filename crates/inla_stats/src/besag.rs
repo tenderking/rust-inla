@@ -3,6 +3,58 @@ use sprs::TriMatI;
 use std::fs;
 use std::path::Path;
 
+/// Validate an undirected adjacency list and return deterministic components.
+pub fn graph_components(adj: &[Vec<usize>]) -> Result<Vec<Vec<usize>>, String> {
+    let n = adj.len();
+    if n == 0 {
+        return Err("graph requires at least one node".into());
+    }
+    for (i, neighbors) in adj.iter().enumerate() {
+        let mut seen = std::collections::BTreeSet::new();
+        for &j in neighbors {
+            if j >= n {
+                return Err(format!("neighbor index {j} exceeds node count {n}"));
+            }
+            if j == i {
+                return Err(format!("graph contains self-loop at node {i}"));
+            }
+            if !seen.insert(j) {
+                return Err(format!("graph contains duplicate edge {i}-{j}"));
+            }
+        }
+    }
+    for (i, neighbors) in adj.iter().enumerate() {
+        for &j in neighbors {
+            if !adj[j].contains(&i) {
+                return Err(format!("graph edge {i}-{j} is not symmetric"));
+            }
+        }
+    }
+
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        visited[start] = true;
+        let mut component = Vec::new();
+        while let Some(i) = stack.pop() {
+            component.push(i);
+            for &j in adj[i].iter().rev() {
+                if !visited[j] {
+                    visited[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    Ok(components)
+}
+
 pub fn read_graph_file<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<usize>>, String> {
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut tokens = content.split_whitespace();
@@ -74,9 +126,7 @@ pub fn read_graph_file<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<usize>>, Strin
 
 pub fn besag_precision_csc(adj: &[Vec<usize>], tau: f64) -> Result<CscMatrix, String> {
     let n = adj.len();
-    if n == 0 {
-        return Err("Besag requires at least 1 node".to_string());
-    }
+    graph_components(adj)?;
     if tau <= 0.0 || !tau.is_finite() {
         return Err("Besag tau must be finite and > 0".to_string());
     }
@@ -84,7 +134,13 @@ pub fn besag_precision_csc(adj: &[Vec<usize>], tau: f64) -> Result<CscMatrix, St
     let mut tri = TriMatI::<f64, usize>::with_capacity((n, n), n * 4);
     for i in 0..n {
         let degree = adj[i].len();
-        tri.add_triplet(i, i, (degree as f64) * tau);
+        // R-INLA's component adjustment treats singleton regions as N(0, τ⁻¹).
+        let diagonal = if degree == 0 {
+            tau
+        } else {
+            (degree as f64) * tau
+        };
+        tri.add_triplet(i, i, diagonal);
         for &j in &adj[i] {
             if j >= n {
                 return Err(format!("Neighbor index {} exceeds node count {}", j, n));
@@ -101,9 +157,7 @@ pub fn bym_precision_csc(
     tau_iid: f64,
 ) -> Result<CscMatrix, String> {
     let n = adj.len();
-    if n == 0 {
-        return Err("BYM requires at least 1 node".to_string());
-    }
+    graph_components(adj)?;
     if tau_spatial <= 0.0 || !tau_spatial.is_finite() {
         return Err("BYM tau_spatial must be finite and > 0".to_string());
     }
@@ -114,7 +168,12 @@ pub fn bym_precision_csc(
     let mut tri = TriMatI::<f64, usize>::with_capacity((2 * n, 2 * n), n * 5);
     for i in 0..n {
         let degree = adj[i].len();
-        tri.add_triplet(i, i, (degree as f64) * tau_spatial);
+        let diagonal = if degree == 0 {
+            tau_spatial
+        } else {
+            (degree as f64) * tau_spatial
+        };
+        tri.add_triplet(i, i, diagonal);
         for &j in &adj[i] {
             if j >= n {
                 return Err(format!("Neighbor index {} exceeds node count {}", j, n));
@@ -209,5 +268,31 @@ mod tests {
         let q_bym2 = bym2_precision_csc(&adj, 2.0, 0.5).unwrap();
         assert_eq!(q_bym2.rows(), 4);
         assert_eq!(q_bym2.cols(), 4);
+    }
+
+    #[test]
+    fn components_validate_graph_and_standardize_singletons() {
+        let adj = vec![vec![1], vec![0, 2], vec![1], vec![4], vec![3], vec![]];
+        assert_eq!(
+            graph_components(&adj).unwrap(),
+            vec![vec![0, 1, 2], vec![3, 4], vec![5]]
+        );
+        let q = besag_precision_csc(&adj, 2.0).unwrap().to_dense();
+        assert_eq!(q[[5, 5]], 2.0);
+        assert!(
+            graph_components(&[vec![1], vec![]])
+                .unwrap_err()
+                .contains("symmetric")
+        );
+        assert!(
+            graph_components(&[vec![0]])
+                .unwrap_err()
+                .contains("self-loop")
+        );
+        assert!(
+            graph_components(&[vec![1, 1], vec![0]])
+                .unwrap_err()
+                .contains("duplicate")
+        );
     }
 }
