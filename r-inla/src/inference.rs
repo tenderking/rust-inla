@@ -285,7 +285,7 @@ fn inla_rs_run_inla_inference(
                     );
                 }
                 let tau = theta[0].exp();
-                let hurst = 1.0 / (1.0 + (-theta[1]).exp());
+                let hurst = inla_core::fgn_hurst_from_intern(theta[1]);
                 inla_core::fgn_precision_csc(n, hurst, tau)
             }
             "ar1" => {
@@ -358,11 +358,7 @@ fn inla_rs_run_inla_inference(
     let latent_means: Vec<f64> = result.latent_means.iter().take(n).copied().collect();
     let latent_variances: Vec<f64> = result.latent_variances.iter().take(n).copied().collect();
     let hurst_est = if model_type_str == "fgn" && result.mode.len() >= 2 {
-        if use_fgn_approx {
-            inla_core::fgn_hurst_from_intern(result.mode[1])
-        } else {
-            1.0 / (1.0 + (-result.mode[1]).exp())
-        }
+        inla_core::fgn_hurst_from_intern(result.mode[1])
     } else {
         f64::NAN
     };
@@ -440,6 +436,13 @@ fn inla_rs_run_inla_structured(
     gaussian_free_prec: bool,
     family_prior_name: &str,
     family_prior_param: Vec<f64>,
+    effect_nrow: Vec<i32>,
+    effect_ncol: Vec<i32>,
+    effect_cyclic: Vec<i32>,
+    effect_season: Vec<i32>,
+    dic: bool,
+    waic: bool,
+    cpo: bool,
 ) -> std::result::Result<List, Error> {
     let n_obs = y_obs.len();
     let a_nrow_u = usize::try_from(a_nrow).map_err(|_| Error::Other("a_nrow".into()))?;
@@ -458,6 +461,10 @@ fn inla_rs_run_inla_structured(
         || effect_group_models.len() != effect_types.len()
         || effect_group_ns.len() != effect_types.len()
         || effect_group_scales.len() != effect_types.len()
+        || (!effect_nrow.is_empty() && effect_nrow.len() != effect_types.len())
+        || (!effect_ncol.is_empty() && effect_ncol.len() != effect_types.len())
+        || (!effect_cyclic.is_empty() && effect_cyclic.len() != effect_types.len())
+        || (!effect_season.is_empty() && effect_season.len() != effect_types.len())
     {
         return Err(Error::Other(
             "effect_* vectors must have equal length".to_string(),
@@ -552,18 +559,20 @@ fn inla_rs_run_inla_structured(
         .map(|ei| {
             let typ = effect_types_owned[ei].to_lowercase();
             let raw_order = effect_orders_i[ei];
-            let (nrow, ncol, cyclic) = if typ == "rw2d" || typ == "matern2d" {
-                let cyclic = raw_order < 0;
-                let nrow = raw_order.unsigned_abs() as usize;
-                let ncol = if nrow > 0 && effect_ns_u[ei].is_multiple_of(nrow) {
+            let slot = |v: &[i32]| v.get(ei).copied().unwrap_or(0);
+            let mut nrow = usize::try_from(slot(&effect_nrow).max(0)).unwrap_or(0);
+            let mut ncol = usize::try_from(slot(&effect_ncol).max(0)).unwrap_or(0);
+            let mut cyclic = slot(&effect_cyclic) != 0;
+            if (typ == "rw2d" || typ == "matern2d") && nrow == 0 {
+                cyclic = raw_order < 0;
+                nrow = raw_order.unsigned_abs() as usize;
+                ncol = if nrow > 0 && effect_ns_u[ei].is_multiple_of(nrow) {
                     effect_ns_u[ei] / nrow
                 } else {
                     0
                 };
-                (nrow, ncol, cyclic)
-            } else {
-                (0, 0, false)
-            };
+            }
+            let season = usize::try_from(slot(&effect_season).max(0)).unwrap_or(0);
             let copy_of = if effect_copy_of.is_empty() || effect_copy_of[ei] < 0 {
                 None
             } else {
@@ -574,7 +583,8 @@ fn inla_rs_run_inla_structured(
                 n: effect_ns_u[ei],
                 scale_model: effect_scales_b[ei],
                 theta_len: effect_theta_lens_u[ei],
-                order: raw_order,
+                order: raw_order.max(0),
+                season,
                 adj: adjs[ei].clone(),
                 positions: positions[ei].clone(),
                 crw2_layout: "simple".into(),
@@ -675,6 +685,16 @@ fn inla_rs_run_inla_structured(
             None
         };
 
+    let compute = inla_core::ComputeOptions {
+        strategy: strategy.to_string(),
+        step_or_f0,
+        deterministic,
+        dic,
+        waic,
+        cpo,
+        ..inla_core::ComputeOptions::default()
+    };
+
     let result = inla_core::run_inla_inference_a_cancellable(
         &initial_theta,
         &build_prior,
@@ -688,6 +708,7 @@ fn inla_rs_run_inla_structured(
         deterministic,
         None,
         build_obs_opt,
+        Some(&compute),
     )
     .map_err(Error::Other)?;
 
@@ -748,6 +769,7 @@ fn inla_rs_run_gaussian_ar1_plan(
         computation: inla_core::ComputationSpec {
             strategy: Some(strategy.to_string()),
             step_or_f0: Some(step_or_f0),
+            ..Default::default()
         },
         initial_theta: initial,
     };

@@ -7,6 +7,7 @@ use inla_math::{
     matvec_csc, predictor_variances_diag, project_constraints,
 };
 
+use crate::options::ComputeOptions;
 use crate::priors::PriorSpec;
 
 #[cfg(test)]
@@ -910,6 +911,7 @@ pub fn run_inla_inference_a(
         deterministic,
         None,
         None,
+        None,
     )
 }
 
@@ -927,7 +929,9 @@ pub fn run_inla_inference_a_cancellable(
     deterministic: bool,
     check_cancel: Option<&(dyn Fn() -> Result<(), String> + Sync)>,
     build_obs: Option<&(dyn Fn(&[f64]) -> Vec<Obs> + Sync)>,
+    compute: Option<&ComputeOptions>,
 ) -> Result<InferenceResult, String> {
+    let compute = compute.cloned().unwrap_or_default();
     let m = initial_theta.len();
     let n_obs = obs.len();
 
@@ -951,10 +955,33 @@ pub fn run_inla_inference_a_cancellable(
         let cond_eta = vec![eta.clone()];
         let cond_eta_var = vec![eta_var.clone()];
         let norm_weights = vec![1.0];
-        let dic_result = crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, 0)?;
-        let waic_result = crate::model_selection::compute_waic(obs, &cond_eta, &norm_weights)?;
-        let cpo_result =
-            crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?;
+        let dic_result = if compute.dic {
+            crate::model_selection::compute_dic(obs, &cond_eta, &norm_weights, 0)?
+        } else {
+            crate::model_selection::DicResult {
+                dic: f64::NAN,
+                mean_deviance: f64::NAN,
+                effective_params: f64::NAN,
+            }
+        };
+        let waic_result = if compute.waic {
+            crate::model_selection::compute_waic(obs, &cond_eta, &norm_weights)?
+        } else {
+            crate::model_selection::WaicResult {
+                waic: f64::NAN,
+                lppd: f64::NAN,
+                effective_params: f64::NAN,
+            }
+        };
+        let cpo_result = if compute.cpo {
+            crate::model_selection::compute_cpo_pit(obs, &cond_eta, &cond_eta_var, &norm_weights)?
+        } else {
+            crate::model_selection::CpoResult {
+                cpo: vec![None; n_obs],
+                pit: vec![None; n_obs],
+                n_failures: 0,
+            }
+        };
 
         let mut marginals_latent = Vec::with_capacity(marginal_opts.latent_indices.len());
         for &idx in &marginal_opts.latent_indices {
@@ -1258,12 +1285,34 @@ pub fn run_inla_inference_a_cancellable(
         None => obs,
     };
 
-    let dic_result =
-        crate::model_selection::compute_dic(mode_obs, &cond_eta, &norm_weights, mode_index)?;
-    let waic_result = crate::model_selection::compute_waic(mode_obs, &cond_eta, &norm_weights)?;
+    let dic_result = if compute.dic {
+        crate::model_selection::compute_dic(mode_obs, &cond_eta, &norm_weights, mode_index)?
+    } else {
+        crate::model_selection::DicResult {
+            dic: f64::NAN,
+            mean_deviance: f64::NAN,
+            effective_params: f64::NAN,
+        }
+    };
+    let waic_result = if compute.waic {
+        crate::model_selection::compute_waic(mode_obs, &cond_eta, &norm_weights)?
+    } else {
+        crate::model_selection::WaicResult {
+            waic: f64::NAN,
+            lppd: f64::NAN,
+            effective_params: f64::NAN,
+        }
+    };
 
-    let cpo_result =
-        crate::model_selection::compute_cpo_pit(mode_obs, &cond_eta, &cond_eta_var, &norm_weights)?;
+    let cpo_result = if compute.cpo {
+        crate::model_selection::compute_cpo_pit(mode_obs, &cond_eta, &cond_eta_var, &norm_weights)?
+    } else {
+        crate::model_selection::CpoResult {
+            cpo: vec![None; n_obs],
+            pit: vec![None; n_obs],
+            n_failures: 0,
+        }
+    };
 
     let internal_marginals_hyperpar = if marginal_opts.hyperpar && m > 0 {
         crate::marginals::hyperpar_marginals(
@@ -1384,6 +1433,7 @@ pub fn run_inla_inference_model(
         step_or_f0,
         marginal_opts,
         deterministic,
+        None,
         None,
         None,
     )
@@ -2179,5 +2229,46 @@ mod sparse_path_smoke {
             true,
         );
         assert!(res.is_ok(), "{res:?}");
+    }
+
+    #[test]
+    fn compute_flags_skip_dic_waic_cpo() {
+        let n = 8;
+        let build = |theta: &[f64]| crate::latent_models::iid_precision_csc(n, theta[0].exp());
+        let obs: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: 0.05 * i as f64,
+                    precision: 25.0,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+        let a = identity_csc(n, 1.0).unwrap();
+        let compute = ComputeOptions {
+            dic: false,
+            waic: false,
+            cpo: false,
+            ..ComputeOptions::default()
+        };
+        let res = run_inla_inference_a_cancellable(
+            &[0.0],
+            &build,
+            &|_| 0.0,
+            &obs,
+            Some(&a),
+            None,
+            "ccd",
+            1.0,
+            &crate::marginals::MarginalOptions::default(),
+            true,
+            None,
+            None,
+            Some(&compute),
+        )
+        .expect("inference");
+        assert!(res.dic.is_nan());
+        assert!(res.waic.is_nan());
+        assert!(res.cpo.iter().all(|v| v.is_none()));
     }
 }

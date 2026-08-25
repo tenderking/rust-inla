@@ -54,6 +54,7 @@ impl HyperSlotMeta {
             HyperTransformKind::Exp => "exp",
             HyperTransformKind::RhoCor1 => "rho",
             HyperTransformKind::Phi => "phi",
+            HyperTransformKind::FgnHurst => "hurst",
             HyperTransformKind::Identity => "identity",
         }
     }
@@ -170,11 +171,10 @@ pub fn model_metadata(
         }
         "fgn" => {
             hyper.push(prec_slot());
-            // No closed-form natural map: report the internal Hurst coordinate as such.
             hyper.push(HyperSlotMeta::new(
                 "hurst_intern",
-                "Hurst.intern",
-                HyperTransformKind::Identity,
+                "Hurst",
+                HyperTransformKind::FgnHurst,
             ));
             // AR-mixture approximation starts away from the boundary.
             if order == 3 || order == 4 {
@@ -257,7 +257,7 @@ pub fn model_metadata(
         default_priors.extend(default_prior_pairs(&gm, 0)?);
     }
 
-    // `order` carries the season length for seasonal models.
+    // `order` is the season length for seasonal models in this metadata API.
     let rank_deficiency = if m == "seasonal" {
         let season = if order >= 2 { order } else { 4 };
         season - 1

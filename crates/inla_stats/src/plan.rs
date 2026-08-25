@@ -42,6 +42,8 @@ pub enum HyperTransformKind {
     RhoCor1,
     /// φ = 1/(1+e^{-θ}) (e.g. BYM2 mixing).
     Phi,
+    /// H = 1/2 + 1/2 / (1+e^{-θ}) (FGN Hurst, R-INLA `from.theta`).
+    FgnHurst,
     /// Leave θ unchanged.
     Identity,
 }
@@ -52,6 +54,7 @@ impl HyperTransformKind {
             Self::Exp => theta.exp(),
             Self::RhoCor1 => 2.0 / (1.0 + (-theta).exp()) - 1.0,
             Self::Phi => 1.0 / (1.0 + (-theta).exp()),
+            Self::FgnHurst => crate::fgn::fgn_hurst_from_intern(theta),
             Self::Identity => theta,
         }
     }
@@ -70,6 +73,11 @@ impl HyperTransformKind {
             Self::Phi => {
                 let p = self.to_natural(theta_mean);
                 p * (1.0 - p) * theta_sd
+            }
+            Self::FgnHurst => {
+                let h = self.to_natural(theta_mean);
+                // H = 1/2 + 1/2 s, s = sigmoid(θ) ⇒ H' = 1/2 s (1-s) = 2(H-1/2)(1-H)
+                2.0 * (h - 0.5) * (1.0 - h) * theta_sd
             }
             Self::Identity => theta_sd,
         }
@@ -111,6 +119,12 @@ pub enum LatentEffectSpec {
         /// Optional overrides as `(prior_name, param)` per θ slot; `None` ⇒ model defaults.
         priors: Option<Vec<(String, Vec<f64>)>>,
     },
+    /// Any executable structured effect (iid, rw2, grouped, …).
+    Structured {
+        name: String,
+        effect: crate::structured::StructuredEffect,
+        priors: Option<Vec<(String, Vec<f64>)>>,
+    },
 }
 
 /// Resolved latent effect.
@@ -123,31 +137,46 @@ pub enum LatentEffectPlan {
         /// Internal-scale starting values for Nelder–Mead / CCD.
         initial_theta: Vec<f64>,
     },
+    Structured {
+        name: String,
+        effect: crate::structured::StructuredEffect,
+        hyper: Vec<HyperSlotPlan>,
+        initial_theta: Vec<f64>,
+    },
 }
 
 impl LatentEffectPlan {
     pub fn name(&self) -> &str {
         match self {
-            Self::Ar1 { name, .. } => name,
+            Self::Ar1 { name, .. } | Self::Structured { name, .. } => name,
         }
     }
 
     pub fn latent_len(&self) -> usize {
         match self {
             Self::Ar1 { n, .. } => *n,
+            Self::Structured { effect, .. } => effect.n,
         }
     }
 
     pub fn theta_dim(&self) -> usize {
         match self {
-            Self::Ar1 { hyper, .. } => hyper.len(),
+            Self::Ar1 { hyper, .. } | Self::Structured { hyper, .. } => hyper.len(),
         }
     }
 
     pub fn prior_stack(&self) -> HyperPriorStack {
         match self {
-            Self::Ar1 { hyper, .. } => {
+            Self::Ar1 { hyper, .. } | Self::Structured { hyper, .. } => {
                 HyperPriorStack::new(hyper.iter().map(|h| h.prior.clone()).collect())
+            }
+        }
+    }
+
+    fn initial_theta(&self) -> &[f64] {
+        match self {
+            Self::Ar1 { initial_theta, .. } | Self::Structured { initial_theta, .. } => {
+                initial_theta
             }
         }
     }
@@ -159,6 +188,9 @@ pub struct ComputationSpec {
     /// `"ccd"` or `"grid"` (and future strategies).
     pub strategy: Option<String>,
     pub step_or_f0: Option<f64>,
+    pub dic: Option<bool>,
+    pub waic: Option<bool>,
+    pub cpo: Option<bool>,
 }
 
 /// Resolved computation settings.
@@ -166,6 +198,22 @@ pub struct ComputationSpec {
 pub struct ComputationPlan {
     pub strategy: String,
     pub step_or_f0: f64,
+    pub dic: bool,
+    pub waic: bool,
+    pub cpo: bool,
+}
+
+impl ComputationPlan {
+    pub fn compute_options(&self) -> crate::options::ComputeOptions {
+        crate::options::ComputeOptions {
+            strategy: self.strategy.clone(),
+            step_or_f0: self.step_or_f0,
+            dic: self.dic,
+            waic: self.waic,
+            cpo: self.cpo,
+            ..crate::options::ComputeOptions::default()
+        }
+    }
 }
 
 /// Index range of one named block in the stacked latent field.
@@ -217,7 +265,8 @@ impl ModelPlan {
         let mut out = Vec::new();
         for e in &self.effects {
             match e {
-                LatentEffectPlan::Ar1 { hyper, .. } => out.extend(hyper.iter()),
+                LatentEffectPlan::Ar1 { hyper, .. }
+                | LatentEffectPlan::Structured { hyper, .. } => out.extend(hyper.iter()),
             }
         }
         out
@@ -251,11 +300,7 @@ pub fn resolve(spec: ModelSpec) -> Result<ModelPlan, PlanError> {
             len: plan.latent_len(),
         });
         offset += plan.latent_len();
-        match &plan {
-            LatentEffectPlan::Ar1 {
-                initial_theta: th, ..
-            } => initial_theta.extend_from_slice(th),
-        }
+        initial_theta.extend_from_slice(plan.initial_theta());
         effects.push(plan);
     }
 
@@ -265,6 +310,9 @@ pub fn resolve(spec: ModelSpec) -> Result<ModelPlan, PlanError> {
             .strategy
             .unwrap_or_else(|| "ccd".to_string()),
         step_or_f0: spec.computation.step_or_f0.unwrap_or(1.0),
+        dic: spec.computation.dic.unwrap_or(true),
+        waic: spec.computation.waic.unwrap_or(true),
+        cpo: spec.computation.cpo.unwrap_or(true),
     };
     if computation.strategy != "ccd" && computation.strategy != "grid" {
         return Err(format!(
@@ -305,20 +353,23 @@ fn validate_spec(spec: &ModelSpec) -> Result<(), PlanError> {
     if spec.effects.is_empty() {
         return Err("ModelSpec must contain at least one latent effect".into());
     }
-    // v1: single AR(1) only (identity η = x).
-    if spec.effects.len() != 1 {
-        return Err(
-            "ModelSpec v1 supports exactly one latent effect (AR1); multi-effect comes later"
-                .into(),
-        );
-    }
-    match &spec.effects[0] {
-        LatentEffectSpec::Ar1 { n, name, .. } => {
-            if name.is_empty() {
-                return Err("latent effect name must be non-empty".into());
+    for effect in &spec.effects {
+        match effect {
+            LatentEffectSpec::Ar1 { n, name, .. } => {
+                if name.is_empty() {
+                    return Err("latent effect name must be non-empty".into());
+                }
+                if *n < 2 {
+                    return Err("AR1 requires n >= 2".into());
+                }
             }
-            if *n < 2 {
-                return Err("AR1 requires n >= 2".into());
+            LatentEffectSpec::Structured { name, effect, .. } => {
+                if name.is_empty() {
+                    return Err("latent effect name must be non-empty".into());
+                }
+                if effect.n == 0 {
+                    return Err(format!("structured effect '{name}' has n = 0").into());
+                }
             }
         }
     }
@@ -366,10 +417,132 @@ fn resolve_effect(spec: LatentEffectSpec) -> Result<LatentEffectPlan, PlanError>
                 initial_theta: vec![0.0, 0.0],
             })
         }
+        LatentEffectSpec::Structured {
+            name,
+            effect,
+            priors,
+        } => {
+            crate::structured::resolve_structured_plan(std::slice::from_ref(&effect))?;
+            let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
+            let meta = crate::registry::model_metadata(
+                &effect.model_key(),
+                order,
+                effect.group_model.as_deref(),
+                effect.cyclic,
+            )?;
+            let stack = match priors {
+                None => crate::structured::structured_prior_stack(std::slice::from_ref(&effect))?,
+                Some(pairs) => {
+                    if pairs.len() != meta.theta_len {
+                        return Err(format!(
+                            "effect '{}': prior override length {} != theta_len {}",
+                            name,
+                            pairs.len(),
+                            meta.theta_len
+                        )
+                        .into());
+                    }
+                    let mut specs = Vec::with_capacity(pairs.len());
+                    for (nm, param) in &pairs {
+                        specs.push(PriorSpec::from_name_params(nm, param)?);
+                    }
+                    HyperPriorStack::new(specs)
+                }
+            };
+            if stack.theta_dim() != effect.theta_len {
+                return Err(format!(
+                    "effect '{}': prior theta dimension {} != declared {}",
+                    name,
+                    stack.theta_dim(),
+                    effect.theta_len
+                )
+                .into());
+            }
+            let hyper = meta
+                .hyper
+                .iter()
+                .zip(stack.priors.iter())
+                .map(|(slot, prior)| HyperSlotPlan {
+                    internal_name: format!("{}:{name}", slot.internal_label),
+                    natural_name: format!("{} for {name}", slot.label),
+                    transform: slot.transform,
+                    prior: prior.clone(),
+                })
+                .collect();
+            Ok(LatentEffectPlan::Structured {
+                name,
+                effect,
+                hyper,
+                initial_theta: meta.default_theta,
+            })
+        }
     }
 }
 
-/// Run inference for a v1 plan: one AR(1) + Gaussian observations, η = x.
+/// Gaussian observations with identity η = x for any resolved structured plan.
+pub fn run_structured_gaussian_plan(
+    plan: &ModelPlan,
+    y: &[f64],
+    fixed_prec: f64,
+) -> Result<InferenceResult, PlanError> {
+    let mut effects = Vec::with_capacity(plan.effects.len());
+    for effect in &plan.effects {
+        match effect {
+            LatentEffectPlan::Structured { effect, .. } => effects.push(effect.clone()),
+            LatentEffectPlan::Ar1 { name, n, .. } => {
+                let mut e = crate::structured::StructuredEffect::simple("ar1", *n, 2);
+                e.model = "ar1".into();
+                let _ = name;
+                effects.push(e);
+            }
+        }
+    }
+    if y.len() != plan.layout.total_len {
+        return Err(format!(
+            "y length {} != planned latent length {}",
+            y.len(),
+            plan.layout.total_len
+        )
+        .into());
+    }
+    let prec = match plan.likelihood {
+        LikelihoodPlan::Gaussian { precision } => precision,
+    };
+    let obs: Vec<Obs> = y
+        .iter()
+        .map(|&yi| {
+            Obs::Gaussian(GaussianObs {
+                y: yi,
+                precision: prec,
+                link: Link::Identity,
+            })
+        })
+        .collect();
+    let stack = plan.prior_stack();
+    let effects_q = effects.clone();
+    let build_prior = move |theta: &[f64]| -> Result<inla_math::CscMatrix, String> {
+        crate::structured::build_structured_precision(&effects_q, theta, fixed_prec)
+    };
+    let log_prior = move |theta: &[f64]| stack.log_density(theta).unwrap_or(f64::NEG_INFINITY);
+    let constr = crate::structured::structured_constraints(&effects)?;
+    let compute = plan.computation.compute_options();
+    crate::inference::run_inla_inference_a_cancellable(
+        &plan.initial_theta,
+        &build_prior,
+        &log_prior,
+        &obs,
+        None,
+        constr.as_ref(),
+        &plan.computation.strategy,
+        plan.computation.step_or_f0,
+        &crate::marginals::MarginalOptions::default(),
+        false,
+        None,
+        None,
+        Some(&compute),
+    )
+    .map_err(PlanError)
+}
 ///
 /// `y.len()` must equal the AR(1) length. Observation buffers stay outside the plan.
 pub fn run_gaussian_ar1_plan(plan: &ModelPlan, y: &[f64]) -> Result<InferenceResult, PlanError> {
@@ -481,5 +654,57 @@ mod tests {
         assert_eq!(result.latent_means.len(), n);
         assert!(result.marginal_log_lik.is_finite());
         assert_eq!(result.mode.len(), 2);
+    }
+
+    #[test]
+    fn resolve_accepts_multiple_structured_effects() {
+        let iid = crate::structured::StructuredEffect::simple("iid", 4, 1);
+        let rw2 = crate::structured::StructuredEffect::simple("rw2", 5, 1);
+        let spec = ModelSpec {
+            likelihood: LikelihoodSpec::Gaussian {
+                precision: Some(25.0),
+            },
+            effects: vec![
+                LatentEffectSpec::Structured {
+                    name: "u".into(),
+                    effect: iid,
+                    priors: None,
+                },
+                LatentEffectSpec::Structured {
+                    name: "v".into(),
+                    effect: rw2,
+                    priors: None,
+                },
+            ],
+            computation: ComputationSpec::default(),
+            initial_theta: None,
+        };
+        let plan = resolve(spec).unwrap();
+        assert_eq!(plan.layout.total_len, 9);
+        assert_eq!(plan.layout.blocks[0].start, 0);
+        assert_eq!(plan.layout.blocks[1].start, 4);
+        assert_eq!(plan.initial_theta.len(), 2);
+        assert_eq!(plan.hyper_slots().len(), 2);
+        let q = crate::structured::build_structured_precision(
+            &[
+                crate::structured::StructuredEffect::simple("iid", 4, 1),
+                crate::structured::StructuredEffect::simple("rw2", 5, 1),
+            ],
+            &plan.initial_theta,
+            1e-4,
+        )
+        .unwrap();
+        assert_eq!(q.rows(), 9);
+        assert_eq!(q.cols(), 9);
+    }
+
+    #[test]
+    fn fgn_hurst_transform_matches_intern_map() {
+        let theta = 2.0;
+        let h = HyperTransformKind::FgnHurst.to_natural(theta);
+        assert!((h - crate::fgn::fgn_hurst_from_intern(theta)).abs() < 1e-14);
+        assert!(h > 0.5 && h < 1.0);
+        let sd = HyperTransformKind::FgnHurst.natural_sd(theta, 0.1);
+        assert!(sd > 0.0 && sd.is_finite());
     }
 }

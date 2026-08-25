@@ -169,10 +169,11 @@ pub use inla_stats::{
     model_metadata, model_rank_deficiency, nelder_mead, plane_constraint_2d, project_constraints,
     read_graph_file, resolve, resolve_compute_options, run_gaussian_ar1_plan, run_inla_inference,
     run_inla_inference_a, run_inla_inference_a_cancellable, run_inla_inference_model,
-    rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
-    rw2d_precision_csc, sample_latent_gaussian, seasonal_constraint, seasonal_precision_csc,
-    spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
-    structured_constraints, structured_prior_stack, sum_to_zero_constraint, two_diid_precision_csc,
+    run_structured_gaussian_plan, rw1_cyclic_precision_csc, rw1_precision_csc,
+    rw2_cyclic_precision_csc, rw2_precision_csc, rw2d_precision_csc, sample_latent_gaussian,
+    seasonal_constraint, seasonal_precision_csc, spde_params_from_theta, spde_precision_csc,
+    spde_projector_csc, spde_projector_from_xy, structured_constraints, structured_prior_stack,
+    sum_to_zero_constraint, two_diid_precision_csc,
 };
 
 pub mod marginals {

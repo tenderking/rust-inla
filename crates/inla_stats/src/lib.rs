@@ -65,7 +65,7 @@ pub use options::{ComputeOptions, IndexSelection, OptionValue, resolve_compute_o
 pub use plan::{
     ComputationPlan, ComputationSpec, HyperSlotPlan, HyperTransformKind, LatentBlockLayout,
     LatentEffectPlan, LatentEffectSpec, LatentLayout, LikelihoodPlan, LikelihoodSpec, ModelPlan,
-    ModelSpec, PlanError, resolve, run_gaussian_ar1_plan,
+    ModelSpec, PlanError, resolve, run_gaussian_ar1_plan, run_structured_gaussian_plan,
 };
 pub use posterior::{
     COPY_PRECISION, LinComb, LinCombSummary, emarginal, lincomb_summaries, sample_latent_gaussian,

@@ -30,14 +30,16 @@ use crate::rw2d::rw2d_precision_csc;
 /// One latent block in a structured (multi-effect) model.
 ///
 /// Host languages fill this from formula/`f()` metadata. No R/Python types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructuredEffect {
     pub model: String,
     pub n: usize,
     pub scale_model: bool,
     pub theta_len: usize,
-    /// Season length, FGN order, or ±nrow for `rw2d`/`matern2d` (negative ⇒ cyclic).
+    /// AR(p) order or FGN mixture order. Not used for lattice size or season length.
     pub order: i32,
+    /// Seasonal period; `0` means the model default (4).
+    pub season: usize,
     pub adj: Option<Vec<Vec<usize>>>,
     pub positions: Option<Vec<f64>>,
     pub crw2_layout: String,
@@ -63,6 +65,7 @@ impl StructuredEffect {
             scale_model: false,
             theta_len,
             order: 0,
+            season: 0,
             adj: None,
             positions: None,
             crw2_layout: "simple".into(),
@@ -80,6 +83,16 @@ impl StructuredEffect {
 
     pub fn model_key(&self) -> String {
         self.model.to_ascii_lowercase()
+    }
+
+    fn season_len(&self) -> usize {
+        if self.season > 0 {
+            self.season
+        } else if self.order > 0 {
+            self.order as usize
+        } else {
+            4
+        }
     }
 }
 
@@ -128,7 +141,7 @@ fn rw1_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, S
 fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<CscMatrix, String> {
     let typ = effect.model_key();
     let n_e = effect.n;
-    match typ.as_str() {
+    let q = match typ.as_str() {
         "fixed" => identity_csc(n_e, fixed_prec),
         "copy" => identity_csc(n_e, COPY_PRECISION),
         "iid" => {
@@ -210,11 +223,7 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
         }
         "seasonal" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
-            let season = if effect.order > 0 {
-                effect.order as usize
-            } else {
-                4
-            };
+            let season = effect.season_len();
             let q0 = maybe_scale(
                 seasonal_precision_csc(n_e, season, 1.0, true)?,
                 effect.scale_model,
@@ -314,10 +323,10 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
                 apply_tau(&q0, tau)
             } else {
                 if th.len() < 2 {
-                    return Err("fgn needs [log_tau, logit_H]".into());
+                    return Err("fgn needs [log_tau, H_intern]".into());
                 }
                 let tau = th[0].exp();
-                let hurst = 1.0 / (1.0 + (-th[1]).exp());
+                let hurst = fgn_hurst_from_intern(th[1]);
                 let q0 = maybe_scale(fgn_precision_csc(n_e, hurst, 1.0)?, effect.scale_model)?;
                 apply_tau(&q0, tau)
             }
@@ -327,7 +336,16 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
             iidkd_precision_csc(n_e, d, th)
         }
         other => Err(format!("unsupported effect type: {other}")),
+    }?;
+    if q.rows() != n_e || q.cols() != n_e {
+        return Err(format!(
+            "effect {}: Q is {}x{}, expected {n_e}x{n_e}",
+            typ,
+            q.rows(),
+            q.cols()
+        ));
     }
+    Ok(q)
 }
 
 fn effect_block(
@@ -383,7 +401,18 @@ fn effect_block(
     let q_group = one_block(&group, &th[main_meta.theta_len..], fixed_prec)?;
 
     // Latent order is group-major with the main index varying fastest.
-    Ok(kronecker_csc(&q_group, &q_main))
+    let q = kronecker_csc(&q_group, &q_main);
+    if q.rows() != effect.n || q.cols() != effect.n {
+        return Err(format!(
+            "grouped effect {}: Q is {}x{}, expected {}x{}",
+            effect.model_key(),
+            q.rows(),
+            q.cols(),
+            effect.n,
+            effect.n
+        ));
+    }
+    Ok(q)
 }
 
 fn rw2d_dims(effect: &StructuredEffect) -> Result<(usize, usize, bool), String> {
@@ -866,7 +895,7 @@ pub fn structured_constraints(
             continue;
         }
         if typ == "seasonal" {
-            let season = usize::try_from(effect.order.max(2)).unwrap_or(4);
+            let season = effect.season_len().max(2);
             let block = seasonal_constraint(n_e, season.min(n_e))?;
             let embedded = block.embed(full_n, offset)?;
             stacked = Some(match stacked {
@@ -953,7 +982,7 @@ mod tests {
             "bym" => {
                 effect.adj = Some(vec![vec![1], vec![0, 2], vec![1, 3], vec![2]]);
             }
-            "seasonal" => effect.order = 4,
+            "seasonal" => effect.season = 4,
             "crw1" | "crw2" => {
                 effect.positions = Some((0..n).map(|i| i as f64).collect());
             }
@@ -1076,7 +1105,7 @@ mod tests {
         let season = 4usize;
         let n = 24usize;
         let mut effect = StructuredEffect::simple("seasonal", n, 1);
-        effect.order = season as i32;
+        effect.season = season;
 
         let c = structured_constraints(&[effect.clone()]).unwrap().unwrap();
         assert_eq!(c.k, season - 1);
@@ -1230,5 +1259,15 @@ mod tests {
         assert_eq!(structured_prior_stack(&effects).unwrap().theta_dim(), 2);
         // copy has no hard constraints
         assert!(structured_constraints(&effects).unwrap().is_none());
+    }
+
+    #[test]
+    fn q_block_must_match_declared_latent_size() {
+        let mut effect = StructuredEffect::simple("rw2d", 8, 1);
+        effect.nrow = 3;
+        effect.ncol = 3;
+        let err =
+            build_structured_precision(std::slice::from_ref(&effect), &[0.0], 1e-4).unwrap_err();
+        assert!(err.contains("Q is") || err.contains("expected"), "{err}");
     }
 }

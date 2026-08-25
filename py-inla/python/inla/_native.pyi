@@ -123,6 +123,9 @@ def run_inla_inference(
     constraints_e: list[float] | None = None,
     deterministic: bool = False,
     gaussian_free_prec: bool = False,
+    dic: bool = True,
+    waic: bool = True,
+    cpo: bool = True,
 ) -> PyInferenceResult: ...
 def run_gaussian_ar1_plan(
     y: list[float],

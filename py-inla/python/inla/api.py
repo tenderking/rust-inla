@@ -155,6 +155,8 @@ def _to_natural(tag: str, theta: float) -> float:
         return float(2.0 / (1.0 + np.exp(-theta)) - 1.0)
     if tag == "phi":
         return float(1.0 / (1.0 + np.exp(-theta)))
+    if tag == "hurst":
+        return float(0.5 + 0.5 / (1.0 + np.exp(-theta)))
     return float(theta)
 
 
@@ -170,6 +172,9 @@ def _natural_sd(tag: str, theta_mean: float, theta_sd: float) -> float:
     if tag == "phi":
         p = _to_natural(tag, theta_mean)
         return float(p * (1.0 - p) * theta_sd)
+    if tag == "hurst":
+        h = _to_natural(tag, theta_mean)
+        return float(2.0 * (h - 0.5) * (1.0 - h) * theta_sd)
     return float(theta_sd)
 
 
@@ -1609,19 +1614,13 @@ def _fit(
     def _structured_effect_dicts() -> list[dict]:
         out = []
         for ei, typ in enumerate(types):
-            order_enc = int(orders[ei])
-            if typ in ("rw2d", "matern2d"):
-                # Match R: ±nrow (negative ⇒ cyclic)
-                nrow_i = int(nrows[ei])
-                order_enc = -nrow_i if cyclics[ei] else nrow_i
-            elif typ == "seasonal":
-                order_enc = int(seasons_list[ei])
             d = {
                 "model": typ,
                 "n": int(ns[ei]),
                 "theta_len": int(theta_lens[ei]),
                 "scale_model": bool(effect_scale[ei]),
-                "order": order_enc,
+                "order": int(orders[ei]),
+                "season": int(seasons_list[ei]),
                 "nrow": int(nrows[ei]),
                 "ncol": int(ncols[ei]),
                 "cyclic": bool(cyclics[ei]),
@@ -1819,6 +1818,9 @@ def _fit(
         constraints_e=constraints_e,
         deterministic=bool(deterministic),
         gaussian_free_prec=bool(family_free_prec),
+        dic=bool(controls["dic"]),
+        waic=bool(controls["waic"]),
+        cpo=bool(controls["cpo"]),
     )
 
     # Attach R-like summary slices (Gaussian interim) via a thin wrapper
@@ -1951,7 +1953,7 @@ def _natural_hyperpar_table(
         out["sd"][j] = _natural_sd(tag, theta_mean, internal["sd"][j])
         for key in ("mean", "0.025quant", "0.5quant", "0.975quant", "mode"):
             out[key][j] = _to_natural(tag, internal[key][j])
-        if tag in ("exp", "rho", "phi"):
+        if tag in ("exp", "rho", "phi", "hurst"):
             lo, hi = sorted((out["0.025quant"][j], out["0.975quant"][j]))
             out["0.025quant"][j], out["0.975quant"][j] = lo, hi
     out["names"] = list(labels)

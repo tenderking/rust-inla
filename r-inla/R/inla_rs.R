@@ -321,7 +321,14 @@ inla_rs_run_inla_structured <- function(
     deterministic = FALSE,
     gaussian_free_prec = FALSE,
     family_prior_name = "loggamma",
-    family_prior_param = c(1.0, 5e-5)) {
+    family_prior_param = c(1.0, 5e-5),
+    effect_nrow = integer(0),
+    effect_ncol = integer(0),
+    effect_cyclic = integer(0),
+    effect_season = integer(0),
+    dic = TRUE,
+    waic = TRUE,
+    cpo = TRUE) {
   .Call(
     "wrap__inla_rs_run_inla_structured",
     as.numeric(initial_theta),
@@ -363,7 +370,14 @@ inla_rs_run_inla_structured <- function(
     as.logical(deterministic),
     as.logical(gaussian_free_prec),
     as.character(family_prior_name),
-    as.numeric(family_prior_param)
+    as.numeric(family_prior_param),
+    as.integer(effect_nrow),
+    as.integer(effect_ncol),
+    as.integer(effect_cyclic),
+    as.integer(effect_season),
+    as.logical(dic),
+    as.logical(waic),
+    as.logical(cpo)
   )
 }
 
@@ -743,6 +757,9 @@ inla_rs <- function(
   step_or_f0 <- .controls$step_or_f0
   fixed_prec <- .controls$fixed_prec
   deterministic <- .controls$deterministic
+  dic <- isTRUE(.controls$dic)
+  waic <- isTRUE(.controls$waic)
+  cpo <- isTRUE(.controls$cpo)
 
   supported <- c(
     "gaussian", "poisson", "binomial", "nbinomial", "negative_binomial", "negbin",
@@ -928,6 +945,10 @@ inla_rs <- function(
   adj_lists <- list()
   effect_ids <- list()
   effect_positions <- list()
+  effect_nrow <- integer(0)
+  effect_ncol <- integer(0)
+  effect_cyclic <- integer(0)
+  effect_season <- integer(0)
   prior_names <- character(0)
   prior_params <- list()
   theta <- numeric(0)
@@ -956,6 +977,35 @@ inla_rs <- function(
     stop("weights must be 1, a column name, or a length-n numeric vector", call. = FALSE)
   }
 
+  p <- ncol(X)
+  if (p > 0L) {
+    for (j in seq_len(p)) {
+      rows <- which(X[, j] != 0)
+      if (length(rows)) {
+        add_triplets(rows - 1L, rep(col_off + j - 1L, length(rows)), X[rows, j])
+      }
+    }
+    effect_types <- "fixed"
+    effect_ns <- as.integer(p)
+    effect_scales <- 0L
+    effect_theta_lens <- 0L
+    effect_orders <- 0L
+    effect_copy_of <- -1L
+    effect_n_main <- 0L
+    effect_group_models <- ""
+    effect_group_ns <- 0L
+    effect_group_scales <- 0L
+    effect_nrow <- 0L
+    effect_ncol <- 0L
+    effect_cyclic <- 0L
+    effect_season <- 0L
+    adj_lists[[1L]] <- list()
+    effect_ids[[1L]] <- colnames(X)
+    effect_positions[[1L]] <- numeric(0)
+    effect_names_acc <- "fixed"
+    col_off <- as.integer(p)
+  }
+
   for (fs in f_structs) {
     model <- if (!is.null(fs$args$copy)) "copy" else tolower(fs$model)
     supported <- .inla_rs_supported_f_models()
@@ -981,6 +1031,10 @@ inla_rs <- function(
 
     order <- fs$order
     if (is.na(order) || is.null(order)) order <- 0L
+    nrow_i <- 0L
+    ncol_i <- 0L
+    cyclic_i <- 0L
+    season_i <- 0L
     group_model <- NULL
     group_scale <- FALSE
     if (!is.null(fs$group)) {
@@ -1021,13 +1075,12 @@ inla_rs <- function(
       zcol <- group_col * n_main + main_col
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, weight_vec(fs$args$weights))
       graph <- NULL
-      order_enc <- if (identical(model, "seasonal")) {
+      order_enc <- as.integer(order)
+      if (identical(model, "seasonal")) {
         s <- fs$args$season
         if (is.null(s)) s <- fs$args$s
         if (is.null(s)) s <- if (order > 0L) order else 4L
-        as.integer(s)[1]
-      } else {
-        as.integer(order)
+        season_i <- as.integer(s)[1]
       }
       effect_ids[[length(effect_ids) + 1L]] <- main_levels
     } else if (identical(model, "copy")) {
@@ -1073,6 +1126,9 @@ inla_rs <- function(
         stop("rw2d requires nrow= and ncol= (>=3)", call. = FALSE)
       }
       n_e <- as.integer(nrow * ncol)
+      nrow_i <- as.integer(nrow)
+      ncol_i <- as.integer(ncol)
+      cyclic_i <- if (isTRUE(fs$args$cyclic)) 1L else 0L
       zcol <- as.integer(idx)
       if (min(zcol) >= 1L) zcol <- zcol - 1L
       if (any(zcol < 0L | zcol >= n_e)) {
@@ -1080,7 +1136,7 @@ inla_rs <- function(
       }
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, rep(1.0, n_obs))
       graph <- NULL
-      order_enc <- if (isTRUE(fs$args$cyclic)) -as.integer(nrow) else as.integer(nrow)
+      order_enc <- as.integer(order)
       effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
     } else if (model %in% c("besag", "bym", "bym2")) {
       graph <- fs$graph
@@ -1151,14 +1207,12 @@ inla_rs <- function(
       zcol <- match(idx, lev) - 1L
       add_triplets(seq_len(n_obs) - 1L, col_off + zcol, weight_vec(fs$args$weights))
       graph <- NULL
-      order_enc <- if (identical(model, "seasonal")) {
-        # Rust reads the season length out of `order` for seasonal blocks.
+      order_enc <- as.integer(order)
+      if (identical(model, "seasonal")) {
         s <- fs$args$season
         if (is.null(s)) s <- fs$args$s
         if (is.null(s)) s <- if (order > 0L) order else 4L
-        as.integer(s)[1]
-      } else {
-        as.integer(order)
+        season_i <- as.integer(s)[1]
       }
       effect_ids[[length(effect_ids) + 1L]] <- lev
     }
@@ -1177,6 +1231,10 @@ inla_rs <- function(
     tlen <- .inla_rs_effect_theta_len(model, order, group_model)
     effect_theta_lens <- c(effect_theta_lens, tlen)
     effect_orders <- c(effect_orders, as.integer(order_enc))
+    effect_nrow <- c(effect_nrow, as.integer(nrow_i))
+    effect_ncol <- c(effect_ncol, as.integer(ncol_i))
+    effect_cyclic <- c(effect_cyclic, as.integer(cyclic_i))
+    effect_season <- c(effect_season, as.integer(season_i))
     prior_spec <- .inla_rs_effect_priors(fs, model, order, group_model)
     prior_names <- c(prior_names, prior_spec$names)
     prior_params <- c(prior_params, prior_spec$params)
@@ -1208,31 +1266,6 @@ inla_rs <- function(
       }
     }
     col_off <- col_off + n_e
-  }
-
-  # Fixed effects block
-  p <- ncol(X)
-  if (p > 0L) {
-    for (j in seq_len(p)) {
-      rows <- which(X[, j] != 0)
-      if (length(rows)) {
-        add_triplets(rows - 1L, rep(col_off + j - 1L, length(rows)), X[rows, j])
-      }
-    }
-    effect_types <- c(effect_types, "fixed")
-    effect_ns <- c(effect_ns, as.integer(p))
-    effect_scales <- c(effect_scales, 0L)
-    effect_theta_lens <- c(effect_theta_lens, 0L)
-    effect_orders <- c(effect_orders, 0L)
-    effect_copy_of <- c(effect_copy_of, -1L)
-    effect_n_main <- c(effect_n_main, 0L)
-    effect_group_models <- c(effect_group_models, "")
-    effect_group_ns <- c(effect_group_ns, 0L)
-    effect_group_scales <- c(effect_group_scales, 0L)
-    adj_lists[[length(adj_lists) + 1L]] <- list()
-    effect_ids[[length(effect_ids) + 1L]] <- colnames(X)
-    effect_positions[[length(effect_positions) + 1L]] <- numeric(0)
-    col_off <- col_off + p
   }
 
   if (length(effect_types) == 0L) {
@@ -1289,7 +1322,14 @@ inla_rs <- function(
     deterministic = deterministic,
     gaussian_free_prec = family_free_prec,
     family_prior_name = family_prior_name,
-    family_prior_param = family_prior_param
+    family_prior_param = family_prior_param,
+    effect_nrow = effect_nrow,
+    effect_ncol = effect_ncol,
+    effect_cyclic = effect_cyclic,
+    effect_season = effect_season,
+    dic = dic,
+    waic = waic,
+    cpo = cpo
   )
 
   .inla_rs_attach_summaries(
@@ -1298,12 +1338,12 @@ inla_rs <- function(
     effect_ns = effect_ns,
     effect_orders = effect_orders,
     effect_names = {
-      nm <- character(length(f_structs))
-      for (i in seq_along(f_structs)) {
-        nm[i] <- f_structs[[i]]$name
-      }
+      nm <- character(0)
       if (p > 0L) {
-        nm <- c(nm, colnames(X))
+        nm <- c(nm, "fixed")
+      }
+      for (i in seq_along(f_structs)) {
+        nm <- c(nm, f_structs[[i]]$name)
       }
       nm
     },
@@ -1359,6 +1399,7 @@ inla_rs <- function(
       "exp" = exp(x),
       "rho" = 2 / (1 + exp(-x)) - 1,
       "phi" = 1 / (1 + exp(-x)),
+      "hurst" = 0.5 + 0.5 / (1 + exp(-x)),
       x
     )
   }
@@ -1377,11 +1418,14 @@ inla_rs <- function(
   } else if (kind == "phi" && is.finite(stats[["sd"]])) {
     p <- out["mean"]
     out["sd"] <- p * (1 - p) * stats[["sd"]]
+  } else if (kind == "hurst" && is.finite(stats[["sd"]])) {
+    h <- out["mean"]
+    out["sd"] <- 2 * (h - 0.5) * (1 - h) * stats[["sd"]]
   } else {
     out["sd"] <- stats[["sd"]]
   }
   # Keep quantile order after monotonic transforms
-  if (kind %in% c("exp", "rho", "phi")) {
+  if (kind %in% c("exp", "rho", "phi", "hurst")) {
     qs <- sort(c(out["q025"], out["q975"]))
     out["q025"] <- qs[1]
     out["q975"] <- qs[2]
@@ -1557,19 +1601,13 @@ inla_rs <- function(
   )
   # Convenience: map FGN internal θ → Hurst when a single FGN block is present.
   fgn_i <- which(effect_types == "fgn")
-  if (length(fgn_i) == 1L && length(mode) >= 2L) {
-    ord <- if (!is.null(effect_orders) && length(effect_orders) >= fgn_i) {
-      as.integer(effect_orders[fgn_i])
-    } else {
-      0L
-    }
-    hi <- mode[2]
-    out$hurst <- if (ord %in% c(3L, 4L)) {
-      # R-INLA approx: H ∈ (1/2, 1)
+  if (length(fgn_i) == 1L) {
+    off <- if (isTRUE(family_free_prec)) 1L else 0L
+    hi <- as.numeric(mode[off + 2L])
+    out$hurst <- if (length(hi) == 1L && is.finite(hi)) {
       0.5 + 0.5 / (1.0 + exp(-hi))
     } else {
-      # Exact dense FGN: H ∈ (0, 1) via logistic
-      1.0 / (1.0 + exp(-hi))
+      NA_real_
     }
   } else {
     out$hurst <- NA_real_

@@ -425,7 +425,7 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 /// step_or_f0 : float, optional
 ///     Integration step size or f0 design parameter (default 1.0).
 #[pyfunction(name = "run_inla_inference")]
-#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false, gaussian_free_prec=false))]
+#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false, gaussian_free_prec=false, dic=true, waic=true, cpo=true))]
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
@@ -442,6 +442,9 @@ fn run_inla_inference_py(
     constraints_e: Option<Vec<f64>>,
     deterministic: bool,
     gaussian_free_prec: bool,
+    dic: bool,
+    waic: bool,
+    cpo: bool,
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
@@ -586,6 +589,16 @@ fn run_inla_inference_py(
         })
     };
 
+    let compute = inla_core::ComputeOptions {
+        strategy: strategy.to_string(),
+        step_or_f0,
+        deterministic,
+        dic,
+        waic,
+        cpo,
+        ..inla_core::ComputeOptions::default()
+    };
+
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
     let result = py.detach(|| {
         inla_core::run_inla_inference_a_cancellable(
@@ -608,6 +621,7 @@ fn run_inla_inference_py(
             } else {
                 None
             },
+            Some(&compute),
         )
     });
 
@@ -856,6 +870,11 @@ fn parse_structured_effects(
             .map(|v| v.extract())
             .transpose()?
             .unwrap_or(0);
+        let season: usize = d
+            .get_item("season")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
         let nrow: usize = d
             .get_item("nrow")?
             .map(|v| v.extract())
@@ -910,6 +929,7 @@ fn parse_structured_effects(
             scale_model,
             theta_len,
             order,
+            season,
             adj,
             positions,
             crw2_layout,
@@ -959,6 +979,7 @@ fn run_gaussian_ar1_plan(
         computation: inla_core::ComputationSpec {
             strategy: Some(strategy.to_string()),
             step_or_f0: Some(step_or_f0),
+            ..Default::default()
         },
         initial_theta,
     };
