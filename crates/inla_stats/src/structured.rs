@@ -23,7 +23,8 @@ use crate::latent_models::{
     seasonal_precision_csc,
 };
 use crate::matern2d::matern2d_precision_csc;
-use crate::priors::{HyperPriorStack, PriorSpec};
+use crate::priors::HyperPriorStack;
+use crate::registry::{SUPPORTED_MODELS, model_metadata};
 use crate::rw2d::rw2d_precision_csc;
 
 /// One latent block in a structured (multi-effect) model.
@@ -326,6 +327,23 @@ pub fn build_structured_precision(
     theta: &[f64],
     fixed_prec: f64,
 ) -> Result<CscMatrix, String> {
+    for effect in effects {
+        let model = effect.model_key();
+        if !SUPPORTED_MODELS.contains(&model.as_str()) {
+            return Err(format!(
+                "effect {model}: model is not executable by the shared structured path"
+            ));
+        }
+        let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
+        let meta = model_metadata(&model, order, None, effect.cyclic)?;
+        let allows_fixed_copy = model == "copy" && effect.theta_len == 0;
+        if !allows_fixed_copy && effect.theta_len != meta.theta_len {
+            return Err(format!(
+                "effect {model}: declared theta_len {} != registry theta_len {}",
+                effect.theta_len, meta.theta_len
+            ));
+        }
+    }
     let expected: usize = effects.iter().map(|e| e.theta_len).sum();
     if theta.len() != expected {
         return Err(format!(
@@ -422,20 +440,30 @@ fn apply_copy_couplings(
     add_csc(&q, &extra_q)
 }
 
-/// Default hyperprior stack (skips `fixed` blocks).
-pub fn structured_prior_stack(effects: &[StructuredEffect]) -> HyperPriorStack {
+/// Default hyperprior stack, validated against each effect's declared θ block.
+pub fn structured_prior_stack(effects: &[StructuredEffect]) -> Result<HyperPriorStack, String> {
     let mut priors = Vec::new();
     for effect in effects {
         let m = effect.model_key();
-        if m == "fixed" {
+        if m == "fixed" || (m == "copy" && effect.theta_len == 0) {
             continue;
         }
-        match HyperPriorStack::default_for_effect(&m) {
-            Ok(s) => priors.extend(s.priors),
-            Err(_) => priors.push(PriorSpec::gaussian(0.0, 0.1)),
+        let order = if matches!(m.as_str(), "ar" | "arp") {
+            usize::try_from(effect.order.max(0)).unwrap_or(0)
+        } else {
+            0
+        };
+        let stack = HyperPriorStack::default_for_effect_order(&m, order)?;
+        if stack.theta_dim() != effect.theta_len {
+            return Err(format!(
+                "effect {m}: prior theta dimension {} != declared theta_len {}",
+                stack.theta_dim(),
+                effect.theta_len
+            ));
         }
+        priors.extend(stack.priors);
     }
-    HyperPriorStack::new(priors)
+    Ok(HyperPriorStack::new(priors))
 }
 
 /// Hard linear constraints for intrinsic / BYM / rw2d blocks.
@@ -514,6 +542,79 @@ pub fn structured_constraints(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::{SUPPORTED_MODELS, model_metadata};
+
+    fn representative_effect(model: &str) -> StructuredEffect {
+        let order = if matches!(model, "ar" | "arp") { 2 } else { 0 };
+        let meta = model_metadata(model, order, None, false).unwrap();
+        let n = match model {
+            "rw2d" | "matern2d" => 9,
+            "bym" => 8,
+            "iid2d" => 8,
+            "iid3d" => 9,
+            "iid4d" => 8,
+            "iid5d" => 10,
+            _ => 8,
+        };
+        let mut effect = StructuredEffect::simple(model, n, meta.theta_len);
+        effect.order = order as i32;
+        match model {
+            "rw2d" | "matern2d" => {
+                effect.nrow = 3;
+                effect.ncol = 3;
+            }
+            "besag" | "bym2" => {
+                effect.adj = Some(vec![vec![1], vec![0, 2], vec![1, 3], vec![2]]);
+                effect.n = 4;
+            }
+            "bym" => {
+                effect.adj = Some(vec![vec![1], vec![0, 2], vec![1, 3], vec![2]]);
+            }
+            "seasonal" => effect.order = 4,
+            "crw1" | "crw2" => {
+                effect.positions = Some((0..n).map(|i| i as f64).collect());
+            }
+            _ => {}
+        }
+        effect
+    }
+
+    #[test]
+    fn every_advertised_structured_model_has_a_complete_contract() {
+        for model in SUPPORTED_MODELS {
+            if *model == "copy" {
+                continue;
+            }
+            let effect = representative_effect(model);
+            let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
+            let meta = model_metadata(model, order, None, effect.cyclic).unwrap();
+            let stack = structured_prior_stack(std::slice::from_ref(&effect))
+                .unwrap_or_else(|e| panic!("model {model}: prior contract: {e}"));
+            assert_eq!(stack.theta_dim(), meta.theta_len, "model {model}");
+            let q = build_structured_precision(
+                std::slice::from_ref(&effect),
+                &meta.default_theta,
+                1e-4,
+            )
+            .unwrap_or_else(|e| panic!("model {model}: Q contract: {e}"));
+            assert_eq!(q.rows(), effect.n, "model {model}: Q rows");
+            assert_eq!(q.cols(), effect.n, "model {model}: Q cols");
+            assert!(
+                q.data().iter().all(|v| v.is_finite()),
+                "model {model}: non-finite Q"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_metadata_only_models_are_rejected_by_structured_path() {
+        for model in ["besag2", "spde", "rgeneric"] {
+            let meta = model_metadata(model, 0, None, false).unwrap();
+            let effect = StructuredEffect::simple(model, 8, meta.theta_len);
+            let err = build_structured_precision(&[effect], &meta.default_theta, 1e-4).unwrap_err();
+            assert!(err.contains("not executable"), "model {model}: {err}");
+        }
+    }
 
     #[test]
     fn ar1_block_precision_finite() {
@@ -540,7 +641,7 @@ mod tests {
         assert_eq!(q.rows(), 8);
         // 4 units × 2×2 block, uncorrelated ⇒ 8 diagonal entries
         assert_eq!(q.nnz(), 8);
-        let stack = structured_prior_stack(&effects);
+        let stack = structured_prior_stack(&effects).unwrap();
         assert_eq!(stack.theta_dim(), 3);
         assert!(stack.log_density(&[0.0, 0.0, 0.0]).unwrap().is_finite());
     }
@@ -655,6 +756,7 @@ mod tests {
         assert!((dense[[3, 3]] - tau).abs() < 1e-6);
         assert!((dense[[0, 3]] + tau * beta).abs() < 1e-6);
         assert!((dense[[3, 0]] + tau * beta).abs() < 1e-6);
+        assert_eq!(structured_prior_stack(&effects).unwrap().theta_dim(), 2);
         // copy has no hard constraints
         assert!(structured_constraints(&effects).unwrap().is_none());
     }

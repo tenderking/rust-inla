@@ -863,7 +863,7 @@ fn iid2d_stacked_bivariate_gaussian() {
         y[m + i] = z1;
     }
     let effects = [StructuredEffect::simple("iid2d", n, 3)];
-    let stack = inla_stats::structured_prior_stack(&effects);
+    let stack = inla_stats::structured_prior_stack(&effects).expect("iid2d prior stack");
     let build_prior = move |theta: &[f64]| build_structured_precision(&effects, theta, 1e-4);
     let log_prior = move |theta: &[f64]| stack.log_density(theta).unwrap_or(f64::NEG_INFINITY);
     let obs = gaussian_obs(&y, 100.0);

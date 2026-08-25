@@ -335,10 +335,8 @@ fn inla_rs_run_inla_inference(
         k => Some(inla_core::sum_to_zero_constraint(n_latent, k).map_err(Error::Other)?),
     };
 
-    let prior_stack = match inla_core::HyperPriorStack::default_for_effect(&model_type_str) {
-        Ok(s) => s,
-        Err(_) => inla_core::HyperPriorStack::new(vec![inla_core::PriorSpec::gaussian(0.0, 0.1)]),
-    };
+    let prior_stack =
+        inla_core::HyperPriorStack::default_for_effect(&model_type_str).map_err(Error::Other)?;
     let log_prior_density =
         move |theta: &[f64]| -> f64 { prior_stack.log_density(theta).unwrap_or(f64::NEG_INFINITY) };
 
@@ -422,6 +420,8 @@ fn inla_rs_run_inla_structured(
     effect_copy_of: Vec<i32>,
     adj_lists: List,
     effect_positions: List,
+    prior_names: Vec<String>,
+    prior_params: List,
     fixed_prec: f64,
     exposure: Vec<f64>,
     ntrials: Vec<f64>,
@@ -434,6 +434,8 @@ fn inla_rs_run_inla_structured(
     shape: f64,
     deterministic: bool,
     gaussian_free_prec: bool,
+    family_prior_name: &str,
+    family_prior_param: Vec<f64>,
 ) -> std::result::Result<List, Error> {
     let n_obs = y_obs.len();
     let a_nrow_u = usize::try_from(a_nrow).map_err(|_| Error::Other("a_nrow".into()))?;
@@ -461,6 +463,11 @@ fn inla_rs_run_inla_structured(
     if effect_positions.len() != effect_types.len() {
         return Err(Error::Other(
             "effect_positions length must match number of effects".to_string(),
+        ));
+    }
+    if prior_params.len() != prior_names.len() {
+        return Err(Error::Other(
+            "prior_params length must match prior_names".to_string(),
         ));
     }
 
@@ -585,8 +592,36 @@ fn inla_rs_run_inla_structured(
     };
 
     let log_prior_density = {
-        let stack = inla_core::structured_prior_stack(&effects);
-        let fam_prior = inla_core::PriorSpec::loggamma(1.0, 5e-5);
+        let stack = if prior_names.is_empty() {
+            inla_core::structured_prior_stack(&effects).map_err(Error::Other)?
+        } else {
+            let mut params = Vec::with_capacity(prior_names.len());
+            for (i, item) in prior_params.values().enumerate() {
+                let values = item.as_real_vector().ok_or_else(|| {
+                    Error::Other(format!("prior_params[[{}]] must be numeric", i + 1))
+                })?;
+                params.push(values.to_vec());
+            }
+            let stack = inla_core::HyperPriorStack::from_names_params(&prior_names, &params)
+                .map_err(Error::Other)?;
+            let latent_theta_len: usize = effect_theta_lens_u.iter().sum();
+            if stack.theta_dim() != latent_theta_len {
+                return Err(Error::Other(format!(
+                    "prior theta dimension {} != latent theta dimension {latent_theta_len}",
+                    stack.theta_dim()
+                )));
+            }
+            stack
+        };
+        let fam_prior =
+            inla_core::PriorSpec::from_name_params(family_prior_name, &family_prior_param)
+                .map_err(Error::Other)?;
+        if fam_prior.theta_dim() != 1 {
+            return Err(Error::Other(format!(
+                "Gaussian family precision prior '{}' must consume one theta coordinate",
+                family_prior_name
+            )));
+        }
         move |theta: &[f64]| -> f64 {
             if gaussian_free_prec {
                 if theta.is_empty() {

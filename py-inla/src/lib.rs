@@ -1398,9 +1398,10 @@ fn hyper_prior_stack_log_density(
 
 /// Default `(prior_name, param)` list for an effect model (`besag`, `ar1`, …).
 #[pyfunction]
-fn default_hyper_priors(model: &str) -> PyResult<Vec<(String, Vec<f64>)>> {
-    let stack =
-        inla_core::HyperPriorStack::default_for_effect(model).map_err(PyValueError::new_err)?;
+#[pyo3(signature = (model, order=0))]
+fn default_hyper_priors(model: &str, order: usize) -> PyResult<Vec<(String, Vec<f64>)>> {
+    let stack = inla_core::HyperPriorStack::default_for_effect_order(model, order)
+        .map_err(PyValueError::new_err)?;
     Ok(stack.to_names_params())
 }
 

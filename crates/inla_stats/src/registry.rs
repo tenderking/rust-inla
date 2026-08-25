@@ -9,11 +9,21 @@
 use crate::plan::HyperTransformKind;
 use crate::priors::{HyperPriorStack, PriorSpec};
 
-/// Latent models understood by the structured/formula paths.
-pub const SUPPORTED_MODELS: &[&str] = &[
+/// Latent models with registry metadata.
+pub const REGISTERED_MODELS: &[&str] = &[
     "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "besag2", "bym", "bym2", "fgn",
     "seasonal", "crw1", "crw2", "matern2d", "spde", "fixed", "rgeneric", "copy", "iid2d", "iid3d",
     "iid4d", "iid5d",
+];
+
+/// Latent models executable by the shared structured/formula path.
+///
+/// SPDE and host callbacks use dedicated paths until they can be represented by
+/// [`crate::structured::StructuredEffect`]. `besag2` remains metadata-only until
+/// its Q implementation is available.
+pub const SUPPORTED_MODELS: &[&str] = &[
+    "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "bym", "bym2", "fgn", "seasonal",
+    "crw1", "crw2", "matern2d", "fixed", "copy", "iid2d", "iid3d", "iid4d", "iid5d",
 ];
 
 /// Group (`control.group`) models understood by the Kronecker path.
@@ -216,7 +226,7 @@ pub fn model_metadata(
         other => return Err(format!("unknown latent model '{other}'")),
     }
 
-    let mut default_priors: Vec<(String, Vec<f64>)> = default_prior_pairs(&m);
+    let mut default_priors: Vec<(String, Vec<f64>)> = default_prior_pairs(&m, order)?;
 
     if let Some(g) = group_model.filter(|g| !g.trim().is_empty()) {
         let gm = g.trim().to_ascii_lowercase();
@@ -244,7 +254,7 @@ pub fn model_metadata(
             }
             other => return Err(format!("unsupported control.group model '{other}'")),
         }
-        default_priors.extend(default_prior_pairs(&gm));
+        default_priors.extend(default_prior_pairs(&gm, 0)?);
     }
 
     // `order` carries the season length for seasonal models.
@@ -283,11 +293,13 @@ pub fn rank_deficiency(model: &str, cyclic: bool) -> usize {
     inla_math::model_rank_deficiency(&m)
 }
 
-fn default_prior_pairs(model: &str) -> Vec<(String, Vec<f64>)> {
-    match HyperPriorStack::default_for_effect(model) {
-        Ok(stack) => stack.priors.iter().map(prior_to_pair).collect(),
-        Err(_) => Vec::new(),
+fn default_prior_pairs(model: &str, order: usize) -> Result<Vec<(String, Vec<f64>)>, String> {
+    if model == "rgeneric" {
+        // Host callbacks own their prior and declare only their θ dimension here.
+        return Ok(Vec::new());
     }
+    let stack = HyperPriorStack::default_for_effect_order(model, order)?;
+    Ok(stack.priors.iter().map(prior_to_pair).collect())
 }
 
 fn prior_to_pair(p: &PriorSpec) -> (String, Vec<f64>) {
@@ -311,7 +323,7 @@ mod tests {
 
     #[test]
     fn theta_len_matches_default_theta_for_all_models() {
-        for m in SUPPORTED_MODELS {
+        for m in REGISTERED_MODELS {
             let order = if *m == "ar" || *m == "arp" { 2 } else { 0 };
             let meta = model_metadata(m, order, None, false).unwrap();
             assert_eq!(
@@ -322,6 +334,25 @@ mod tests {
                 meta.default_theta.len()
             );
             assert_eq!(meta.theta_len, meta.hyper.len(), "model {m}: hyper len");
+            if *m != "rgeneric" {
+                let names = meta
+                    .default_priors
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>();
+                let params = meta
+                    .default_priors
+                    .iter()
+                    .map(|(_, param)| param.clone())
+                    .collect::<Vec<_>>();
+                let stack = HyperPriorStack::from_names_params(&names, &params)
+                    .unwrap_or_else(|e| panic!("model {m}: invalid default prior stack: {e}"));
+                assert_eq!(
+                    meta.theta_len,
+                    stack.theta_dim(),
+                    "model {m}: prior theta dimension"
+                );
+            }
         }
     }
 
@@ -338,6 +369,22 @@ mod tests {
         let meta = model_metadata("arp", 3, None, false).unwrap();
         assert_eq!(meta.theta_len, 4);
         assert_eq!(meta.hyper[3].label, "PACF3");
+        let names = meta
+            .default_priors
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        let params = meta
+            .default_priors
+            .iter()
+            .map(|(_, param)| param.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            HyperPriorStack::from_names_params(&names, &params)
+                .unwrap()
+                .theta_dim(),
+            4
+        );
     }
 
     #[test]

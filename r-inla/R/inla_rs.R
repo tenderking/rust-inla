@@ -302,6 +302,8 @@ inla_rs_run_inla_structured <- function(
     effect_copy_of = integer(0),
     adj_lists,
     effect_positions = list(),
+    prior_names = character(0),
+    prior_params = list(),
     fixed_prec = 1e-4,
     E = numeric(0),
     Ntrials = numeric(0),
@@ -313,7 +315,9 @@ inla_rs_run_inla_structured <- function(
     gamma = 1.0,
     shape = 1.0,
     deterministic = FALSE,
-    gaussian_free_prec = FALSE) {
+    gaussian_free_prec = FALSE,
+    family_prior_name = "loggamma",
+    family_prior_param = c(1.0, 5e-5)) {
   .Call(
     "wrap__inla_rs_run_inla_structured",
     as.numeric(initial_theta),
@@ -336,6 +340,8 @@ inla_rs_run_inla_structured <- function(
     as.integer(effect_copy_of),
     adj_lists,
     effect_positions,
+    as.character(prior_names),
+    prior_params,
     as.numeric(fixed_prec),
     as.numeric(E),
     as.numeric(Ntrials),
@@ -347,7 +353,9 @@ inla_rs_run_inla_structured <- function(
     as.numeric(gamma),
     as.numeric(shape),
     as.logical(deterministic),
-    as.logical(gaussian_free_prec)
+    as.logical(gaussian_free_prec),
+    as.character(family_prior_name),
+    as.numeric(family_prior_param)
   )
 }
 
@@ -386,8 +394,8 @@ inla_rs_prior_log_density <- function(name, param = numeric(0), theta) {
   )
 }
 
-inla_rs_default_hyper_priors <- function(model) {
-  .Call("wrap__inla_rs_default_hyper_priors", as.character(model))
+inla_rs_default_hyper_priors <- function(model, order = 0L) {
+  .Call("wrap__inla_rs_default_hyper_priors", as.character(model), as.integer(order))
 }
 
 inla_rs_hyper_prior_stack_log_density <- function(names, params, theta) {
@@ -587,6 +595,60 @@ inla_rs_resolve_compute_options <- function(controls = list()) {
   as.numeric(.inla_rs_model_meta(model, order, group_model)$default_theta)
 }
 
+.inla_rs_match_hyper_slot <- function(key, internals) {
+  norm <- tolower(gsub("[-.]", "_", as.character(key)[1]))
+  exact <- which(tolower(internals) == norm)
+  if (length(exact) == 1L) return(exact)
+  aliases <- switch(
+    norm,
+    prec = grep("precision", tolower(internals), fixed = TRUE),
+    precision = grep("precision", tolower(internals), fixed = TRUE),
+    rho = grep("rho", tolower(internals), fixed = TRUE),
+    phi = grep("phi", tolower(internals), fixed = TRUE),
+    range = grep("range", tolower(internals), fixed = TRUE),
+    integer(0)
+  )
+  if (length(aliases) == 1L) aliases else integer(0)
+}
+
+.inla_rs_effect_priors <- function(fs, model, order = 0L) {
+  meta <- .inla_rs_model_meta(model, order)
+  prior_names <- as.character(meta$prior_names)
+  params <- lapply(meta$prior_params, as.numeric)
+  args <- fs$args
+
+  if (!is.null(args$prior)) {
+    prior_names[1] <- as.character(args$prior)[1]
+    params[[1]] <- if (is.null(args$param)) numeric(0) else as.numeric(args$param)
+    return(list(names = prior_names, params = params))
+  }
+
+  hyper <- args$hyper
+  if (is.null(hyper)) return(list(names = prior_names, params = params))
+  if (!is.list(hyper) || is.null(base::names(hyper))) {
+    stop("f(..., hyper=) must be a named list", call. = FALSE)
+  }
+  internals <- as.character(meta$hyper_internal)
+  if (length(prior_names) != length(internals)) {
+    stop("f(..., hyper=) cannot override slots for joint-prior model '", model,
+         "'; pass prior= and param= for the joint prior", call. = FALSE)
+  }
+  for (key in base::names(hyper)) {
+    value <- hyper[[key]]
+    if (!is.list(value)) {
+      stop("hyper slot '", key, "' must be a list", call. = FALSE)
+    }
+    if (is.null(value$prior) && is.null(value$param)) next
+    slot <- .inla_rs_match_hyper_slot(key, internals)
+    if (length(slot) != 1L) {
+      stop("unknown or ambiguous hyper slot '", key, "' for model '", model, "'", call. = FALSE)
+    }
+    if (!is.null(value$prior)) prior_names[slot] <- as.character(value$prior)[1]
+    if (!is.null(value$param)) params[[slot]] <- as.numeric(value$param)
+  }
+  list(names = prior_names, params = params)
+}
+
 #' Define an R-callback generic latent model (Python ``inla.define`` analogue).
 #'
 #' @param n Latent dimension.
@@ -757,11 +819,15 @@ inla_rs <- function(
   family_free_prec <- FALSE
   initial_log_prec <- 0.0
   prec_fixed <- FALSE
+  family_prior_name <- "loggamma"
+  family_prior_param <- c(1.0, 5e-5)
   if (!is.null(control.family)) {
     prec <- tryCatch(control.family$hyper$prec, error = function(e) NULL)
     if (!is.null(prec)) {
       if (isTRUE(prec$fixed)) prec_fixed <- TRUE
       if (!is.null(prec$initial)) initial_log_prec <- as.numeric(prec$initial)[1]
+      if (!is.null(prec$prior)) family_prior_name <- as.character(prec$prior)[1]
+      if (!is.null(prec$param)) family_prior_param <- as.numeric(prec$param)
     }
   }
   has_f_obs_prec <- FALSE
@@ -785,7 +851,10 @@ inla_rs <- function(
       length(f_structs) == 1L &&
       ncol(X) == 0L &&
       identical(tolower(f_structs[[1]]$model), "ar1") &&
-      is.null(f_structs[[1]]$group)) {
+      is.null(f_structs[[1]]$group) &&
+      is.null(f_structs[[1]]$args$hyper) &&
+      is.null(f_structs[[1]]$args$prior) &&
+      is.null(f_structs[[1]]$args$param)) {
     fs <- f_structs[[1]]
     idx_name <- fs$name
     if (!is.null(data[[idx_name]])) {
@@ -835,6 +904,8 @@ inla_rs <- function(
   adj_lists <- list()
   effect_ids <- list()
   effect_positions <- list()
+  prior_names <- character(0)
+  prior_params <- list()
   theta <- numeric(0)
 
   add_triplets <- function(rows0, cols0, vals) {
@@ -1030,6 +1101,9 @@ inla_rs <- function(
     tlen <- .inla_rs_effect_theta_len(model, order)
     effect_theta_lens <- c(effect_theta_lens, tlen)
     effect_orders <- c(effect_orders, as.integer(order_enc))
+    prior_spec <- .inla_rs_effect_priors(fs, model, order)
+    prior_names <- c(prior_names, prior_spec$names)
+    prior_params <- c(prior_params, prior_spec$params)
     if (model %in% c("besag", "bym", "bym2")) {
       adj_lists[[length(adj_lists) + 1L]] <- graph
     } else {
@@ -1116,6 +1190,8 @@ inla_rs <- function(
     effect_copy_of = effect_copy_of,
     adj_lists = adj_lists,
     effect_positions = effect_positions,
+    prior_names = prior_names,
+    prior_params = prior_params,
     fixed_prec = fixed_prec,
     E = E,
     Ntrials = Ntrials,
@@ -1127,7 +1203,9 @@ inla_rs <- function(
     gamma = gamma,
     shape = shape,
     deterministic = deterministic,
-    gaussian_free_prec = family_free_prec
+    gaussian_free_prec = family_free_prec,
+    family_prior_name = family_prior_name,
+    family_prior_param = family_prior_param
   )
 
   .inla_rs_attach_summaries(

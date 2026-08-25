@@ -312,7 +312,8 @@ res_bym <- inla_rs(
 )
 cat("BYM mode:", paste(round(res_bym$mode, 4), collapse = ", "),
     " n_latent=", length(res_bym$latent_means), "\n", sep = "")
-stopifnot(length(res_bym$mode) == 2L, length(res_bym$latent_means) == 2L * n_reg)
+# Gaussian observation precision is free by default, before BYM's two θ values.
+stopifnot(length(res_bym$mode) == 3L, length(res_bym$latent_means) == 2L * n_reg)
 
 res_bym2 <- inla_rs(
   y ~ -1 + f(region, model = "bym2", graph = adj),
@@ -331,7 +332,7 @@ res_m <- inla_rs(
 )
 cat("matern2d mode:", paste(round(res_m$mode, 4), collapse = ", "),
     " mlik=", round(res_m$marginal_log_lik, 4), "\n", sep = "")
-stopifnot(length(res_m$mode) == 2L, is.finite(res_m$marginal_log_lik))
+stopifnot(length(res_m$mode) == 3L, is.finite(res_m$marginal_log_lik))
 
 cat("\n--- FGN Parameter Estimation Validation ---\n")
 sim_fgn <- function(n, H) {

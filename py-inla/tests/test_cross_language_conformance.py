@@ -82,8 +82,13 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             family="poisson",
             initial_theta=[1.0],
         ),
+        "gaussian_family_pc": fit(
+            "y ~ -1 + f(idx, model='iid')",
+            data,
+            control_family={"hyper": {"prec": {"prior": "pc.prec", "param": [2.0, 0.1]}}},
+        ),
         "ar1_pc": fit(
-            "y ~ -1 + f(idx, model='ar1', obs_precision=25.0, hyper={'prec': {'prior': 'pc.prec', 'param': [1.0, 0.01]}, 'rho': {'prior': 'pc.cor1', 'param': [0.5, 0.75]}})",
+            "y ~ -1 + f(idx, model='ar1', obs_precision=25.0, hyper={'prec': {'prior': 'pc.prec', 'param': [2.0, 0.1]}, 'rho': {'prior': 'pc.cor1', 'param': [0.5, 0.75]}})",
             data,
         ),
         "iid2d": fit(
@@ -108,7 +113,16 @@ def conformance(tmp_path_factory):
     return _run_r(csv_path), _python_fits(data)
 
 
-MODELS = ["ar1", "rw2", "iid", "seasonal", "poisson_iid", "ar1_pc", "iid2d"]
+MODELS = [
+    "ar1",
+    "rw2",
+    "iid",
+    "seasonal",
+    "poisson_iid",
+    "gaussian_family_pc",
+    "ar1_pc",
+    "iid2d",
+]
 
 
 @pytest.mark.parametrize("model", MODELS)

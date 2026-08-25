@@ -15,8 +15,10 @@ fn inla_rs_prior_log_density(
 
 /// Default hyperpriors for an effect model: list(names=..., params=list of numeric vectors).
 #[extendr]
-fn inla_rs_default_hyper_priors(model: &str) -> std::result::Result<List, Error> {
-    let stack = inla_core::HyperPriorStack::default_for_effect(model).map_err(Error::Other)?;
+fn inla_rs_default_hyper_priors(model: &str, order: i32) -> std::result::Result<List, Error> {
+    let order = usize::try_from(order.max(0)).unwrap_or(0);
+    let stack =
+        inla_core::HyperPriorStack::default_for_effect_order(model, order).map_err(Error::Other)?;
     let pairs = stack.to_names_params();
     let names: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
     let mut param_items: Vec<Robj> = Vec::with_capacity(pairs.len());

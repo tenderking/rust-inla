@@ -72,8 +72,8 @@ pub use posterior::{
 };
 pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use registry::{
-    HyperSlotMeta, ModelMeta, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, model_metadata,
-    rank_deficiency,
+    HyperSlotMeta, ModelMeta, REGISTERED_MODELS, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS,
+    model_metadata, rank_deficiency,
 };
 pub use rw2d::rw2d_precision_csc;
 pub use spde::{

@@ -127,6 +127,15 @@ def test_gaussian_family_preserves_initial_and_prior():
     assert hyper["param"] == [1.0, 0.01]
 
 
+def test_fit_rejects_unknown_prior_instead_of_falling_back():
+    data = {"y": np.array([0.1, -0.2, 0.3]), "idx": np.arange(3)}
+    with pytest.raises(ValueError, match="unknown prior"):
+        inla.fit(
+            "y ~ -1 + f(idx, model='iid', prior='not-a-prior', obs_precision=10.0)",
+            data,
+        )
+
+
 def test_fit_ar1_with_pc_priors():
     np.random.seed(42)
     n = 40

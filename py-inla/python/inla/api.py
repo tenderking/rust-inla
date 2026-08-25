@@ -14,29 +14,7 @@ from inla.formula import FTerm, ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
 from inla.models import Effect, Family, Linear, ModelSpec
 
-SUPPORTED_F_MODELS = (
-    "iid",
-    "rw1",
-    "rw2",
-    "rw2d",
-    "ar1",
-    "ar",
-    "arp",
-    "besag",
-    "bym",
-    "bym2",
-    "fgn",
-    "seasonal",
-    "crw1",
-    "crw2",
-    "matern2d",
-    "spde",
-    "copy",
-    "iid2d",
-    "iid3d",
-    "iid4d",
-    "iid5d",
-)
+SUPPORTED_F_MODELS = tuple(dict.fromkeys((*core.supported_models(), "spde")))
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
 
 FAMILY_ALIASES = {
@@ -384,15 +362,15 @@ def _match_hyper_slot(key: str, internals: Sequence[str]) -> int | None:
 
 
 def _resolve_effect_priors(
-    model: str, kwargs: Mapping[str, Any] | None
+    model: str, kwargs: Mapping[str, Any] | None, order: int = 0
 ) -> list[tuple[str, list[float]]]:
     """Build (name, param) list for an effect from f() kwargs or model defaults."""
     kw = dict(kwargs or {})
     m = model.lower()
-    defaults = list(core.default_hyper_priors(m))
+    defaults = list(core.default_hyper_priors(m, max(int(order), 0)))
     internals: list[str] = []
     try:
-        internals = list(_model_meta(m).get("hyper_internal") or [])
+        internals = list(_model_meta(m, order).get("hyper_internal") or [])
     except Exception:
         internals = []
 
@@ -400,12 +378,14 @@ def _resolve_effect_priors(
         if hasattr(val, "to_tuple"):
             return val.to_tuple()
         if isinstance(val, Mapping):
-            pname = str(val.get("prior", "gaussian"))
+            if "prior" not in val:
+                raise ValueError("prior mapping must contain a 'prior' name")
+            pname = str(val["prior"])
             pparam = _as_param_list(val.get("param"))
             return (pname, pparam)
         if isinstance(val, str):
             return (val, [])
-        return ("gaussian", [])
+        raise TypeError(f"unsupported prior specification {val!r}")
 
     # Special handling for SPDE joint prior
     if m == "spde":
@@ -528,13 +508,15 @@ def _resolve_effect_priors(
                 f"({len(internals)} labels); this model uses a joint prior. "
                 "Pass prior=PCSpde(...) or prior_range/prior_sigma."
             )
-        # Unregistered model: apply values in dict order onto the default stack.
+        # Apply values in dict order onto a registered model's default stack.
         out = []
         for i, (_k, h) in enumerate(hyper.items()):
             if hasattr(h, "to_tuple"):
                 out.append(h.to_tuple())
             elif isinstance(h, Mapping):
-                name = str(h.get("prior") or (defaults[i][0] if i < len(defaults) else "gaussian"))
+                if i >= len(defaults) and not h.get("prior"):
+                    raise ValueError(f"missing default prior for hyper slot {_k!r} of model {m!r}")
+                name = str(h.get("prior") or defaults[i][0])
                 param = _as_param_list(h.get("param"))
                 out.append((name, param))
             else:
@@ -548,10 +530,14 @@ def _resolve_effect_priors(
         if len(out) == len(internals):
             for user_key, parsed in slot_overrides.items():
                 idx = _match_hyper_slot(user_key, internals)
-                if idx is not None:
-                    out[idx] = parsed
+                if idx is None:
+                    raise ValueError(f"prior override {user_key!r} has no slot in model {m!r}")
+                out[idx] = parsed
             return out
-        return out
+        raise ValueError(
+            f"slot prior overrides are not supported for joint-prior model {m!r}; "
+            "pass prior= for the joint prior"
+        )
 
     return defaults
 
@@ -824,6 +810,8 @@ def _try_gaussian_ar1_plan(
     if str(ft.model).lower() != "ar1":
         return None
     if ft.kwargs.get("group") is not None:
+        return None
+    if any(ft.kwargs.get(k) is not None for k in ("hyper", "prior", "param")):
         return None
     # Opt-in full latent/predictor marginal grids still use the generic path.
     if latent_marginal_indices is not None or predictor_marginal_indices is not None:
@@ -1621,7 +1609,7 @@ def _fit(
             else bool(ft.scale_model)
         )
         effect_generics.append(None)
-        effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs))
+        effect_prior_specs.append(_resolve_effect_priors(model, ft.kwargs, order))
         effect_copy_of.append(None)
         tlen = _theta_len(model, order, group_model)
         if ft.initial is not None:
@@ -1936,14 +1924,11 @@ def _fit(
         lp = 0.0
         if family_free_prec:
             fam_th = [float(th[0])]
-            try:
-                lp += float(
-                    core.hyper_prior_stack_log_density(
-                        [family_prior_spec[0]], [family_prior_spec[1]], fam_th
-                    )
+            lp += float(
+                core.hyper_prior_stack_log_density(
+                    [family_prior_spec[0]], [family_prior_spec[1]], fam_th
                 )
-            except Exception:
-                lp += float(fam_th[0] - 5e-5 * np.exp(fam_th[0]))
+            )
             latent_th = th[1:]
         else:
             latent_th = th
@@ -1963,12 +1948,9 @@ def _fit(
                 if gm is not None:
                     # Append default priors for the group hyperparameter block.
                     specs = specs + list(core.default_hyper_priors(gm))
-                try:
-                    names = [s[0] for s in specs]
-                    params = [s[1] for s in specs]
-                    lp += float(core.hyper_prior_stack_log_density(names, params, ti))
-                except Exception:
-                    lp += float(-0.05 * sum(v * v for v in ti))
+                names = [s[0] for s in specs]
+                params = [s[1] for s in specs]
+                lp += float(core.hyper_prior_stack_log_density(names, params, ti))
         return lp
 
     total_latent_dim = sum(theta_lens)
