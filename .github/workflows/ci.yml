@@ -62,3 +62,38 @@ jobs:
         # Compile py-inla in dev mode to make sure FFI layers link properly
         run: uvx maturin develop
         working-directory: ./py-inla
+
+  binding-conformance:
+    name: Python, R, and cross-language conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+
+      - name: Build Python test environment
+        run: |
+          uv sync --extra dev
+          uvx maturin develop --release
+        working-directory: ./py-inla
+
+      - name: Run R smoke suite
+        run: bash r-inla/smoke.sh
+
+      - name: Run Python and cross-language suites
+        run: uv run pytest
+        working-directory: ./py-inla

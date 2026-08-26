@@ -425,7 +425,7 @@ fn iid_precision_matrix(n: usize, tau: f64) -> PyResult<PyCscMatrix> {
 /// step_or_f0 : float, optional
 ///     Integration step size or f0 design parameter (default 1.0).
 #[pyfunction(name = "run_inla_inference")]
-#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false, gaussian_free_prec=false))]
+#[pyo3(signature = (initial_theta, build_prior, log_prior_density, obs, strategy="ccd", step_or_f0=1.0, n_points=201, latent_marginal_indices=None, predictor_marginal_indices=None, a=None, constraints_a=None, constraints_e=None, deterministic=false, gaussian_free_prec=false, dic=true, waic=true, cpo=true))]
 fn run_inla_inference_py(
     py: Python<'_>,
     initial_theta: Vec<f64>,
@@ -442,6 +442,9 @@ fn run_inla_inference_py(
     constraints_e: Option<Vec<f64>>,
     deterministic: bool,
     gaussian_free_prec: bool,
+    dic: bool,
+    waic: bool,
+    cpo: bool,
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
@@ -586,6 +589,16 @@ fn run_inla_inference_py(
         })
     };
 
+    let compute = inla_core::ComputeOptions {
+        strategy: strategy.to_string(),
+        step_or_f0,
+        deterministic,
+        dic,
+        waic,
+        cpo,
+        ..inla_core::ComputeOptions::default()
+    };
+
     // 4. Run the core solver (releasing GIL for Rayon parallel execution)
     let result = py.detach(|| {
         inla_core::run_inla_inference_a_cancellable(
@@ -608,6 +621,7 @@ fn run_inla_inference_py(
             } else {
                 None
             },
+            Some(&compute),
         )
     });
 
@@ -730,6 +744,24 @@ fn supported_models() -> Vec<String> {
         .collect()
 }
 
+/// Models with registry metadata, including dedicated and metadata-only paths.
+#[pyfunction]
+fn registered_models() -> Vec<String> {
+    inla_core::REGISTERED_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Models executable as a `control.group` Kronecker factor.
+#[pyfunction]
+fn supported_group_models() -> Vec<String> {
+    inla_core::SUPPORTED_GROUP_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Validate + fill defaults for a control dict. Unknown keys raise.
 #[pyfunction]
 fn resolve_compute_options(py: Python<'_>, controls: &Bound<'_, PyDict>) -> PyResult<Py<PyDict>> {
@@ -838,6 +870,11 @@ fn parse_structured_effects(
             .map(|v| v.extract())
             .transpose()?
             .unwrap_or(0);
+        let season: usize = d
+            .get_item("season")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
         let nrow: usize = d
             .get_item("nrow")?
             .map(|v| v.extract())
@@ -867,12 +904,32 @@ fn parse_structured_effects(
             d.get_item("positions")?.map(|v| v.extract()).transpose()?;
         let adj: Option<Vec<Vec<usize>>> = d.get_item("adj")?.map(|v| v.extract()).transpose()?;
         let copy_of: Option<usize> = d.get_item("copy_of")?.map(|v| v.extract()).transpose()?;
+        let n_main: usize = d
+            .get_item("n_main")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let group_model: Option<String> = match d.get_item("group_model")? {
+            Some(value) if !value.is_none() => Some(value.extract()?),
+            _ => None,
+        };
+        let group_n: usize = d
+            .get_item("group_n")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0);
+        let group_scale_model: bool = d
+            .get_item("group_scale_model")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(false);
         out.push(inla_core::StructuredEffect {
             model,
             n,
             scale_model,
             theta_len,
             order,
+            season,
             adj,
             positions,
             crw2_layout,
@@ -880,6 +937,10 @@ fn parse_structured_effects(
             ncol,
             cyclic,
             matern_nu,
+            n_main,
+            group_model,
+            group_n,
+            group_scale_model,
             copy_of,
         });
     }
@@ -918,6 +979,7 @@ fn run_gaussian_ar1_plan(
         computation: inla_core::ComputationSpec {
             strategy: Some(strategy.to_string()),
             step_or_f0: Some(step_or_f0),
+            ..Default::default()
         },
         initial_theta,
     };
@@ -1398,9 +1460,10 @@ fn hyper_prior_stack_log_density(
 
 /// Default `(prior_name, param)` list for an effect model (`besag`, `ar1`, …).
 #[pyfunction]
-fn default_hyper_priors(model: &str) -> PyResult<Vec<(String, Vec<f64>)>> {
-    let stack =
-        inla_core::HyperPriorStack::default_for_effect(model).map_err(PyValueError::new_err)?;
+#[pyo3(signature = (model, order=0))]
+fn default_hyper_priors(model: &str, order: usize) -> PyResult<Vec<(String, Vec<f64>)>> {
+    let stack = inla_core::HyperPriorStack::default_for_effect_order(model, order)
+        .map_err(PyValueError::new_err)?;
     Ok(stack.to_names_params())
 }
 
@@ -1452,6 +1515,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plane_constraint_2d, m)?)?;
     m.add_function(wrap_pyfunction!(seasonal_constraint, m)?)?;
     m.add_function(wrap_pyfunction!(supported_models, m)?)?;
+    m.add_function(wrap_pyfunction!(registered_models, m)?)?;
+    m.add_function(wrap_pyfunction!(supported_group_models, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_compute_options, m)?)?;
     Ok(())
 }

@@ -70,9 +70,17 @@ report("poisson_iid", inla_rs(
   initial_theta = 1.0
 ))
 
+report("gaussian_family_pc", inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df,
+  control.family = list(hyper = list(
+    prec = list(prior = "pc.prec", param = c(2.0, 0.1))
+  ))
+))
+
 report("ar1_pc", inla_rs(
   y ~ -1 + f(idx, model = "ar1", obs_precision = 25.0, hyper = list(
-    prec = list(prior = "pc.prec", param = c(1.0, 0.01)),
+    prec = list(prior = "pc.prec", param = c(2.0, 0.1)),
     rho = list(prior = "pc.cor1", param = c(0.5, 0.75))
   )),
   data = df
@@ -80,5 +88,11 @@ report("ar1_pc", inla_rs(
 
 report("iid2d", inla_rs(
   y ~ -1 + f(idx, model = "iid2d", n = 24L, obs_precision = 25.0, initial = c(0, 0, 0)),
+  data = df
+))
+
+report("grouped_iid_ar1", inla_rs(
+  y ~ -1 + f(space, model = "iid", group = time,
+             control.group = list(model = "ar1"), obs_precision = 25.0),
   data = df
 ))

@@ -83,6 +83,22 @@ def test_control_compute_latent_marginals():
     assert abs(rw.sum()) < 1e-3
 
 
+def test_control_compute_skips_dic_waic_cpo():
+    rng = np.random.default_rng(2)
+    n = 16
+    y = rng.normal(0, 1, n)
+    data = {"y": y, "idx": np.arange(n)}
+    fit = inla(
+        "y ~ -1 + f(idx, model='iid', obs_precision=25.0)",
+        data=data,
+        deterministic=True,
+        control_compute={"dic": False, "waic": False, "cpo": False},
+    )
+    assert np.isnan(fit.dic)
+    assert np.isnan(fit.waic)
+    assert all(v is None for v in fit.cpo)
+
+
 def test_inla_generic_define_iid():
     rng = np.random.default_rng(0)
     n = 20

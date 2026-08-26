@@ -97,7 +97,7 @@ def test_inference_fgn():
         control_family={"hyper": {"prec": {"initial": math.log(1000.0), "fixed": True}}},
     )
 
-    est_h = 1.0 / (1.0 + math.exp(-res.mode[1]))
+    est_h = inla.fgn_hurst_from_intern(res.mode[1])
     assert 0.5 < est_h < 0.9
 
 

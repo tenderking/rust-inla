@@ -65,22 +65,23 @@ pub use options::{ComputeOptions, IndexSelection, OptionValue, resolve_compute_o
 pub use plan::{
     ComputationPlan, ComputationSpec, HyperSlotPlan, HyperTransformKind, LatentBlockLayout,
     LatentEffectPlan, LatentEffectSpec, LatentLayout, LikelihoodPlan, LikelihoodSpec, ModelPlan,
-    ModelSpec, PlanError, resolve, run_gaussian_ar1_plan,
+    ModelSpec, PlanError, resolve, run_gaussian_ar1_plan, run_structured_gaussian_plan,
 };
 pub use posterior::{
     COPY_PRECISION, LinComb, LinCombSummary, emarginal, lincomb_summaries, sample_latent_gaussian,
 };
 pub use priors::{HyperPriorStack, PriorFamily, PriorSpec};
 pub use registry::{
-    HyperSlotMeta, ModelMeta, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS, model_metadata,
-    rank_deficiency,
+    HyperSlotMeta, ModelMeta, REGISTERED_MODELS, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS,
+    model_metadata, rank_deficiency,
 };
 pub use rw2d::rw2d_precision_csc;
 pub use spde::{
     spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
 };
 pub use structured::{
-    StructuredEffect, build_structured_precision, structured_constraints, structured_prior_stack,
+    StructuredEffect, StructuredPlan, build_structured_precision, resolve_structured_plan,
+    structured_constraints, structured_prior_stack,
 };
 
 pub use latent::{ClosureLatentModel, DynClosureLatentModel, LatentModel};

@@ -34,7 +34,9 @@ def _dataset() -> dict[str, np.ndarray]:
     idx = np.arange(1, n + 1, dtype=float)
     y = np.sin(0.5 * idx) + 0.15 * np.cos(1.7 * idx) + 0.02 * idx
     count = np.abs(np.round(2.0 + 1.5 * np.sin(0.3 * idx))).astype(float)
-    return {"y": y, "idx": idx, "count": count}
+    space = np.tile(np.arange(1, 7, dtype=float), 4)
+    time = np.repeat(np.arange(1, 5, dtype=float), 6)
+    return {"y": y, "idx": idx, "count": count, "space": space, "time": time}
 
 
 def _write_csv(data: dict[str, np.ndarray], path: Path) -> None:
@@ -82,12 +84,21 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             family="poisson",
             initial_theta=[1.0],
         ),
+        "gaussian_family_pc": fit(
+            "y ~ -1 + f(idx, model='iid')",
+            data,
+            control_family={"hyper": {"prec": {"prior": "pc.prec", "param": [2.0, 0.1]}}},
+        ),
         "ar1_pc": fit(
-            "y ~ -1 + f(idx, model='ar1', obs_precision=25.0, hyper={'prec': {'prior': 'pc.prec', 'param': [1.0, 0.01]}, 'rho': {'prior': 'pc.cor1', 'param': [0.5, 0.75]}})",
+            "y ~ -1 + f(idx, model='ar1', obs_precision=25.0, hyper={'prec': {'prior': 'pc.prec', 'param': [2.0, 0.1]}, 'rho': {'prior': 'pc.cor1', 'param': [0.5, 0.75]}})",
             data,
         ),
         "iid2d": fit(
             "y ~ -1 + f(idx, model='iid2d', n=24, obs_precision=25.0, initial=[0, 0, 0])",
+            data,
+        ),
+        "grouped_iid_ar1": fit(
+            "y ~ -1 + f(space, model='iid', group=time, control_group={'model': 'ar1'}, obs_precision=25.0)",
             data,
         ),
     }
@@ -108,7 +119,17 @@ def conformance(tmp_path_factory):
     return _run_r(csv_path), _python_fits(data)
 
 
-MODELS = ["ar1", "rw2", "iid", "seasonal", "poisson_iid", "ar1_pc", "iid2d"]
+MODELS = [
+    "ar1",
+    "rw2",
+    "iid",
+    "seasonal",
+    "poisson_iid",
+    "gaussian_family_pc",
+    "ar1_pc",
+    "iid2d",
+    "grouped_iid_ar1",
+]
 
 
 @pytest.mark.parametrize("model", MODELS)

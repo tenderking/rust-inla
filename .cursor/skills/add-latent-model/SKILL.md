@@ -1,70 +1,55 @@
 ---
 name: add-latent-model
 description: >-
-  Add a built-in latent f() model (iid, rw, ar1, besag, …) to rust-inla.
-  Use when introducing a new GMRF, hyperparameter, rank deficiency, or
-  when a model currently needs R/Python table edits.
+  Add a built-in latent f() model while preserving one Rust-owned statistical
+  contract across the engine, R, and Python. Use for a new GMRF,
+  hyperparameterization, rank deficiency, or model-specific formula input.
 ---
 
 # Add a latent model
 
-One Rust table, then Q + constraints + a port test. Bindings should not grow
-new `match` arms for θ-length, defaults, or labels.
+Read and follow `AGENTS.md`. Use this workflow to extend the built-in latent
+model system without duplicating statistical behavior in a binding.
 
-## Checklist
+## Decide the shape of the change
 
-1. **Registry** — `crates/inla_stats/src/registry.rs`
-   - Add the name to `SUPPORTED_MODELS`.
-   - In `model_metadata`: θ slots (`HyperSlotMeta` + `default_theta`),
-     rank deficiency (or special-case like seasonal/`rw2d` cyclic),
-     `default_scale_model` if intrinsic.
-   - Default priors via `HyperPriorStack::default_for_effect` in `priors.rs`.
-   - Unit test: `theta_len == default_theta.len() == hyper.len()`.
+Before editing, determine:
 
-2. **Precision** — `Q(θ)` in the existing module (`ar1.rs`, `besag.rs`, …) or a
-   new `inla_stats` file. Export CSC from `inla_stats` / `inla_core`.
+- Is this a new model, a parameterization of an existing model, or host syntax?
+- Which values define the model instance, and do they belong in the shared plan?
+- What is θ order, its default, its natural transform, and its prior structure?
+- What latent dimension and sparsity pattern does `Q(θ)` have?
+- Is Q singular? If so, what is the complete null space?
+- Does the model require a custom projector or only ordinary indices?
 
-3. **Structured dispatch** — `crates/inla_stats/src/structured.rs`
-   - `build_structured_precision` match arm.
-   - `structured_constraints` if rankdef > 0 (use `sum_to_zero_constraint`,
-     `plane_constraint_2d`, or `seasonal_constraint` — do not invent a 1-row
-     constraint for a larger null space).
-   - Encode extra integers in `StructuredEffect.order` the same way existing
-     models do (`rw2d` ±nrow, seasonal season length).
+If the change only alters formula spelling or host conversion, keep it in the
+binding. Otherwise, define its semantics in `inla_stats`.
 
-4. **Do not** add θ-length / default-θ / label tables in
-   `r-inla/R/inla_rs.R` or `py-inla/python/inla/api.py`. Those wrap
-   `model_metadata`. Formula parsers only need to accept the new `model=`
-   string and any extra kwargs (`nrow`, `graph`, `season`, …).
+## Implement the shared contract
 
-5. **Tests**
-   - `inla_stats` unit test for Q / constraints (null space annihilated).
-   - E2E: `crates/inla_stats/tests/reference_ports.rs`.
-   - Cross-language: add a case to
-     `py-inla/tests/conformance/fit_models.R` **and**
-     `py-inla/tests/test_cross_language_conformance.py` (same formula, same data).
-   - Smoke: `r-inla/smoke.sh` and a pytest in `py-inla/tests/`.
+1. Register metadata and defaults.
+2. Define the exact prior, including joint-prior dimensionality.
+3. Implement Q and validate model-specific dimensions.
+4. Add structured dispatch and complete null-space constraints when needed.
+5. Extend the shared plan if existing fields cannot represent the model cleanly.
 
-6. **Verify** — follow skill `verify-inla`. Rebuild both bindings after
-   registry/structured changes (`cargo build -p r-inla --release`,
-   `maturin develop --release` in `py-inla`).
+Keep this invariant:
 
-## Constraints
+```text
+metadata θ == default θ == prior θ == Q θ == summary θ
+```
 
-Intrinsic models must constrain the **full** null space:
+Fail explicitly when any part of that contract is missing. Avoid generic
+fallback priors and overloaded fields whose meaning depends on undocumented
+conventions.
 
-| Model | Rank |
-|-------|------|
-| `rw1`, `besag`, `bym` (spatial block) | 1 |
-| `rw2` | 2 (const + linear) |
-| `rw2d` non-cyclic | 3 (`plane_constraint_2d`) |
-| `rw2d` cyclic | 1 |
-| `seasonal` | `season - 1` |
+## Adapt and verify
 
-A single sum-to-zero on seasonal/`rw2`/`rw2d` leaves Q singular.
-
-## Controls
-
-A new engine flag is a field on `ComputeOptions` in
-`crates/inla_stats/src/options.rs` plus an alias in `canonical_key`.
-Unknown keys must stay rejected.
+- Let bindings parse host data into the shared contract; do not reproduce Q,
+  priors, transforms, labels, or rank rules.
+- Update model discovery and typed APIs only where the binding requires it.
+- Add focused tests for the mathematical property being introduced: Q values,
+  sparsity, null space, parameter transform, projector, or prior.
+- Add a behavioral test for the model path and a cross-language case when both
+  bindings expose it.
+- Follow `verify-inla`, rebuilding native bindings after shared changes.

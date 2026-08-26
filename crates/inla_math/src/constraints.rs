@@ -100,7 +100,8 @@ pub fn model_rank_deficiency(model: &str) -> usize {
         "rw2d" => 3,
         "seasonal" => 1, // sum-to-zero over the seasonal contrast (common default)
         "bym" => 1,      // spatial ICAR block only (caller embeds on that block)
-        "crw1" | "crw2" => 1,
+        "crw1" => 1,
+        "crw2" => 2,
         _ => 0,
     }
 }

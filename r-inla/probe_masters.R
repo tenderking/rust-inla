@@ -105,7 +105,7 @@ res_besag <- tryCatch(
 if (inherits(res_besag, "error")) {
   report(FALSE, "besag+year scale.model", conditionMessage(res_besag))
 } else {
-  u <- res_besag$latent_means[1:n_reg]
+  u <- res_besag$summary.random$region_id$mean
   report(TRUE, "besag+year scale.model",
          sprintf("log_tau=%.3f mlik=%.2f max|u|=%.2f",
                  res_besag$mode[1], res_besag$marginal_log_lik, max(abs(u))))

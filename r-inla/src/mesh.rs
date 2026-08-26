@@ -160,12 +160,10 @@ fn inla_rs_run_spde(
         let (tau, kappa) = inla_core::spde_params_from_theta(theta)?;
         inla_core::spde_precision_csc(&fem, kappa, tau)
     };
-    let log_prior = |theta: &[f64]| -> f64 {
-        match inla_core::HyperPriorStack::default_for_effect("spde") {
-            Ok(stack) => stack.log_density(theta).unwrap_or(f64::NEG_INFINITY),
-            Err(_) => theta.iter().map(|&v| -0.5 * 0.1 * v * v).sum(),
-        }
-    };
+    let prior_stack =
+        inla_core::HyperPriorStack::default_for_effect("spde").map_err(Error::Other)?;
+    let log_prior =
+        move |theta: &[f64]| -> f64 { prior_stack.log_density(theta).unwrap_or(f64::NEG_INFINITY) };
     let result = inla_core::run_inla_inference_a(
         &initial_theta,
         &build_prior,

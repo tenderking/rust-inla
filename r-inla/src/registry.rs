@@ -64,6 +64,22 @@ fn inla_rs_supported_models() -> Vec<String> {
         .collect()
 }
 
+#[extendr]
+fn inla_rs_registered_models() -> Vec<String> {
+    inla_core::REGISTERED_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[extendr]
+fn inla_rs_supported_group_models() -> Vec<String> {
+    inla_core::SUPPORTED_GROUP_MODELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Validate + fill defaults for a named control list (`list(waic = TRUE, ...)`).
 ///
 /// Unknown names are an error, so R and Python cannot drift apart silently.
@@ -141,5 +157,7 @@ extendr_module! {
     mod registry;
     fn inla_rs_model_metadata;
     fn inla_rs_supported_models;
+    fn inla_rs_registered_models;
+    fn inla_rs_supported_group_models;
     fn inla_rs_resolve_compute_options;
 }

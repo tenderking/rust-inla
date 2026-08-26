@@ -341,6 +341,11 @@ impl HyperPriorStack {
 
     /// Default prior for a latent effect hyperparameter block by model type.
     pub fn default_for_effect(model: &str) -> Result<Self, String> {
+        Self::default_for_effect_order(model, 0)
+    }
+
+    /// Default prior for a latent effect, including order-dependent θ blocks.
+    pub fn default_for_effect_order(model: &str, order: usize) -> Result<Self, String> {
         let m = model.to_ascii_lowercase();
         match m.as_str() {
             "iid" | "rw1" | "rw2" | "rw2d" | "besag" | "besag2" | "seasonal" | "crw1" | "crw2" => {
@@ -365,11 +370,13 @@ impl HyperPriorStack {
                 PriorSpec::pc_prec(1.0, 0.01)?,
                 PriorSpec::pc_cor1(0.5, 0.75)?,
             ])),
-            "ar" | "arp" => Ok(Self::new(vec![
-                PriorSpec::pc_prec(1.0, 0.01)?,
-                PriorSpec::gaussian(0.0, 0.1),
-                PriorSpec::gaussian(0.0, 0.1),
-            ])),
+            "ar" | "arp" => {
+                let p = if order > 0 { order } else { 2 };
+                let mut priors = Vec::with_capacity(1 + p);
+                priors.push(PriorSpec::pc_prec(1.0, 0.01)?);
+                priors.extend((0..p).map(|_| PriorSpec::gaussian(0.0, 0.1)));
+                Ok(Self::new(priors))
+            }
             "fgn" => Ok(Self::new(vec![
                 PriorSpec::pc_prec(1.0, 0.01)?,
                 PriorSpec::gaussian(0.0, 0.1),
@@ -1118,6 +1125,20 @@ mod tests {
         assert_eq!(s.theta_dim(), 2);
         let lp = s.log_density(&[0.0, 0.0]).unwrap();
         assert!(lp.is_finite());
+    }
+
+    #[test]
+    fn arp_default_prior_dimension_follows_order() {
+        for order in 1..=5 {
+            let stack = HyperPriorStack::default_for_effect_order("arp", order).unwrap();
+            assert_eq!(stack.theta_dim(), order + 1);
+            assert!(
+                stack
+                    .log_density(&vec![0.0; order + 1])
+                    .unwrap()
+                    .is_finite()
+            );
+        }
     }
 
     #[test]
