@@ -923,6 +923,38 @@ fn parse_structured_effects(
             .map(|v| v.extract())
             .transpose()?
             .unwrap_or(false);
+        let mesh_vertices: Option<Vec<(f64, f64)>> = match d.get_item("mesh_vertices")? {
+            Some(value) if !value.is_none() => {
+                let rows: Vec<Vec<f64>> = value.extract()?;
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    if row.len() != 2 {
+                        return Err(PyValueError::new_err(
+                            "mesh_vertices entries must be [x, y]",
+                        ));
+                    }
+                    out.push((row[0], row[1]));
+                }
+                Some(out)
+            }
+            _ => None,
+        };
+        let mesh_triangles: Option<Vec<[usize; 3]>> = match d.get_item("mesh_triangles")? {
+            Some(value) if !value.is_none() => {
+                let rows: Vec<Vec<usize>> = value.extract()?;
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    if row.len() != 3 {
+                        return Err(PyValueError::new_err(
+                            "mesh_triangles entries must be [i, j, k]",
+                        ));
+                    }
+                    out.push([row[0], row[1], row[2]]);
+                }
+                Some(out)
+            }
+            _ => None,
+        };
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -942,6 +974,13 @@ fn parse_structured_effects(
             group_n,
             group_scale_model,
             copy_of,
+            mesh: match (mesh_vertices, mesh_triangles) {
+                (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
+                    vertices,
+                    triangles,
+                })),
+                _ => None,
+            },
         });
     }
     Ok(out)

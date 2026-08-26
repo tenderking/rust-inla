@@ -122,7 +122,7 @@ pub enum LatentEffectSpec {
     /// Any executable structured effect (iid, rw2, grouped, …).
     Structured {
         name: String,
-        effect: crate::structured::StructuredEffect,
+        effect: Box<crate::structured::StructuredEffect>,
         priors: Option<Vec<(String, Vec<f64>)>>,
     },
 }
@@ -139,7 +139,7 @@ pub enum LatentEffectPlan {
     },
     Structured {
         name: String,
-        effect: crate::structured::StructuredEffect,
+        effect: Box<crate::structured::StructuredEffect>,
         hyper: Vec<HyperSlotPlan>,
         initial_theta: Vec<f64>,
     },
@@ -422,7 +422,7 @@ fn resolve_effect(spec: LatentEffectSpec) -> Result<LatentEffectPlan, PlanError>
             effect,
             priors,
         } => {
-            crate::structured::resolve_structured_plan(std::slice::from_ref(&effect))?;
+            crate::structured::resolve_structured_plan(std::slice::from_ref(effect.as_ref()))?;
             let order = usize::try_from(effect.order.max(0)).unwrap_or(0);
             let meta = crate::registry::model_metadata(
                 &effect.model_key(),
@@ -431,7 +431,9 @@ fn resolve_effect(spec: LatentEffectSpec) -> Result<LatentEffectPlan, PlanError>
                 effect.cyclic,
             )?;
             let stack = match priors {
-                None => crate::structured::structured_prior_stack(std::slice::from_ref(&effect))?,
+                None => crate::structured::structured_prior_stack(std::slice::from_ref(
+                    effect.as_ref(),
+                ))?,
                 Some(pairs) => {
                     if pairs.len() != meta.theta_len {
                         return Err(format!(
@@ -488,7 +490,7 @@ pub fn run_structured_gaussian_plan(
     let mut effects = Vec::with_capacity(plan.effects.len());
     for effect in &plan.effects {
         match effect {
-            LatentEffectPlan::Structured { effect, .. } => effects.push(effect.clone()),
+            LatentEffectPlan::Structured { effect, .. } => effects.push(effect.as_ref().clone()),
             LatentEffectPlan::Ar1 { name, n, .. } => {
                 let mut e = crate::structured::StructuredEffect::simple("ar1", *n, 2);
                 e.model = "ar1".into();
@@ -667,12 +669,12 @@ mod tests {
             effects: vec![
                 LatentEffectSpec::Structured {
                     name: "u".into(),
-                    effect: iid,
+                    effect: Box::new(iid),
                     priors: None,
                 },
                 LatentEffectSpec::Structured {
                     name: "v".into(),
-                    effect: rw2,
+                    effect: Box::new(rw2),
                     priors: None,
                 },
             ],

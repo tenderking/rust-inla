@@ -4,6 +4,7 @@ use crate::convert::{
     csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based, parse_effect_positions,
     posterior_q_slots,
 };
+use crate::mesh::parse_effect_meshes;
 use extendr_api::prelude::*;
 
 /// Canonicalize likelihood family strings (R-INLA aliases → internal names).
@@ -440,6 +441,8 @@ fn inla_rs_run_inla_structured(
     effect_ncol: Vec<i32>,
     effect_cyclic: Vec<i32>,
     effect_season: Vec<i32>,
+    effect_layouts: Vec<String>,
+    effect_meshes: List,
     dic: bool,
     waic: bool,
     cpo: bool,
@@ -465,6 +468,7 @@ fn inla_rs_run_inla_structured(
         || (!effect_ncol.is_empty() && effect_ncol.len() != effect_types.len())
         || (!effect_cyclic.is_empty() && effect_cyclic.len() != effect_types.len())
         || (!effect_season.is_empty() && effect_season.len() != effect_types.len())
+        || (!effect_layouts.is_empty() && effect_layouts.len() != effect_types.len())
     {
         return Err(Error::Other(
             "effect_* vectors must have equal length".to_string(),
@@ -554,6 +558,18 @@ fn inla_rs_run_inla_structured(
     }
 
     let positions = parse_effect_positions(&effect_positions, &effect_ns_u)?;
+    let layouts: Vec<String> = if effect_layouts.is_empty() {
+        vec!["simple".into(); effect_types_owned.len()]
+    } else {
+        effect_layouts
+            .iter()
+            .map(|s| {
+                let t = s.trim().to_lowercase();
+                if t.is_empty() { "simple".into() } else { t }
+            })
+            .collect()
+    };
+    let meshes = parse_effect_meshes(&effect_meshes, effect_types_owned.len())?;
 
     let effects: Vec<inla_core::StructuredEffect> = (0..effect_types_owned.len())
         .map(|ei| {
@@ -587,7 +603,7 @@ fn inla_rs_run_inla_structured(
                 season,
                 adj: adjs[ei].clone(),
                 positions: positions[ei].clone(),
-                crw2_layout: "simple".into(),
+                crw2_layout: layouts[ei].clone(),
                 nrow,
                 ncol,
                 cyclic,
@@ -601,6 +617,13 @@ fn inla_rs_run_inla_structured(
                 group_n: usize::try_from(effect_group_ns[ei]).unwrap_or(0),
                 group_scale_model: effect_group_scales[ei] != 0,
                 copy_of,
+                mesh: match (meshes[ei].0.clone(), meshes[ei].1.clone()) {
+                    (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
+                        vertices,
+                        triangles,
+                    })),
+                    _ => None,
+                },
             }
         })
         .collect();

@@ -173,6 +173,22 @@ res_crw2 <- inla_rs(y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout 
 cat("CRW2 simple Marginal Log-Likelihood:", round(res_crw2$marginal_log_lik, 4), "\n")
 stopifnot(is.finite(res_crw2$marginal_log_lik))
 
+res_crw2_pairs <- inla_rs(
+  y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout = "pairs", obs_precision = 50.0),
+  data = df_crw
+)
+cat("CRW2 pairs latent:", length(res_crw2_pairs$latent_means), " mlik:", round(res_crw2_pairs$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_crw2_pairs$marginal_log_lik))
+stopifnot(length(res_crw2_pairs$latent_means) == 2L * length(pos_crw))
+
+res_crw2_block <- inla_rs(
+  y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout = "block", obs_precision = 50.0),
+  data = df_crw
+)
+cat("CRW2 block latent:", length(res_crw2_block$latent_means), " mlik:", round(res_crw2_block$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_crw2_block$marginal_log_lik))
+stopifnot(length(res_crw2_block$latent_means) == 2L * length(pos_crw))
+
 cat("\n--- Non-Gaussian families (poisson / binomial / nbinom / zip / exp / weibull / laplace) ---\n")
 set.seed(3)
 counts <- c(2, 3, 2, 4, 3, 2, 3, 2)
@@ -265,6 +281,25 @@ cat("SPDE mode (log_tau, log_kappa):", paste(round(res_spde$mode, 4), collapse =
 cat("SPDE mlik:", round(res_spde$marginal_log_lik, 4), " n_latent=", res_spde$n_latent, "\n", sep="")
 stopifnot(length(res_spde$latent_means) == res_spde$n_latent)
 stopifnot(is.finite(res_spde$marginal_log_lik))
+
+df_spde_f <- data.frame(
+  y = y_spde,
+  field = seq_len(nrow(loc)),
+  loc_x = loc[, 1],
+  loc_y = loc[, 2],
+  z = loc[, 1]
+)
+res_spde_f <- inla_rs(
+  y ~ -1 + z + f(field, model = "spde", vertices = verts, triangles = tris,
+                 loc_x = "loc_x", loc_y = "loc_y"),
+  data = df_spde_f,
+  family = "gaussian"
+)
+cat("SPDE formula+fixed mode length:", length(res_spde_f$mode),
+    " n_latent=", length(res_spde_f$latent_means), "\n", sep = "")
+stopifnot(length(res_spde_f$mode) == 3L)
+stopifnot(length(res_spde_f$latent_means) == nrow(verts) + 1L)
+stopifnot(is.finite(res_spde_f$marginal_log_lik))
 
 # Intentionally omit `copy` formula productization in this pass (shared β scaling).
 # Python already covers rgeneric; R exposes inla_rs_rgeneric_define() + rw2d formula.

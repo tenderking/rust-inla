@@ -38,7 +38,7 @@ pub(crate) fn parse_effect_positions(
         ));
     }
     let mut out = Vec::with_capacity(ns.len());
-    for (ei, item) in lists.values().enumerate() {
+    for item in lists.values() {
         let vals: Vec<f64> = if let Some(v) = item.as_real_vector() {
             v
         } else if let Some(v) = item.as_integer_vector() {
@@ -46,7 +46,8 @@ pub(crate) fn parse_effect_positions(
         } else {
             Vec::new()
         };
-        if vals.len() == ns[ei] && vals.iter().all(|x| x.is_finite()) {
+        // Knot positions may be shorter than the latent length (CRW2 pairs/block).
+        if !vals.is_empty() && vals.iter().all(|x| x.is_finite()) {
             out.push(Some(vals));
         } else {
             out.push(None);

@@ -326,6 +326,8 @@ inla_rs_run_inla_structured <- function(
     effect_ncol = integer(0),
     effect_cyclic = integer(0),
     effect_season = integer(0),
+    effect_layouts = character(0),
+    effect_meshes = list(),
     dic = TRUE,
     waic = TRUE,
     cpo = TRUE) {
@@ -375,6 +377,8 @@ inla_rs_run_inla_structured <- function(
     as.integer(effect_ncol),
     as.integer(effect_cyclic),
     as.integer(effect_season),
+    as.character(effect_layouts),
+    effect_meshes,
     as.logical(dic),
     as.logical(waic),
     as.logical(cpo)
@@ -949,6 +953,8 @@ inla_rs <- function(
   effect_ncol <- integer(0)
   effect_cyclic <- integer(0)
   effect_season <- integer(0)
+  effect_layouts <- character(0)
+  effect_meshes <- list()
   prior_names <- character(0)
   prior_params <- list()
   theta <- numeric(0)
@@ -977,6 +983,18 @@ inla_rs <- function(
     stop("weights must be 1, a column name, or a length-n numeric vector", call. = FALSE)
   }
 
+  resolve_matrix <- function(spec, what) {
+    if (is.null(spec)) return(NULL)
+    if (is.character(spec) && length(spec) == 1L) {
+      if (is.null(data[[spec]])) {
+        stop(what, " '", spec, "' not found in data", call. = FALSE)
+      }
+      spec <- data[[spec]]
+    }
+    if (is.list(spec) && !is.null(spec[[what]])) spec <- spec[[what]]
+    as.matrix(spec)
+  }
+
   p <- ncol(X)
   if (p > 0L) {
     for (j in seq_len(p)) {
@@ -999,7 +1017,9 @@ inla_rs <- function(
     effect_ncol <- 0L
     effect_cyclic <- 0L
     effect_season <- 0L
+    effect_layouts <- "simple"
     adj_lists[[1L]] <- list()
+    effect_meshes[[1L]] <- list()
     effect_ids[[1L]] <- colnames(X)
     effect_positions[[1L]] <- numeric(0)
     effect_names_acc <- "fixed"
@@ -1035,6 +1055,14 @@ inla_rs <- function(
     ncol_i <- 0L
     cyclic_i <- 0L
     season_i <- 0L
+    layout <- "simple"
+    mesh_store <- NULL
+    if (identical(model, "crw2") && !is.null(fs$args$layout)) {
+      layout <- tolower(as.character(fs$args$layout)[1])
+      if (!(layout %in% c("simple", "pairs", "block"))) {
+        stop("crw2 layout must be 'simple', 'pairs', or 'block'", call. = FALSE)
+      }
+    }
     group_model <- NULL
     group_scale <- FALSE
     if (!is.null(fs$group)) {
@@ -1056,6 +1084,9 @@ inla_rs <- function(
       }
       if (!(group_model %in% c("iid", "rw1", "rw2", "ar1"))) {
         stop("unsupported control.group model '", group_model, "'", call. = FALSE)
+      }
+      if (identical(model, "crw2") && layout != "simple") {
+        stop("grouped crw2 currently supports layout='simple' only", call. = FALSE)
       }
       group_name <- as.character(fs$group)[1]
       if (is.null(data[[group_name]])) {
@@ -1200,6 +1231,83 @@ inla_rs <- function(
       }
       graph <- NULL
       order_enc <- as.integer(order)
+    } else if (identical(model, "spde")) {
+      if (!is.null(group_model)) {
+        stop("grouped SPDE effects are not supported", call. = FALSE)
+      }
+      spde_mod <- fs$args$spde_model
+      if (is.null(spde_mod)) spde_mod <- fs$args$mesh
+      verts <- fs$args$vertices
+      tris <- fs$args$triangles
+      if (!is.null(spde_mod)) {
+        if (is.null(verts) && !is.null(spde_mod$vertices)) verts <- spde_mod$vertices
+        if (is.null(tris) && !is.null(spde_mod$triangles)) tris <- spde_mod$triangles
+      }
+      verts <- resolve_matrix(verts, "vertices")
+      tris <- resolve_matrix(tris, "triangles")
+      if (is.null(verts) || is.null(tris)) {
+        stop("f(..., model=\"spde\") requires vertices= and triangles= (or mesh=/spde_model=)",
+             call. = FALSE)
+      }
+      if (ncol(verts) != 2L) stop("spde vertices must be N x 2", call. = FALSE)
+      if (ncol(tris) != 3L) stop("spde triangles must be M x 3", call. = FALSE)
+      loc <- fs$args$loc
+      if (!is.null(loc)) {
+        if (is.character(loc) && length(loc) == 1L) {
+          if (is.null(data[[loc]])) stop("loc column '", loc, "' not found in data", call. = FALSE)
+          loc <- data[[loc]]
+        }
+        loc <- as.matrix(loc)
+        if (ncol(loc) != 2L) stop("spde loc must have 2 columns", call. = FALSE)
+        loc_x <- as.numeric(loc[, 1])
+        loc_y <- as.numeric(loc[, 2])
+      } else {
+        lx <- fs$args$loc_x
+        ly <- fs$args$loc_y
+        if (is.null(lx)) lx <- "loc_x"
+        if (is.null(ly)) ly <- "loc_y"
+        if (is.character(lx) && length(lx) == 1L && !is.null(data[[lx]])) {
+          loc_x <- as.numeric(data[[lx]])
+        } else if (is.numeric(lx)) {
+          loc_x <- as.numeric(lx)
+        } else {
+          stop("f(..., model=\"spde\") needs loc= or loc_x=/loc_y= columns", call. = FALSE)
+        }
+        if (is.character(ly) && length(ly) == 1L && !is.null(data[[ly]])) {
+          loc_y <- as.numeric(data[[ly]])
+        } else if (is.numeric(ly)) {
+          loc_y <- as.numeric(ly)
+        } else {
+          stop("f(..., model=\"spde\") needs loc= or loc_x=/loc_y= columns", call. = FALSE)
+        }
+      }
+      if (length(loc_x) != n_obs || length(loc_y) != n_obs) {
+        stop("spde loc_x/loc_y must have length n", call. = FALSE)
+      }
+      a_spde <- inla_rs_spde_projector_csc(verts, tris, loc_x, loc_y)
+      sm <- Matrix::summary(a_spde)
+      add_triplets(as.integer(sm$i) - 1L, col_off + as.integer(sm$j) - 1L, sm$x)
+      n_e <- as.integer(nrow(verts))
+      graph <- NULL
+      order_enc <- as.integer(order)
+      effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
+      mesh_store <- list(vertices = verts, triangles = tris)
+    } else if (identical(model, "crw2")) {
+      lev <- sort(unique(idx))
+      n_main <- length(lev)
+      zcol <- match(idx, lev) - 1L
+      wv <- weight_vec(fs$args$weights)
+      if (layout %in% c("pairs", "block")) {
+        n_e <- as.integer(2L * n_main)
+        cols <- if (identical(layout, "pairs")) 2L * zcol else zcol
+        add_triplets(seq_len(n_obs) - 1L, col_off + cols, wv)
+      } else {
+        n_e <- as.integer(n_main)
+        add_triplets(seq_len(n_obs) - 1L, col_off + zcol, wv)
+      }
+      graph <- NULL
+      order_enc <- as.integer(order)
+      effect_ids[[length(effect_ids) + 1L]] <- lev
     } else {
       # Generic: unique sorted levels → latent size
       lev <- sort(unique(idx))
@@ -1235,6 +1343,7 @@ inla_rs <- function(
     effect_ncol <- c(effect_ncol, as.integer(ncol_i))
     effect_cyclic <- c(effect_cyclic, as.integer(cyclic_i))
     effect_season <- c(effect_season, as.integer(season_i))
+    effect_layouts <- c(effect_layouts, layout)
     prior_spec <- .inla_rs_effect_priors(fs, model, order, group_model)
     prior_names <- c(prior_names, prior_spec$names)
     prior_params <- c(prior_params, prior_spec$params)
@@ -1243,9 +1352,35 @@ inla_rs <- function(
     } else {
       adj_lists[[length(adj_lists) + 1L]] <- list()
     }
+    if (is.null(mesh_store)) {
+      effect_meshes[[length(effect_meshes) + 1L]] <- list()
+    } else {
+      effect_meshes[[length(effect_meshes) + 1L]] <- mesh_store
+    }
     ids <- effect_ids[[length(effect_ids)]]
-    pos <- suppressWarnings(as.numeric(ids))
-    if (length(pos) == n_e && all(is.finite(pos))) {
+    n_knots <- if (identical(model, "crw2") && layout %in% c("pairs", "block")) {
+      as.integer(n_e / 2L)
+    } else {
+      n_e
+    }
+    pos <- numeric(0)
+    raw_pos <- fs$args$positions
+    if (!is.null(raw_pos)) {
+      if (is.character(raw_pos) && length(raw_pos) == 1L) {
+        if (is.null(data[[raw_pos]])) {
+          stop("positions column '", raw_pos, "' not found in data", call. = FALSE)
+        }
+        pos <- as.numeric(data[[raw_pos]])
+      } else {
+        pos <- as.numeric(raw_pos)
+      }
+    } else {
+      cand <- suppressWarnings(as.numeric(ids))
+      if (length(cand) == n_knots && all(is.finite(cand))) {
+        pos <- cand
+      }
+    }
+    if (length(pos) > 0L && all(is.finite(pos))) {
       effect_positions[[length(effect_positions) + 1L]] <- pos
     } else {
       effect_positions[[length(effect_positions) + 1L]] <- numeric(0)
@@ -1327,6 +1462,8 @@ inla_rs <- function(
     effect_ncol = effect_ncol,
     effect_cyclic = effect_cyclic,
     effect_season = effect_season,
+    effect_layouts = effect_layouts,
+    effect_meshes = effect_meshes,
     dic = dic,
     waic = waic,
     cpo = cpo

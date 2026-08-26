@@ -96,3 +96,19 @@ report("grouped_iid_ar1", inla_rs(
              control.group = list(model = "ar1"), obs_precision = 25.0),
   data = df
 ))
+
+report("crw2_pairs", inla_rs(
+  y ~ -1 + f(idx, model = "crw2", layout = "pairs", positions = "idx", obs_precision = 25.0),
+  data = df
+))
+
+verts_spde <- matrix(c(0, 0, 1, 0, 1, 1, 0, 1, 0.5, 0.5), ncol = 2L, byrow = TRUE)
+tris_spde <- matrix(as.integer(c(1, 2, 5, 2, 3, 5, 3, 4, 5, 4, 1, 5)), ncol = 3L, byrow = TRUE)
+df$loc_x <- 0.15 + 0.7 * (df$idx - 1) / 23
+df$loc_y <- 0.15 + 0.7 * ((df$idx - 1) %% 5) / 4
+df$field <- df$idx
+report("spde_formula", inla_rs(
+  y ~ -1 + f(field, model = "spde", vertices = verts_spde, triangles = tris_spde,
+             loc_x = "loc_x", loc_y = "loc_y", obs_precision = 25.0),
+  data = df
+))
