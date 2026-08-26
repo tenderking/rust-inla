@@ -14,7 +14,7 @@ from inla.formula import FTerm, ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
 from inla.models import Effect, Family, Linear, ModelSpec
 
-SUPPORTED_F_MODELS = tuple(dict.fromkeys((*core.supported_models(), "spde")))
+SUPPORTED_F_MODELS = tuple(core.supported_models())
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
 
 FAMILY_ALIASES = {
@@ -1605,10 +1605,8 @@ def _fit(
             theta_lens.append(_theta_len(t, o, gm))
     has_intercept = bool(parsed.intercept)
 
-    use_shared_q = (
-        all(g is None for g in generics)
-        and "spde" not in types
-        and hasattr(core, "build_structured_precision")
+    use_shared_q = all(g is None for g in generics) and hasattr(
+        core, "build_structured_precision"
     )
 
     def _structured_effect_dicts() -> list[dict]:
@@ -1638,6 +1636,11 @@ def _fit(
             copy_src = effect_copy_of[ei] if ei < len(effect_copy_of) else None
             if copy_src is not None:
                 d["copy_of"] = int(copy_src)
+            mesh = meshes[ei]
+            if mesh is not None:
+                verts, tris = mesh
+                d["mesh_vertices"] = [[float(x), float(y)] for x, y in verts]
+                d["mesh_triangles"] = [[int(a), int(b), int(c)] for a, b, c in tris]
             out.append(d)
         return out
 

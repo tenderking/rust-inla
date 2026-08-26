@@ -38,7 +38,7 @@ pub(crate) fn parse_effect_positions(
         ));
     }
     let mut out = Vec::with_capacity(ns.len());
-        for item in lists.values() {
+    for item in lists.values() {
         let vals: Vec<f64> = if let Some(v) = item.as_real_vector() {
             v
         } else if let Some(v) = item.as_integer_vector() {

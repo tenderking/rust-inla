@@ -151,7 +151,7 @@ pub use inla_stats::{
     LinComb, LinCombSummary, Link, Marginal1D, MarginalOptions, ModelConfig, ModelMeta, ModelPlan,
     ModelSpec, NegativeBinomialObs, Obs, OptionValue, PlanError, PoissonObs, PriorFamily,
     PriorSpec, ProjectionMapper, REGISTERED_MODELS, SUPPORTED_GROUP_MODELS, SUPPORTED_MODELS,
-    SparseProjectionMapper, StructuredEffect, WaicResult, WeibullSurvivalObs,
+    SparseProjectionMapper, SpdeMesh, StructuredEffect, WaicResult, WeibullSurvivalObs,
     ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType, ar1_precision,
     ar1_precision_csc, arp_precision_csc, augment_precision_csc, besag_precision_csc,
     build_structured_precision, bym_precision_csc, bym2_precision_csc, compute_cpo_pit,

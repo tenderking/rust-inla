@@ -282,6 +282,25 @@ cat("SPDE mlik:", round(res_spde$marginal_log_lik, 4), " n_latent=", res_spde$n_
 stopifnot(length(res_spde$latent_means) == res_spde$n_latent)
 stopifnot(is.finite(res_spde$marginal_log_lik))
 
+df_spde_f <- data.frame(
+  y = y_spde,
+  field = seq_len(nrow(loc)),
+  loc_x = loc[, 1],
+  loc_y = loc[, 2],
+  z = loc[, 1]
+)
+res_spde_f <- inla_rs(
+  y ~ -1 + z + f(field, model = "spde", vertices = verts, triangles = tris,
+                 loc_x = "loc_x", loc_y = "loc_y"),
+  data = df_spde_f,
+  family = "gaussian"
+)
+cat("SPDE formula+fixed mode length:", length(res_spde_f$mode),
+    " n_latent=", length(res_spde_f$latent_means), "\n", sep = "")
+stopifnot(length(res_spde_f$mode) == 3L)
+stopifnot(length(res_spde_f$latent_means) == nrow(verts) + 1L)
+stopifnot(is.finite(res_spde_f$marginal_log_lik))
+
 # Intentionally omit `copy` formula productization in this pass (shared β scaling).
 # Python already covers rgeneric; R exposes inla_rs_rgeneric_define() + rw2d formula.
 

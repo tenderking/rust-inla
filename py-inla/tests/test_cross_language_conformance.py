@@ -105,6 +105,19 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             "y ~ -1 + f(idx, model='crw2', layout='pairs', positions='idx', obs_precision=25.0)",
             data,
         ),
+        "spde_formula": fit(
+            "y ~ -1 + f(field, model='spde', vertices='vertices', triangles='triangles', loc_x='loc_x', loc_y='loc_y', obs_precision=25.0)",
+            {
+                **data,
+                "field": data["idx"],
+                "loc_x": 0.15 + 0.7 * (data["idx"] - 1) / 23,
+                "loc_y": 0.15 + 0.7 * ((data["idx"] - 1) % 5) / 4,
+                "vertices": np.array(
+                    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]]
+                ),
+                "triangles": np.array([[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]]),
+            },
+        ),
     }
 
 
@@ -134,6 +147,7 @@ MODELS = [
     "iid2d",
     "grouped_iid_ar1",
     "crw2_pairs",
+    "spde_formula",
 ]
 
 

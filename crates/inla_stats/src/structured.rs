@@ -26,6 +26,8 @@ use crate::matern2d::matern2d_precision_csc;
 use crate::priors::HyperPriorStack;
 use crate::registry::{SUPPORTED_MODELS, model_metadata};
 use crate::rw2d::rw2d_precision_csc;
+use crate::spde::{spde_params_from_theta, spde_precision_csc};
+use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
 
 /// One latent block in a structured (multi-effect) model.
 ///
@@ -55,6 +57,15 @@ pub struct StructuredEffect {
     pub group_scale_model: bool,
     /// Index of the source effect when `model == "copy"` (source must appear first).
     pub copy_of: Option<usize>,
+    /// SPDE mesh when `model == "spde"` (boxed so [`StructuredEffect`] stays small).
+    pub mesh: Option<Box<SpdeMesh>>,
+}
+
+/// Triangular mesh used to build SPDE `Q(θ)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpdeMesh {
+    pub vertices: Vec<(f64, f64)>,
+    pub triangles: Vec<[usize; 3]>,
 }
 
 impl StructuredEffect {
@@ -78,6 +89,7 @@ impl StructuredEffect {
             group_n: 0,
             group_scale_model: false,
             copy_of: None,
+            mesh: None,
         }
     }
 
@@ -106,6 +118,31 @@ fn maybe_scale(q: CscMatrix, scale_model: bool) -> Result<CscMatrix, String> {
 
 fn apply_tau(q: &CscMatrix, tau: f64) -> Result<CscMatrix, String> {
     scale_csc(q, tau)
+}
+
+fn spde_mesh(effect: &StructuredEffect) -> Result<inla_fmesher::Mesh2D, String> {
+    let mesh = effect
+        .mesh
+        .as_deref()
+        .ok_or_else(|| "spde missing mesh vertices".to_string())?;
+    if mesh.vertices.is_empty() {
+        return Err("spde mesh has no vertices".into());
+    }
+    if mesh.triangles.is_empty() {
+        return Err("spde mesh has no triangles".into());
+    }
+    let vertices = mesh
+        .vertices
+        .iter()
+        .map(|&(x, y)| Vertex2 { x, y })
+        .collect::<Vec<_>>();
+    let triangles = mesh
+        .triangles
+        .iter()
+        .copied()
+        .map(Triangle)
+        .collect::<Vec<_>>();
+    build_mesh2d(vertices, triangles)
 }
 
 /// R-INLA `f(..., diagonal=)` default when `constr=TRUE`.
@@ -335,6 +372,18 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
             let d = iidkd_dim(&typ).ok_or_else(|| format!("iidkd: bad model {typ}"))?;
             iidkd_precision_csc(n_e, d, th)
         }
+        "spde" => {
+            let (tau, kappa) = spde_params_from_theta(th)?;
+            let mesh = spde_mesh(effect)?;
+            if mesh.vertices.len() != n_e {
+                return Err(format!(
+                    "spde mesh vertices {} != effect n {n_e}",
+                    mesh.vertices.len()
+                ));
+            }
+            let fem = mesh.assemble_fem_blocks();
+            spde_precision_csc(&fem, kappa, tau)
+        }
         other => Err(format!("unsupported effect type: {other}")),
     }?;
     if q.rows() != n_e || q.cols() != n_e {
@@ -480,6 +529,12 @@ pub fn resolve_structured_plan(effects: &[StructuredEffect]) -> Result<Structure
                 "effect {model}: n={} must equal n_main={} * group_n={}",
                 effect.n, effect.n_main, effect.group_n
             ));
+        }
+        if model == "spde" {
+            if effect.group_model.is_some() {
+                return Err("grouped SPDE effects are not supported".into());
+            }
+            spde_mesh(effect)?;
         }
         latent_offsets.push(latent_len);
         theta_offsets.push(theta_len);
@@ -986,6 +1041,13 @@ mod tests {
             "crw1" | "crw2" => {
                 effect.positions = Some((0..n).map(|i| i as f64).collect());
             }
+            "spde" => {
+                effect.n = 4;
+                effect.mesh = Some(Box::new(SpdeMesh {
+                    vertices: vec![(0.0, 1.0), (1.0, 1.0), (0.0, 0.0), (1.0, 0.0)],
+                    triangles: vec![[0, 2, 1], [1, 2, 3]],
+                }));
+            }
             _ => {}
         }
         effect
@@ -1020,12 +1082,23 @@ mod tests {
 
     #[test]
     fn unsupported_metadata_only_models_are_rejected_by_structured_path() {
-        for model in ["besag2", "spde", "rgeneric"] {
+        for model in ["besag2", "rgeneric"] {
             let meta = model_metadata(model, 0, None, false).unwrap();
             let effect = StructuredEffect::simple(model, 8, meta.theta_len);
             let err = build_structured_precision(&[effect], &meta.default_theta, 1e-4).unwrap_err();
             assert!(err.contains("not executable"), "model {model}: {err}");
         }
+    }
+
+    #[test]
+    fn spde_without_mesh_is_rejected() {
+        let meta = model_metadata("spde", 0, None, false).unwrap();
+        let effect = StructuredEffect::simple("spde", 4, meta.theta_len);
+        let err = build_structured_precision(&[effect], &meta.default_theta, 1e-4).unwrap_err();
+        assert!(
+            err.contains("spde missing") || err.contains("no vertices"),
+            "{err}"
+        );
     }
 
     #[test]

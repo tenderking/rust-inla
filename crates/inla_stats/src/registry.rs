@@ -18,12 +18,11 @@ pub const REGISTERED_MODELS: &[&str] = &[
 
 /// Latent models executable by the shared structured/formula path.
 ///
-/// SPDE and host callbacks use dedicated paths until they can be represented by
-/// [`crate::structured::StructuredEffect`]. `besag2` remains metadata-only until
-/// its Q implementation is available.
+/// Host-callback `rgeneric` and metadata-only `besag2` stay off this list until
+/// they can be represented by [`crate::structured::StructuredEffect`].
 pub const SUPPORTED_MODELS: &[&str] = &[
     "iid", "rw1", "rw2", "rw2d", "ar1", "ar", "arp", "besag", "bym", "bym2", "fgn", "seasonal",
-    "crw1", "crw2", "matern2d", "fixed", "copy", "iid2d", "iid3d", "iid4d", "iid5d",
+    "crw1", "crw2", "matern2d", "spde", "fixed", "copy", "iid2d", "iid3d", "iid4d", "iid5d",
 ];
 
 /// Group (`control.group`) models understood by the Kronecker path.

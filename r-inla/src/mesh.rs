@@ -16,7 +16,7 @@ fn inla_rs_read_mesh(path: &str) -> std::result::Result<List, Error> {
     ))
 }
 
-fn parse_mesh2d_from_r(
+pub(crate) fn parse_mesh2d_from_r(
     vertices_mat: &Robj,
     triangles_mat: &Robj,
 ) -> std::result::Result<inla_core::fmesher::Mesh2D, Error> {
@@ -61,6 +61,55 @@ fn parse_mesh2d_from_r(
         triangles.push(inla_core::fmesher::Triangle([i0, i1, i2]));
     }
     inla_core::fmesher::build_mesh2d(vertices, triangles).map_err(Error::Other)
+}
+
+pub(crate) fn parse_effect_meshes(
+    lists: &List,
+    n_effects: usize,
+) -> std::result::Result<Vec<(Option<Vec<(f64, f64)>>, Option<Vec<[usize; 3]>>)>, Error> {
+    if lists.is_empty() {
+        return Ok(vec![(None, None); n_effects]);
+    }
+    if lists.len() != n_effects {
+        return Err(Error::Other(
+            "effect_meshes length must match number of effects".to_string(),
+        ));
+    }
+    let mut out = Vec::with_capacity(n_effects);
+    for item in lists.values() {
+        if item.is_null() {
+            out.push((None, None));
+            continue;
+        }
+        let sub: List = match item.clone().try_into() {
+            Ok(list) => list,
+            Err(_) => {
+                out.push((None, None));
+                continue;
+            }
+        };
+        if sub.is_empty() {
+            out.push((None, None));
+            continue;
+        }
+        if sub.len() < 2 {
+            out.push((None, None));
+            continue;
+        }
+        let mut parts: Vec<Robj> = Vec::new();
+        for part in sub.values() {
+            parts.push(part);
+        }
+        if parts.len() < 2 {
+            out.push((None, None));
+            continue;
+        }
+        let mesh = parse_mesh2d_from_r(&parts[0], &parts[1])?;
+        let vertices = mesh.vertices.iter().map(|v| (v.x, v.y)).collect::<Vec<_>>();
+        let triangles = mesh.triangles.iter().map(|t| t.0).collect::<Vec<_>>();
+        out.push((Some(vertices), Some(triangles)));
+    }
+    Ok(out)
 }
 
 #[extendr]

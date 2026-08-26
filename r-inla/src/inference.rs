@@ -4,6 +4,7 @@ use crate::convert::{
     csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based, parse_effect_positions,
     posterior_q_slots,
 };
+use crate::mesh::parse_effect_meshes;
 use extendr_api::prelude::*;
 
 /// Canonicalize likelihood family strings (R-INLA aliases → internal names).
@@ -441,6 +442,7 @@ fn inla_rs_run_inla_structured(
     effect_cyclic: Vec<i32>,
     effect_season: Vec<i32>,
     effect_layouts: Vec<String>,
+    effect_meshes: List,
     dic: bool,
     waic: bool,
     cpo: bool,
@@ -563,14 +565,11 @@ fn inla_rs_run_inla_structured(
             .iter()
             .map(|s| {
                 let t = s.trim().to_lowercase();
-                if t.is_empty() {
-                    "simple".into()
-                } else {
-                    t
-                }
+                if t.is_empty() { "simple".into() } else { t }
             })
             .collect()
     };
+    let meshes = parse_effect_meshes(&effect_meshes, effect_types_owned.len())?;
 
     let effects: Vec<inla_core::StructuredEffect> = (0..effect_types_owned.len())
         .map(|ei| {
@@ -618,6 +617,13 @@ fn inla_rs_run_inla_structured(
                 group_n: usize::try_from(effect_group_ns[ei]).unwrap_or(0),
                 group_scale_model: effect_group_scales[ei] != 0,
                 copy_of,
+                mesh: match (meshes[ei].0.clone(), meshes[ei].1.clone()) {
+                    (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
+                        vertices,
+                        triangles,
+                    })),
+                    _ => None,
+                },
             }
         })
         .collect();
