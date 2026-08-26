@@ -101,6 +101,10 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
             "y ~ -1 + f(space, model='iid', group=time, control_group={'model': 'ar1'}, obs_precision=25.0)",
             data,
         ),
+        "crw2_pairs": fit(
+            "y ~ -1 + f(idx, model='crw2', layout='pairs', positions='idx', obs_precision=25.0)",
+            data,
+        ),
     }
 
 
@@ -129,6 +133,7 @@ MODELS = [
     "ar1_pc",
     "iid2d",
     "grouped_iid_ar1",
+    "crw2_pairs",
 ]
 
 

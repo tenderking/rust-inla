@@ -440,6 +440,7 @@ fn inla_rs_run_inla_structured(
     effect_ncol: Vec<i32>,
     effect_cyclic: Vec<i32>,
     effect_season: Vec<i32>,
+    effect_layouts: Vec<String>,
     dic: bool,
     waic: bool,
     cpo: bool,
@@ -465,6 +466,7 @@ fn inla_rs_run_inla_structured(
         || (!effect_ncol.is_empty() && effect_ncol.len() != effect_types.len())
         || (!effect_cyclic.is_empty() && effect_cyclic.len() != effect_types.len())
         || (!effect_season.is_empty() && effect_season.len() != effect_types.len())
+        || (!effect_layouts.is_empty() && effect_layouts.len() != effect_types.len())
     {
         return Err(Error::Other(
             "effect_* vectors must have equal length".to_string(),
@@ -554,6 +556,21 @@ fn inla_rs_run_inla_structured(
     }
 
     let positions = parse_effect_positions(&effect_positions, &effect_ns_u)?;
+    let layouts: Vec<String> = if effect_layouts.is_empty() {
+        vec!["simple".into(); effect_types_owned.len()]
+    } else {
+        effect_layouts
+            .iter()
+            .map(|s| {
+                let t = s.trim().to_lowercase();
+                if t.is_empty() {
+                    "simple".into()
+                } else {
+                    t
+                }
+            })
+            .collect()
+    };
 
     let effects: Vec<inla_core::StructuredEffect> = (0..effect_types_owned.len())
         .map(|ei| {
@@ -587,7 +604,7 @@ fn inla_rs_run_inla_structured(
                 season,
                 adj: adjs[ei].clone(),
                 positions: positions[ei].clone(),
-                crw2_layout: "simple".into(),
+                crw2_layout: layouts[ei].clone(),
                 nrow,
                 ncol,
                 cyclic,

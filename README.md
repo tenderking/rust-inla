@@ -48,7 +48,7 @@ on one layer.
 
 **Latent `f()` models:** `iid`, `rw1`, `rw2`, `rw2d`, `ar1`, `ar` / `arp`,
 `besag`, `bym`, `bym2`, `fgn`, `seasonal`, `crw1`, `crw2` (`simple` / `pairs` /
-`block` in Python), `matern2d`, `spde` (Python formula; R dedicated API),
+`block`), `matern2d`, `spde` (Python formula; R dedicated API),
 `copy` (`f(j, copy="i")` with free β)
 
 **SPDE:** triangular mesh → FEM `Q(κ,τ)` + barycentric projector `A`; R
@@ -65,7 +65,6 @@ Tracked as issues (seed with `./scripts/seed-roadmap-issues.sh` if empty):
 
 - R `rgeneric` callbacks during hyperparameter optimisation
 - R multi-effect `f(model="spde")` (Python formula works; R uses `inla_rs_spde`)
-- R CRW2 layouts beyond `simple`
 - Sparse/banded factor path for large FGN approx and other sparse GMRFs
 
 ## Building and testing

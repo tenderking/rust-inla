@@ -173,6 +173,22 @@ res_crw2 <- inla_rs(y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout 
 cat("CRW2 simple Marginal Log-Likelihood:", round(res_crw2$marginal_log_lik, 4), "\n")
 stopifnot(is.finite(res_crw2$marginal_log_lik))
 
+res_crw2_pairs <- inla_rs(
+  y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout = "pairs", obs_precision = 50.0),
+  data = df_crw
+)
+cat("CRW2 pairs latent:", length(res_crw2_pairs$latent_means), " mlik:", round(res_crw2_pairs$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_crw2_pairs$marginal_log_lik))
+stopifnot(length(res_crw2_pairs$latent_means) == 2L * length(pos_crw))
+
+res_crw2_block <- inla_rs(
+  y ~ -1 + f(idx, model = "crw2", positions = pos_crw, layout = "block", obs_precision = 50.0),
+  data = df_crw
+)
+cat("CRW2 block latent:", length(res_crw2_block$latent_means), " mlik:", round(res_crw2_block$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_crw2_block$marginal_log_lik))
+stopifnot(length(res_crw2_block$latent_means) == 2L * length(pos_crw))
+
 cat("\n--- Non-Gaussian families (poisson / binomial / nbinom / zip / exp / weibull / laplace) ---\n")
 set.seed(3)
 counts <- c(2, 3, 2, 4, 3, 2, 3, 2)

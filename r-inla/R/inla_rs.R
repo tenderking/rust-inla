@@ -326,6 +326,7 @@ inla_rs_run_inla_structured <- function(
     effect_ncol = integer(0),
     effect_cyclic = integer(0),
     effect_season = integer(0),
+    effect_layouts = character(0),
     dic = TRUE,
     waic = TRUE,
     cpo = TRUE) {
@@ -375,6 +376,7 @@ inla_rs_run_inla_structured <- function(
     as.integer(effect_ncol),
     as.integer(effect_cyclic),
     as.integer(effect_season),
+    as.character(effect_layouts),
     as.logical(dic),
     as.logical(waic),
     as.logical(cpo)
@@ -949,6 +951,7 @@ inla_rs <- function(
   effect_ncol <- integer(0)
   effect_cyclic <- integer(0)
   effect_season <- integer(0)
+  effect_layouts <- character(0)
   prior_names <- character(0)
   prior_params <- list()
   theta <- numeric(0)
@@ -999,6 +1002,7 @@ inla_rs <- function(
     effect_ncol <- 0L
     effect_cyclic <- 0L
     effect_season <- 0L
+    effect_layouts <- "simple"
     adj_lists[[1L]] <- list()
     effect_ids[[1L]] <- colnames(X)
     effect_positions[[1L]] <- numeric(0)
@@ -1035,6 +1039,13 @@ inla_rs <- function(
     ncol_i <- 0L
     cyclic_i <- 0L
     season_i <- 0L
+    layout <- "simple"
+    if (identical(model, "crw2") && !is.null(fs$args$layout)) {
+      layout <- tolower(as.character(fs$args$layout)[1])
+      if (!(layout %in% c("simple", "pairs", "block"))) {
+        stop("crw2 layout must be 'simple', 'pairs', or 'block'", call. = FALSE)
+      }
+    }
     group_model <- NULL
     group_scale <- FALSE
     if (!is.null(fs$group)) {
@@ -1056,6 +1067,9 @@ inla_rs <- function(
       }
       if (!(group_model %in% c("iid", "rw1", "rw2", "ar1"))) {
         stop("unsupported control.group model '", group_model, "'", call. = FALSE)
+      }
+      if (identical(model, "crw2") && layout != "simple") {
+        stop("grouped crw2 currently supports layout='simple' only", call. = FALSE)
       }
       group_name <- as.character(fs$group)[1]
       if (is.null(data[[group_name]])) {
@@ -1200,6 +1214,22 @@ inla_rs <- function(
       }
       graph <- NULL
       order_enc <- as.integer(order)
+    } else if (identical(model, "crw2")) {
+      lev <- sort(unique(idx))
+      n_main <- length(lev)
+      zcol <- match(idx, lev) - 1L
+      wv <- weight_vec(fs$args$weights)
+      if (layout %in% c("pairs", "block")) {
+        n_e <- as.integer(2L * n_main)
+        cols <- if (identical(layout, "pairs")) 2L * zcol else zcol
+        add_triplets(seq_len(n_obs) - 1L, col_off + cols, wv)
+      } else {
+        n_e <- as.integer(n_main)
+        add_triplets(seq_len(n_obs) - 1L, col_off + zcol, wv)
+      }
+      graph <- NULL
+      order_enc <- as.integer(order)
+      effect_ids[[length(effect_ids) + 1L]] <- lev
     } else {
       # Generic: unique sorted levels → latent size
       lev <- sort(unique(idx))
@@ -1235,6 +1265,7 @@ inla_rs <- function(
     effect_ncol <- c(effect_ncol, as.integer(ncol_i))
     effect_cyclic <- c(effect_cyclic, as.integer(cyclic_i))
     effect_season <- c(effect_season, as.integer(season_i))
+    effect_layouts <- c(effect_layouts, layout)
     prior_spec <- .inla_rs_effect_priors(fs, model, order, group_model)
     prior_names <- c(prior_names, prior_spec$names)
     prior_params <- c(prior_params, prior_spec$params)
@@ -1244,8 +1275,29 @@ inla_rs <- function(
       adj_lists[[length(adj_lists) + 1L]] <- list()
     }
     ids <- effect_ids[[length(effect_ids)]]
-    pos <- suppressWarnings(as.numeric(ids))
-    if (length(pos) == n_e && all(is.finite(pos))) {
+    n_knots <- if (identical(model, "crw2") && layout %in% c("pairs", "block")) {
+      as.integer(n_e / 2L)
+    } else {
+      n_e
+    }
+    pos <- numeric(0)
+    raw_pos <- fs$args$positions
+    if (!is.null(raw_pos)) {
+      if (is.character(raw_pos) && length(raw_pos) == 1L) {
+        if (is.null(data[[raw_pos]])) {
+          stop("positions column '", raw_pos, "' not found in data", call. = FALSE)
+        }
+        pos <- as.numeric(data[[raw_pos]])
+      } else {
+        pos <- as.numeric(raw_pos)
+      }
+    } else {
+      cand <- suppressWarnings(as.numeric(ids))
+      if (length(cand) == n_knots && all(is.finite(cand))) {
+        pos <- cand
+      }
+    }
+    if (length(pos) > 0L && all(is.finite(pos))) {
       effect_positions[[length(effect_positions) + 1L]] <- pos
     } else {
       effect_positions[[length(effect_positions) + 1L]] <- numeric(0)
@@ -1327,6 +1379,7 @@ inla_rs <- function(
     effect_ncol = effect_ncol,
     effect_cyclic = effect_cyclic,
     effect_season = effect_season,
+    effect_layouts = effect_layouts,
     dic = dic,
     waic = waic,
     cpo = cpo

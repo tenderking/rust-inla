@@ -96,3 +96,8 @@ report("grouped_iid_ar1", inla_rs(
              control.group = list(model = "ar1"), obs_precision = 25.0),
   data = df
 ))
+
+report("crw2_pairs", inla_rs(
+  y ~ -1 + f(idx, model = "crw2", layout = "pairs", positions = "idx", obs_precision = 25.0),
+  data = df
+))
