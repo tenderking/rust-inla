@@ -666,12 +666,18 @@ fn inla_rs_run_inla_structured(
                         vertices: vec![],
                         triangles: vec![],
                         loc_1d: Some(loc_1d),
+                        barrier_triangles: meshes[ei].barrier_triangles.clone(),
+                        range_fraction: meshes[ei].range_fraction,
+                        diffusion: meshes[ei].diffusion,
                     })),
                     (Some(vertices), Some(triangles), None) => {
                         Some(Box::new(inla_core::SpdeMesh {
                             vertices,
                             triangles,
                             loc_1d: None,
+                            barrier_triangles: meshes[ei].barrier_triangles.clone(),
+                            range_fraction: meshes[ei].range_fraction,
+                            diffusion: meshes[ei].diffusion,
                         }))
                     }
                     _ => None,

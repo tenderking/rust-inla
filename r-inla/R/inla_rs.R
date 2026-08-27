@@ -95,6 +95,21 @@ inla_rs_spde_precision_mesh_csc <- function(vertices_mat, triangles_mat, kappa, 
   .Call("wrap__inla_rs_spde_precision_mesh_csc", as.matrix(vertices_mat), as.matrix(triangles_mat), as.numeric(kappa), as.numeric(tau))
 }
 
+inla_rs_spde_precision_diffusion_csc <- function(
+    vertices_mat, triangles_mat, kappa, tau = 1,
+    barrier_triangles = integer(0), range_fraction = 1, diffusion = c(1, 0, 1)) {
+  .Call(
+    "wrap__inla_rs_spde_precision_diffusion_csc",
+    as.matrix(vertices_mat),
+    as.matrix(triangles_mat),
+    as.numeric(kappa),
+    as.numeric(tau),
+    as.integer(barrier_triangles),
+    as.numeric(range_fraction)[1],
+    as.numeric(diffusion)
+  )
+}
+
 #' FEM mass (c0 / C) and stiffness (g1 / G) for a triangular mesh.
 #'
 #' Corresponds to classic INLA `spde$param.inla$M0` / `M1`.
@@ -1444,6 +1459,19 @@ inla_rs <- function(
       order_enc <- as.integer(order)
       effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
       mesh_store <- list(vertices = verts, triangles = tris)
+      barrier <- fs$args$barrier_triangles
+      if (is.null(barrier) && !is.null(spde_mod$barrier_triangles)) {
+        barrier <- spde_mod$barrier_triangles
+      }
+      if (!is.null(barrier)) {
+        mesh_store$barrier_triangles <- as.integer(barrier)
+      }
+      rf <- fs$args$range_fraction
+      if (is.null(rf) && !is.null(spde_mod$range_fraction)) rf <- spde_mod$range_fraction
+      if (!is.null(rf)) mesh_store$range_fraction <- as.numeric(rf)[1]
+      diff <- fs$args$diffusion
+      if (is.null(diff) && !is.null(spde_mod$diffusion)) diff <- spde_mod$diffusion
+      if (!is.null(diff)) mesh_store$diffusion <- as.numeric(diff)
       }
     } else if (identical(model, "crw2")) {
       lev <- sort(unique(idx))

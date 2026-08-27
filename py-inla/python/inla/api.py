@@ -1622,6 +1622,9 @@ def _fit(
             verts = ft.kwargs.get("vertices")
             tris = ft.kwargs.get("triangles")
             loc_1d = None
+            barrier_tris: list[int] = []
+            range_fraction = 1.0
+            diffusion = (1.0, 0.0, 1.0)
             if spde_mod is not None:
                 if isinstance(spde_mod, Mapping):
                     verts = spde_mod.get("vertices", verts)
@@ -1630,9 +1633,35 @@ def _fit(
                         "loc" in spde_mod and verts is None and tris is None
                     ):
                         loc_1d = np.asarray(spde_mod["loc"], dtype=float).reshape(-1)
+                    raw_bar = spde_mod.get("barrier_triangles")
+                    if raw_bar is not None:
+                        barrier_tris = [int(t) for t in np.asarray(raw_bar).ravel()]
+                    if "range_fraction" in spde_mod:
+                        range_fraction = float(spde_mod["range_fraction"])
+                    elif barrier_tris:
+                        range_fraction = 0.1
+                    raw_h = spde_mod.get("diffusion")
+                    if raw_h is not None:
+                        hs = [float(x) for x in np.asarray(raw_h).ravel()]
+                        if len(hs) != 3:
+                            raise ValueError("spde diffusion must be length 3 [hxx, hxy, hyy]")
+                        diffusion = (hs[0], hs[1], hs[2])
                 elif hasattr(spde_mod, "vertices") and hasattr(spde_mod, "triangles"):
                     verts = getattr(spde_mod, "vertices", verts)
                     tris = getattr(spde_mod, "triangles", tris)
+            if ft.kwargs.get("barrier_triangles") is not None:
+                barrier_tris = [int(t) for t in np.asarray(ft.kwargs["barrier_triangles"]).ravel()]
+            if ft.kwargs.get("range_fraction") is not None:
+                range_fraction = float(ft.kwargs["range_fraction"])
+            elif barrier_tris and "range_fraction" not in (
+                spde_mod if isinstance(spde_mod, Mapping) else {}
+            ):
+                range_fraction = 0.1
+            if ft.kwargs.get("diffusion") is not None:
+                hs = [float(x) for x in np.asarray(ft.kwargs["diffusion"]).ravel()]
+                if len(hs) != 3:
+                    raise ValueError("spde diffusion must be length 3 [hxx, hxy, hyy]")
+                diffusion = (hs[0], hs[1], hs[2])
             if loc_1d is None and isinstance(verts, str):
                 verts = data[verts]
             if loc_1d is None and isinstance(tris, str):
@@ -1655,10 +1684,13 @@ def _fit(
                 pts = loc_obs.reshape(-1)
                 if pts.size != n_obs:
                     raise ValueError("spde 1D loc length must equal n_obs")
-                mesh_store = ("1d", [float(x) for x in loc_1d])
+                mesh_store = {
+                    "kind": "1d",
+                    "loc": [float(x) for x in loc_1d],
+                }
                 n_main = int(loc_1d.size)
                 a_spde = (
-                    core.spde_projector_matrix_1d(list(mesh_store[1]), pts.tolist())
+                    core.spde_projector_matrix_1d(list(mesh_store["loc"]), pts.tolist())
                     .to_scipy()
                     .tocsc()
                     .copy()
@@ -1678,7 +1710,14 @@ def _fit(
                     tris_arr = tris_arr - 1
                 vert_tuples = [(float(x), float(y)) for x, y in verts_arr]
                 tri_tuples = [(int(a), int(b), int(c)) for a, b, c in tris_arr]
-                mesh_store = (vert_tuples, tri_tuples)
+                mesh_store = {
+                    "kind": "2d",
+                    "vertices": vert_tuples,
+                    "triangles": tri_tuples,
+                    "barrier_triangles": barrier_tris,
+                    "range_fraction": range_fraction,
+                    "diffusion": diffusion,
+                }
                 n_main = len(vert_tuples)
                 loc_x_key = ft.kwargs.get("loc_x", "loc_x")
                 loc_y_key = ft.kwargs.get("loc_y", "loc_y")
@@ -1948,10 +1987,24 @@ def _fit(
                 d["copy_of"] = int(copy_src)
             mesh = meshes[ei]
             if mesh is not None:
-                if isinstance(mesh, tuple) and mesh and mesh[0] == "1d":
+                if isinstance(mesh, dict) and (
+                    mesh.get("kind") == "1d" or ("loc" in mesh and "vertices" not in mesh)
+                ):
+                    d["mesh_loc_1d"] = [float(x) for x in mesh["loc"]]
+                elif isinstance(mesh, tuple) and mesh and mesh[0] == "1d":
                     d["mesh_loc_1d"] = [float(x) for x in mesh[1]]
                 else:
-                    verts, tris = mesh
+                    if isinstance(mesh, dict):
+                        verts = mesh["vertices"]
+                        tris = mesh["triangles"]
+                        d["barrier_triangles"] = [
+                            int(t) for t in mesh.get("barrier_triangles") or []
+                        ]
+                        d["range_fraction"] = float(mesh.get("range_fraction", 1.0))
+                        h = mesh.get("diffusion") or (1.0, 0.0, 1.0)
+                        d["diffusion"] = [float(x) for x in h]
+                    else:
+                        verts, tris = mesh
                     d["mesh_vertices"] = [[float(x), float(y)] for x, y in verts]
                     d["mesh_triangles"] = [[int(a), int(b), int(c)] for a, b, c in tris]
             out.append(d)
@@ -1966,8 +2019,23 @@ def _fit(
         assert mesh is not None
         tau = float(np.exp(ti[0]))
         kappa = float(np.exp(ti[1]))
+        if isinstance(mesh, dict) and (
+            mesh.get("kind") == "1d" or ("loc" in mesh and "vertices" not in mesh)
+        ):
+            return core.spde_precision_matrix_1d(list(mesh["loc"]), kappa=kappa, tau=tau)
         if isinstance(mesh, tuple) and mesh and mesh[0] == "1d":
             return core.spde_precision_matrix_1d(list(mesh[1]), kappa=kappa, tau=tau)
+        if isinstance(mesh, dict):
+            h = mesh.get("diffusion") or (1.0, 0.0, 1.0)
+            return core.spde_precision_matrix(
+                mesh["vertices"],
+                mesh["triangles"],
+                kappa=kappa,
+                tau=tau,
+                barrier_triangles=list(mesh.get("barrier_triangles") or []),
+                range_fraction=float(mesh.get("range_fraction", 1.0)),
+                diffusion=[float(x) for x in h],
+            )
         return core.spde_precision_matrix(mesh[0], mesh[1], kappa=kappa, tau=tau)
 
     def build_prior(th):

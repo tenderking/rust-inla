@@ -491,6 +491,63 @@ impl Mesh2D {
     }
 
     pub fn assemble_fem_blocks(&self) -> FemBlocks {
+        self.assemble_fem_geometry(&[], 1.0, [1.0, 0.0, 1.0])
+            .expect("identity diffusion FEM")
+    }
+
+    /// FEM with a Bakka-style barrier and/or anisotropic diffusion tensor.
+    ///
+    /// Barrier triangles use stiffness scale `range_fraction²`. `diffusion` is
+    /// `[hxx, hxy, hyy]` for \(H\); identity `[1, 0, 1]` recovers isotropic G.
+    pub fn assemble_fem_geometry(
+        &self,
+        barrier_triangles: &[usize],
+        range_fraction: f64,
+        diffusion: [f64; 3],
+    ) -> Result<FemBlocks, String> {
+        let scale =
+            triangle_scale_from_barrier(self.triangles.len(), barrier_triangles, range_fraction)?;
+        self.assemble_fem_blocks_diffusion(&scale, diffusion[0], diffusion[1], diffusion[2])
+    }
+
+    /// Assemble mass `c0` and stiffness `g1` with per-triangle diffusion.
+    ///
+    /// `triangle_scale[k]` multiplies the diffusion tensor on triangle `k`.
+    /// `hxx`, `hxy`, `hyy` are the global anisotropic tensor
+    /// \(H=\begin{pmatrix}h_{xx}&h_{xy}\\h_{xy}&h_{yy}\end{pmatrix}\).
+    /// Barrier models pass a small scale on barrier triangles so correlation
+    /// does not leak across the barrier.
+    pub fn assemble_fem_blocks_diffusion(
+        &self,
+        triangle_scale: &[f64],
+        hxx: f64,
+        hxy: f64,
+        hyy: f64,
+    ) -> Result<FemBlocks, String> {
+        if triangle_scale.len() != self.triangles.len() {
+            return Err(format!(
+                "diffusion scale length {} != n_triangles {}",
+                triangle_scale.len(),
+                self.triangles.len()
+            ));
+        }
+        if !hxx.is_finite() || !hxy.is_finite() || !hyy.is_finite() {
+            return Err("diffusion tensor entries must be finite".into());
+        }
+        let det = hxx * hyy - hxy * hxy;
+        if det <= 0.0 {
+            return Err(format!("diffusion tensor must be SPD, det={det}"));
+        }
+        Ok(self.assemble_fem_blocks_diffusion_unchecked(triangle_scale, hxx, hxy, hyy))
+    }
+
+    fn assemble_fem_blocks_diffusion_unchecked(
+        &self,
+        triangle_scale: &[f64],
+        hxx: f64,
+        hxy: f64,
+        hyy: f64,
+    ) -> FemBlocks {
         let mut c0 = SparseTriplet::new(self.vertices.len(), self.vertices.len());
         let mut c1 = SparseTriplet::new(self.vertices.len(), self.vertices.len());
         let mut g1 = SparseTriplet::new(self.vertices.len(), self.vertices.len());
@@ -512,12 +569,20 @@ impl Mesh2D {
             triangle_areas.push(area);
             let fa = 0.5 * cross2(e0, e1).abs();
             let fa = if fa <= GEOM_EPSILON { area } else { fa };
+            let scale = if t < triangle_scale.len() {
+                triangle_scale[t]
+            } else {
+                1.0
+            };
 
             let mut eij = [[0.0; 3]; 3];
             for i in 0..3 {
-                eij[i][i] = dot(e[i], e[i]);
-                for j in (i + 1)..3 {
-                    eij[i][j] = dot(e[i], e[j]);
+                let gi = rotate_perp(e[i]);
+                for j in i..3 {
+                    let gj = rotate_perp(e[j]);
+                    let hgi_x = hxx * gi.x + hxy * gi.y;
+                    let hgi_y = hxy * gi.x + hyy * gi.y;
+                    eij[i][j] = hgi_x * gj.x + hgi_y * gj.y;
                     eij[j][i] = eij[i][j];
                 }
             }
@@ -525,11 +590,11 @@ impl Mesh2D {
             for i in 0..3 {
                 c0.add(tv[i], tv[i], area / 3.0);
                 c1.add(tv[i], tv[i], area / 6.0);
-                g1.add(tv[i], tv[i], eij[i][i] / (4.0 * fa));
+                g1.add(tv[i], tv[i], scale * eij[i][i] / (4.0 * fa));
                 for j in (i + 1)..3 {
                     c1.add(tv[i], tv[j], area / 12.0);
                     c1.add(tv[j], tv[i], area / 12.0);
-                    let vij = eij[i][j] / (4.0 * fa);
+                    let vij = scale * eij[i][j] / (4.0 * fa);
                     g1.add(tv[i], tv[j], vij);
                     g1.add(tv[j], tv[i], vij);
                 }
@@ -546,7 +611,7 @@ impl Mesh2D {
                     for j in 0..3 {
                         for k in 0..3 {
                             if boundary[k] && i != k {
-                                b1.add(tv[i], tv[j], eij[k][j] * vij);
+                                b1.add(tv[i], tv[j], scale * eij[k][j] * vij);
                             }
                         }
                     }
@@ -840,8 +905,32 @@ fn edge_vec(a: Vertex2, b: Vertex2) -> Vertex2 {
     }
 }
 
-fn dot(a: Vertex2, b: Vertex2) -> f64 {
-    a.x * b.x + a.y * b.y
+fn rotate_perp(v: Vertex2) -> Vertex2 {
+    Vertex2 { x: v.y, y: -v.x }
+}
+
+/// Per-triangle stiffness weights: `range_fraction²` on barrier triangles, else 1.
+pub fn triangle_scale_from_barrier(
+    n_triangles: usize,
+    barrier_triangles: &[usize],
+    range_fraction: f64,
+) -> Result<Vec<f64>, String> {
+    if !range_fraction.is_finite() || range_fraction <= 0.0 {
+        return Err(format!(
+            "range_fraction must be finite and > 0, got {range_fraction}"
+        ));
+    }
+    let mut scale = vec![1.0; n_triangles];
+    let w = range_fraction * range_fraction;
+    for &t in barrier_triangles {
+        if t >= n_triangles {
+            return Err(format!(
+                "barrier triangle {t} out of range (n_triangles={n_triangles})"
+            ));
+        }
+        scale[t] = w;
+    }
+    Ok(scale)
 }
 
 fn cross2(a: Vertex2, b: Vertex2) -> f64 {
@@ -1051,6 +1140,22 @@ mod tests {
         assert_eq!(sum_entry(&blocks.c0, 3, 3), 1.0 / 6.0);
         assert!(!blocks.g1.entries.is_empty());
         assert!(!blocks.b1.entries.is_empty());
+
+        let ident = mesh
+            .assemble_fem_geometry(&[], 1.0, [1.0, 0.0, 1.0])
+            .expect("identity geometry");
+        assert_eq!(blocks.g1.entries, ident.g1.entries);
+
+        let aniso = mesh
+            .assemble_fem_geometry(&[], 1.0, [2.0, 0.0, 0.5])
+            .expect("anisotropic geometry");
+        assert_ne!(sum_entry(&blocks.g1, 0, 0), sum_entry(&aniso.g1, 0, 0));
+
+        let barrier = mesh
+            .assemble_fem_geometry(&[0], 0.1, [1.0, 0.0, 1.0])
+            .expect("barrier geometry");
+        assert_ne!(blocks.g1.entries, barrier.g1.entries);
+        assert_eq!(blocks.c0.entries, barrier.c0.entries);
     }
 
     fn sum_entry(matrix: &SparseTriplet, row: usize, col: usize) -> f64 {

@@ -344,6 +344,14 @@ stopifnot(length(res_spde_f$mode) == 3L)
 stopifnot(length(res_spde_f$latent_means) == nrow(verts) + 1L)
 stopifnot(is.finite(res_spde_f$marginal_log_lik))
 
+q_iso <- inla_rs_spde_precision_mesh_csc(verts, tris, 1.0, 1.0)
+q_bar <- inla_rs_spde_precision_diffusion_csc(
+  verts, tris, 1.0, 1.0,
+  barrier_triangles = 1L, range_fraction = 0.1, diffusion = c(1, 0, 1)
+)
+stopifnot(!isTRUE(all.equal(as.matrix(q_iso), as.matrix(q_bar))))
+cat("barrier SPDE Q differs from isotropic, nnz_bar=", length(q_bar@x), "\n", sep = "")
+
 # Intentionally omit `copy` formula productization in this pass (shared β scaling).
 # Python already covers rgeneric; R exposes inla_rs_rgeneric_define() + rw2d formula.
 

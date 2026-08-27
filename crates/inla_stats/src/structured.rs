@@ -62,12 +62,46 @@ pub struct StructuredEffect {
 }
 
 /// Mesh used to build SPDE `Q(θ)` (2D triangles, or 1D knots via [`Self::loc_1d`]).
+///
+/// Barrier / anisotropy are **fixed geometry**, not extra θ. `θ` stays
+/// `[log τ, log κ]`. Empty `barrier_triangles` and `diffusion = [1, 0, 1]`
+/// recover the isotropic Matérn SPDE.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpdeMesh {
     pub vertices: Vec<(f64, f64)>,
     pub triangles: Vec<[usize; 3]>,
     /// Ordered 1D knot locations. When set, FEM uses the 1D assembler.
     pub loc_1d: Option<Vec<f64>>,
+    /// 0-based triangle indices treated as a spatial barrier (2D only).
+    pub barrier_triangles: Vec<usize>,
+    /// Range multiplier on barrier triangles (classic Bakka default ~0.1).
+    pub range_fraction: f64,
+    /// Anisotropic diffusion `[hxx, hxy, hyy]`; identity is `[1, 0, 1]`.
+    pub diffusion: [f64; 3],
+}
+
+impl SpdeMesh {
+    pub fn isotropic_2d(vertices: Vec<(f64, f64)>, triangles: Vec<[usize; 3]>) -> Self {
+        Self {
+            vertices,
+            triangles,
+            loc_1d: None,
+            barrier_triangles: Vec::new(),
+            range_fraction: 1.0,
+            diffusion: [1.0, 0.0, 1.0],
+        }
+    }
+
+    pub fn knots_1d(loc: Vec<f64>) -> Self {
+        Self {
+            vertices: Vec::new(),
+            triangles: Vec::new(),
+            loc_1d: Some(loc),
+            barrier_triangles: Vec::new(),
+            range_fraction: 1.0,
+            diffusion: [1.0, 0.0, 1.0],
+        }
+    }
 }
 
 impl StructuredEffect {
@@ -131,6 +165,12 @@ fn spde_fem(effect: &StructuredEffect) -> Result<(inla_fmesher::FemBlocks, usize
         if loc.is_empty() {
             return Err("spde 1D mesh has no knots".into());
         }
+        if !mesh.barrier_triangles.is_empty() {
+            return Err("barrier SPDE is only supported on 2D triangular meshes".into());
+        }
+        if mesh.diffusion != [1.0, 0.0, 1.0] {
+            return Err("anisotropic SPDE is only supported on 2D triangular meshes".into());
+        }
         let m1 = build_mesh1d(loc.clone())?;
         let n = m1.n();
         Ok((m1.assemble_fem_blocks(), n))
@@ -154,7 +194,9 @@ fn spde_fem(effect: &StructuredEffect) -> Result<(inla_fmesher::FemBlocks, usize
             .collect::<Vec<_>>();
         let m2 = build_mesh2d(vertices, triangles)?;
         let n = m2.vertices.len();
-        Ok((m2.assemble_fem_blocks(), n))
+        let fem =
+            m2.assemble_fem_geometry(&mesh.barrier_triangles, mesh.range_fraction, mesh.diffusion)?;
+        Ok((fem, n))
     }
 }
 
@@ -1052,11 +1094,10 @@ mod tests {
             }
             "spde" => {
                 effect.n = 4;
-                effect.mesh = Some(Box::new(SpdeMesh {
-                    vertices: vec![(0.0, 1.0), (1.0, 1.0), (0.0, 0.0), (1.0, 0.0)],
-                    triangles: vec![[0, 2, 1], [1, 2, 3]],
-                    loc_1d: None,
-                }));
+                effect.mesh = Some(Box::new(SpdeMesh::isotropic_2d(
+                    vec![(0.0, 1.0), (1.0, 1.0), (0.0, 0.0), (1.0, 0.0)],
+                    vec![[0, 2, 1], [1, 2, 3]],
+                )));
             }
             _ => {}
         }
@@ -1116,16 +1157,104 @@ mod tests {
         let meta = model_metadata("spde", 0, None, false).unwrap();
         let loc = vec![0.0, 1.0, 2.0, 4.0];
         let mut effect = StructuredEffect::simple("spde", loc.len(), meta.theta_len);
-        effect.mesh = Some(Box::new(SpdeMesh {
-            vertices: vec![],
-            triangles: vec![],
-            loc_1d: Some(loc.clone()),
-        }));
+        effect.mesh = Some(Box::new(SpdeMesh::knots_1d(loc.clone())));
         let q =
             build_structured_precision(std::slice::from_ref(&effect), &meta.default_theta, 1e-4)
                 .unwrap();
         assert_eq!(q.rows(), loc.len());
         assert!(q.data().iter().all(|v| v.is_finite()));
+    }
+
+    fn lattice_2d(nx: usize, ny: usize) -> (Vec<(f64, f64)>, Vec<[usize; 3]>) {
+        let mut vertices = Vec::with_capacity(nx * ny);
+        for j in 0..ny {
+            for i in 0..nx {
+                vertices.push((i as f64 / (nx - 1) as f64, j as f64 / (ny - 1) as f64));
+            }
+        }
+        let idx = |i: usize, j: usize| j * nx + i;
+        let mut triangles = Vec::new();
+        for j in 0..(ny - 1) {
+            for i in 0..(nx - 1) {
+                let v00 = idx(i, j);
+                let v10 = idx(i + 1, j);
+                let v01 = idx(i, j + 1);
+                let v11 = idx(i + 1, j + 1);
+                triangles.push([v00, v10, v01]);
+                triangles.push([v10, v11, v01]);
+            }
+        }
+        (vertices, triangles)
+    }
+
+    #[test]
+    fn barrier_spde_reduces_covariance_across_strip() {
+        let meta = model_metadata("spde", 0, None, false).unwrap();
+        let (vertices, triangles) = lattice_2d(7, 2);
+        let barrier: Vec<usize> = triangles
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                let cx = (vertices[t[0]].0 + vertices[t[1]].0 + vertices[t[2]].0) / 3.0;
+                (0.35..0.65).contains(&cx)
+            })
+            .map(|(k, _)| k)
+            .collect();
+        assert!(!barrier.is_empty());
+
+        let mut open = StructuredEffect::simple("spde", vertices.len(), meta.theta_len);
+        open.mesh = Some(Box::new(SpdeMesh::isotropic_2d(
+            vertices.clone(),
+            triangles.clone(),
+        )));
+        let mut blocked = open.clone();
+        if let Some(mesh) = blocked.mesh.as_mut() {
+            mesh.barrier_triangles = barrier;
+            mesh.range_fraction = 0.1;
+        }
+        let q_open =
+            build_structured_precision(std::slice::from_ref(&open), &meta.default_theta, 1e-4)
+                .unwrap();
+        let q_bar =
+            build_structured_precision(std::slice::from_ref(&blocked), &meta.default_theta, 1e-4)
+                .unwrap();
+        let n = vertices.len();
+        let cov_open =
+            inla_math::invert_symmetric_matrix(&inla_math::csc_to_dense(&q_open).unwrap(), n)
+                .unwrap();
+        let cov_bar =
+            inla_math::invert_symmetric_matrix(&inla_math::csc_to_dense(&q_bar).unwrap(), n)
+                .unwrap();
+        let left = 0;
+        let right = 6;
+        let open_lr = cov_open[left * n + right].abs();
+        let bar_lr = cov_bar[left * n + right].abs();
+        assert!(
+            bar_lr < 0.5 * open_lr,
+            "barrier should cut cross-strip covariance: open={open_lr} barrier={bar_lr}"
+        );
+    }
+
+    #[test]
+    fn anisotropic_spde_q_differs_from_isotropic() {
+        let meta = model_metadata("spde", 0, None, false).unwrap();
+        let (vertices, triangles) = lattice_2d(3, 3);
+        let mut iso = StructuredEffect::simple("spde", vertices.len(), meta.theta_len);
+        iso.mesh = Some(Box::new(SpdeMesh::isotropic_2d(
+            vertices.clone(),
+            triangles.clone(),
+        )));
+        let mut aniso = iso.clone();
+        if let Some(mesh) = aniso.mesh.as_mut() {
+            mesh.diffusion = [3.0, 0.5, 0.4];
+        }
+        let q_iso =
+            build_structured_precision(std::slice::from_ref(&iso), &meta.default_theta, 1e-4)
+                .unwrap();
+        let q_an =
+            build_structured_precision(std::slice::from_ref(&aniso), &meta.default_theta, 1e-4)
+                .unwrap();
+        assert_ne!(q_iso.data(), q_an.data());
     }
 
     #[test]

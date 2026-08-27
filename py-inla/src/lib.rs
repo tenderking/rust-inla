@@ -860,6 +860,36 @@ fn structured_constraints_py(
     }
 }
 
+fn parse_spde_geometry(d: &Bound<'_, PyDict>) -> PyResult<(Vec<usize>, f64, [f64; 3])> {
+    let barrier: Vec<usize> = match d.get_item("barrier_triangles")? {
+        Some(value) if !value.is_none() => value.extract()?,
+        _ => Vec::new(),
+    };
+    let range_fraction: f64 = match d.get_item("range_fraction")? {
+        Some(value) if !value.is_none() => value.extract()?,
+        _ => {
+            if barrier.is_empty() {
+                1.0
+            } else {
+                0.1
+            }
+        }
+    };
+    let diffusion: [f64; 3] = match d.get_item("diffusion")? {
+        Some(value) if !value.is_none() => {
+            let xs: Vec<f64> = value.extract()?;
+            if xs.len() != 3 {
+                return Err(PyValueError::new_err(
+                    "diffusion must be [hxx, hxy, hyy] of length 3",
+                ));
+            }
+            [xs[0], xs[1], xs[2]]
+        }
+        _ => [1.0, 0.0, 1.0],
+    };
+    Ok((barrier, range_fraction, diffusion))
+}
+
 fn parse_structured_effects(
     effects: &[Bound<'_, PyDict>],
 ) -> PyResult<Vec<inla_core::StructuredEffect>> {
@@ -976,6 +1006,7 @@ fn parse_structured_effects(
             Some(value) if !value.is_none() => Some(value.extract()?),
             _ => None,
         };
+        let (barrier_triangles, range_fraction, diffusion) = parse_spde_geometry(d)?;
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -1000,6 +1031,9 @@ fn parse_structured_effects(
                     vertices: mesh_vertices.unwrap_or_default(),
                     triangles: mesh_triangles.unwrap_or_default(),
                     loc_1d: mesh_loc_1d,
+                    barrier_triangles,
+                    range_fraction,
+                    diffusion,
                 }))
             } else {
                 match (mesh_vertices, mesh_triangles) {
@@ -1007,6 +1041,9 @@ fn parse_structured_effects(
                         vertices,
                         triangles,
                         loc_1d: None,
+                        barrier_triangles,
+                        range_fraction,
+                        diffusion,
                     })),
                     _ => None,
                 }
@@ -1475,12 +1512,23 @@ fn kronecker_csc(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyCscMa
 
 /// SPDE precision from a triangular mesh (`vertices` Nx2, `triangles` Mx3, 0-based).
 #[pyfunction]
-#[pyo3(signature = (vertices, triangles, kappa, tau=1.0))]
+#[pyo3(signature = (
+    vertices,
+    triangles,
+    kappa,
+    tau=1.0,
+    barrier_triangles=None,
+    range_fraction=None,
+    diffusion=None,
+))]
 fn spde_precision_matrix(
     vertices: Vec<(f64, f64)>,
     triangles: Vec<(usize, usize, usize)>,
     kappa: f64,
     tau: f64,
+    barrier_triangles: Option<Vec<usize>>,
+    range_fraction: Option<f64>,
+    diffusion: Option<Vec<f64>>,
 ) -> PyResult<PyCscMatrix> {
     let verts: Vec<inla_core::fmesher::Vertex2> = vertices
         .into_iter()
@@ -1491,7 +1539,20 @@ fn spde_precision_matrix(
         .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
         .collect();
     let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
-    let fem = mesh.assemble_fem_blocks();
+    let barrier = barrier_triangles.unwrap_or_default();
+    let rf = range_fraction.unwrap_or(if barrier.is_empty() { 1.0 } else { 0.1 });
+    let h = match diffusion {
+        Some(xs) if xs.len() == 3 => [xs[0], xs[1], xs[2]],
+        Some(_) => {
+            return Err(PyValueError::new_err(
+                "diffusion must be [hxx, hxy, hyy] of length 3",
+            ));
+        }
+        None => [1.0, 0.0, 1.0],
+    };
+    let fem = mesh
+        .assemble_fem_geometry(&barrier, rf, h)
+        .map_err(PyValueError::new_err)?;
     let csc = inla_core::spde_precision_csc(&fem, kappa, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
@@ -1523,10 +1584,20 @@ fn spde_projector_matrix(
 ///
 /// Analogous to classic INLA `spde$param.inla$M0` / `M1`.
 #[pyfunction]
+#[pyo3(signature = (
+    vertices,
+    triangles,
+    barrier_triangles=None,
+    range_fraction=None,
+    diffusion=None,
+))]
 fn fem_blocks_mesh(
     py: Python<'_>,
     vertices: Vec<(f64, f64)>,
     triangles: Vec<(usize, usize, usize)>,
+    barrier_triangles: Option<Vec<usize>>,
+    range_fraction: Option<f64>,
+    diffusion: Option<Vec<f64>>,
 ) -> PyResult<Bound<'_, PyDict>> {
     let verts: Vec<inla_core::fmesher::Vertex2> = vertices
         .into_iter()
@@ -1537,7 +1608,20 @@ fn fem_blocks_mesh(
         .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
         .collect();
     let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
-    let fem = mesh.assemble_fem_blocks();
+    let barrier = barrier_triangles.unwrap_or_default();
+    let rf = range_fraction.unwrap_or(if barrier.is_empty() { 1.0 } else { 0.1 });
+    let h = match diffusion {
+        Some(xs) if xs.len() == 3 => [xs[0], xs[1], xs[2]],
+        Some(_) => {
+            return Err(PyValueError::new_err(
+                "diffusion must be [hxx, hxy, hyy] of length 3",
+            ));
+        }
+        None => [1.0, 0.0, 1.0],
+    };
+    let fem = mesh
+        .assemble_fem_geometry(&barrier, rf, h)
+        .map_err(PyValueError::new_err)?;
     let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
     let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
     let out = PyDict::new(py);

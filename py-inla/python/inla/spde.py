@@ -85,6 +85,9 @@ def fem_blocks_mesh(
     triangles: np.ndarray | list | None = None,
     *,
     loc=None,
+    barrier_triangles=None,
+    range_fraction: float | None = None,
+    diffusion=None,
 ) -> dict[str, Any]:
     """FEM mass (``c0`` / C) and stiffness (``g1`` / G) as ``PyCscMatrix``."""
     if loc is not None:
@@ -94,7 +97,14 @@ def fem_blocks_mesh(
         raise ValueError("fem_blocks_mesh requires vertices and triangles, or loc=")
     verts = _as_vertex_tuples(vertices)
     tris = _as_triangle_tuples(triangles)
-    return _fem_blocks_mesh(verts, tris)
+    kwargs: dict[str, Any] = {}
+    if barrier_triangles is not None:
+        kwargs["barrier_triangles"] = [int(t) for t in np.asarray(barrier_triangles).ravel()]
+    if range_fraction is not None:
+        kwargs["range_fraction"] = float(range_fraction)
+    if diffusion is not None:
+        kwargs["diffusion"] = [float(x) for x in np.asarray(diffusion).ravel()]
+    return _fem_blocks_mesh(verts, tris, **kwargs)
 
 
 def _as_vertex_tuples(vertices: np.ndarray | list) -> list[tuple[float, float]]:
@@ -129,6 +139,9 @@ def precision_matrix(
     tau: float = 1.0,
     *,
     loc=None,
+    barrier_triangles=None,
+    range_fraction: float | None = None,
+    diffusion=None,
 ):
     """Matérn SPDE precision Q(κ, τ) on a triangular or 1D mesh."""
     if loc is not None:
@@ -136,11 +149,19 @@ def precision_matrix(
         return spde_precision_matrix_1d(knots.tolist(), float(kappa), float(tau))
     if vertices is None or triangles is None:
         raise ValueError("precision_matrix requires vertices and triangles, or loc=")
+    kwargs: dict[str, Any] = {}
+    if barrier_triangles is not None:
+        kwargs["barrier_triangles"] = [int(t) for t in np.asarray(barrier_triangles).ravel()]
+    if range_fraction is not None:
+        kwargs["range_fraction"] = float(range_fraction)
+    if diffusion is not None:
+        kwargs["diffusion"] = [float(x) for x in np.asarray(diffusion).ravel()]
     return spde_precision_matrix(
         _as_vertex_tuples(vertices),
         _as_triangle_tuples(triangles),
         float(kappa),
         float(tau),
+        **kwargs,
     )
 
 
@@ -201,6 +222,47 @@ def matern_1d(mesh: dict[str, Any]) -> dict[str, Any]:
     return matern(mesh)
 
 
+def triangles_in_x_range(mesh: dict[str, Any], x0: float, x1: float) -> list[int]:
+    """0-based indices of triangles whose centroid x lies in ``[x0, x1]``."""
+    if _mesh_kind(mesh) != "2d":
+        raise ValueError("triangles_in_x_range requires a 2D mesh")
+    verts = np.asarray(mesh["vertices"], dtype=float)
+    tris = np.asarray(mesh["triangles"])
+    lo, hi = (min(x0, x1), max(x0, x1))
+    out: list[int] = []
+    for k, (a, b, c) in enumerate(tris):
+        cx = (verts[int(a), 0] + verts[int(b), 0] + verts[int(c), 0]) / 3.0
+        if lo <= cx <= hi:
+            out.append(k)
+    return out
+
+
+def barrier_matern(
+    mesh: dict[str, Any],
+    barrier_triangles,
+    range_fraction: float = 0.1,
+) -> dict[str, Any]:
+    """Matérn SPDE with a Bakka-style range barrier (still θ = [log τ, log κ])."""
+    if _mesh_kind(mesh) != "2d":
+        raise ValueError("barrier_matern requires a 2D triangular mesh")
+    out = matern(mesh)
+    out["barrier_triangles"] = [int(t) for t in np.asarray(barrier_triangles).ravel()]
+    out["range_fraction"] = float(range_fraction)
+    return out
+
+
+def anisotropic_matern(mesh: dict[str, Any], diffusion) -> dict[str, Any]:
+    """Matérn SPDE with a fixed anisotropic diffusion tensor ``[hxx, hxy, hyy]``."""
+    if _mesh_kind(mesh) != "2d":
+        raise ValueError("anisotropic_matern requires a 2D triangular mesh")
+    hs = [float(x) for x in np.asarray(diffusion, dtype=float).ravel()]
+    if len(hs) != 3:
+        raise ValueError("diffusion must be length 3 [hxx, hxy, hyy]")
+    out = matern(mesh)
+    out["diffusion"] = hs
+    return out
+
+
 __all__ = [
     "lattice_mesh",
     "mesh_1d",
@@ -211,6 +273,9 @@ __all__ = [
     "make_A_1d",
     "matern",
     "matern_1d",
+    "barrier_matern",
+    "anisotropic_matern",
+    "triangles_in_x_range",
     "spde_precision_matrix",
     "spde_projector_matrix",
     "spde_precision_matrix_1d",

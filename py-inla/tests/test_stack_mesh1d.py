@@ -83,3 +83,67 @@ def test_multi_likelihood_gaussian_poisson_na_pattern():
     )
     assert np.isfinite(res.marginal_log_lik)
     assert len(res.predictor_means) == n
+
+
+def test_barrier_and_anisotropic_fem_differ_from_isotropic():
+    from inla.spde import (
+        anisotropic_matern,
+        barrier_matern,
+        fem_blocks_mesh,
+        lattice_mesh,
+        triangles_in_x_range,
+    )
+
+    mesh = lattice_mesh(nx=5, ny=3)
+    barrier = triangles_in_x_range(mesh, 0.4, 0.6)
+    assert barrier
+    g0 = fem_blocks_mesh(mesh["vertices"], mesh["triangles"])["g1"].to_scipy()
+    g_bar = fem_blocks_mesh(
+        mesh["vertices"],
+        mesh["triangles"],
+        barrier_triangles=barrier,
+        range_fraction=0.1,
+    )["g1"].to_scipy()
+    g_an = fem_blocks_mesh(
+        mesh["vertices"],
+        mesh["triangles"],
+        diffusion=[2.0, 0.3, 0.5],
+    )["g1"].to_scipy()
+    assert (g0 - g_bar).nnz > 0
+    assert (g0 - g_an).nnz > 0
+    tagged = barrier_matern(mesh, barrier)
+    assert tagged["range_fraction"] == 0.1
+    an = anisotropic_matern(mesh, [3.0, 0.0, 0.4])
+    assert an["diffusion"] == [3.0, 0.0, 0.4]
+
+
+def test_barrier_spde_fit_is_finite():
+    from inla.spde import barrier_matern, lattice_mesh, triangles_in_x_range
+
+    mesh = lattice_mesh(nx=5, ny=3)
+    barrier = triangles_in_x_range(mesh, 0.4, 0.6)
+    rng = np.random.default_rng(2)
+    loc = np.column_stack([np.linspace(0.05, 0.95, 12), np.full(12, 0.5) + rng.normal(0, 0.05, 12)])
+    y = np.sin(2 * np.pi * loc[:, 0]) + rng.normal(0, 0.1, 12)
+    data = {
+        "y": y,
+        "field": np.zeros(12),
+        "loc": loc,
+    }
+    res = inla.fit(
+        data=data,
+        response="y",
+        intercept=True,
+        random=[
+            inla.SPDE(
+                "field",
+                spde_model=barrier_matern(mesh, barrier, range_fraction=0.1),
+                loc="loc",
+            )
+        ],
+        family=Gaussian(
+            control_family={"hyper": {"prec": {"initial": float(np.log(50.0)), "fixed": True}}}
+        ),
+    )
+    assert np.isfinite(res.marginal_log_lik)
+    assert len(res.latent_means) == 1 + mesh["n"]
