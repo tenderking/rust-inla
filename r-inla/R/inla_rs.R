@@ -248,12 +248,15 @@ inla_rs_run_inla_inference <- function(
     E = numeric(0),
     Ntrials = numeric(0),
     event = numeric(0),
+    y_upper = numeric(0),
     size = 1.0,
     zero_prob = 0.1,
     inflation = "type0",
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
+    variant = 1L,
+    prec = 1.0,
     adj_list = list(),
     deterministic = FALSE) {
   .Call(
@@ -270,12 +273,15 @@ inla_rs_run_inla_inference <- function(
     as.numeric(E),
     as.numeric(Ntrials),
     as.numeric(event),
+    as.numeric(y_upper),
     as.numeric(size),
     as.numeric(zero_prob),
     as.character(inflation),
     as.numeric(alpha),
     as.numeric(gamma),
     as.numeric(shape),
+    as.integer(variant),
+    as.numeric(prec),
     adj_list,
     as.logical(deterministic)
   )
@@ -312,12 +318,15 @@ inla_rs_run_inla_structured <- function(
     E = numeric(0),
     Ntrials = numeric(0),
     event = numeric(0),
+    y_upper = numeric(0),
     size = 1.0,
     zero_prob = 0.1,
     inflation = "type0",
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
+    variant = 1L,
+    prec = 1.0,
     deterministic = FALSE,
     gaussian_free_prec = FALSE,
     family_prior_name = "loggamma",
@@ -363,12 +372,15 @@ inla_rs_run_inla_structured <- function(
     as.numeric(E),
     as.numeric(Ntrials),
     as.numeric(event),
+    as.numeric(y_upper),
     as.numeric(size),
     as.numeric(zero_prob),
     as.character(inflation),
     as.numeric(alpha),
     as.numeric(gamma),
     as.numeric(shape),
+    as.integer(variant),
+    as.numeric(prec),
     as.logical(deterministic),
     as.logical(gaussian_free_prec),
     as.character(family_prior_name),
@@ -435,15 +447,80 @@ inla_rs_hyper_prior_stack_log_density <- function(names, params, theta) {
 
 #' Classic-INLA style survival response helper.
 #'
-#' Returns a two-column data frame; use with `family = "exponential.surv"` (etc.)
-#' and pass `event = dat$event` (or keep an `event` column in `data`).
-inla_rs_surv <- function(time, event) {
-  data.frame(time = as.numeric(time), event = as.numeric(event))
+#' Event codes match R-INLA `inla.surv`: 0 right-censored, 1 event, 2 left-censored,
+#' 3 interval-censored. Interval data also need `time2` (`y_upper` in the engine).
+inla_rs_surv <- function(time, event, time2 = NULL) {
+  out <- data.frame(time = as.numeric(time), event = as.numeric(event))
+  if (!is.null(time2)) {
+    out$time2 <- as.numeric(time2)
+  }
+  out
 }
 
 # Alias matching classic INLA spelling when this package is sourced alone.
 if (!exists("inla.surv", mode = "function", inherits = TRUE)) {
   inla.surv <- inla_rs_surv
+}
+
+#' Poisson counting-process expansion for a Cox PH model (host-side).
+inla_rs_coxph_expand <- function(data, time = "time", event = "status", cutpoints = NULL) {
+  data <- as.data.frame(data)
+  t <- as.numeric(data[[time]])
+  d <- as.numeric(data[[event]])
+  if (length(t) != length(d)) stop("time and event must have the same length")
+  if (any(t <= 0)) stop("coxph_expand requires strictly positive times")
+  tmax <- max(t)
+  if (is.null(cutpoints)) {
+    failures <- sort(unique(t[d == 1]))
+    edges <- c(0, failures)
+  } else if (length(cutpoints) == 1L && is.numeric(cutpoints) && cutpoints == as.integer(cutpoints)) {
+    edges <- seq(0, tmax, length.out = as.integer(cutpoints) + 1L)
+  } else {
+    edges <- c(0, sort(unique(as.numeric(cutpoints))))
+  }
+  edges <- unique(edges[is.finite(edges)])
+  if (length(edges) == 0L || edges[[1]] != 0) edges <- c(0, edges)
+  if (tail(edges, 1) < tmax) edges <- c(edges, tmax)
+  if (length(edges) < 2L) stop("coxph_expand needs at least one positive time cut")
+
+  skip <- c(time, event)
+  extra <- setdiff(names(data), skip)
+  extra <- extra[vapply(extra, function(k) is.numeric(data[[k]]) && length(data[[k]]) == length(t), logical(1))]
+
+  y_events <- numeric(0)
+  exposure <- numeric(0)
+  time_bin <- numeric(0)
+  subject <- numeric(0)
+  extra_vals <- lapply(extra, function(...) numeric(0))
+  names(extra_vals) <- extra
+
+  for (i in seq_along(t)) {
+    ti <- t[[i]]
+    di <- d[[i]]
+    for (k in seq_len(length(edges) - 1L)) {
+      left <- edges[[k]]
+      right <- edges[[k + 1L]]
+      if (left >= ti) break
+      expo <- min(ti, right) - left
+      if (expo <= 0) next
+      failed <- if (di == 1 && left < ti && ti <= right) 1 else 0
+      y_events <- c(y_events, failed)
+      exposure <- c(exposure, expo)
+      time_bin <- c(time_bin, k) # 1-based for R f()
+      subject <- c(subject, i)
+      for (ek in extra) {
+        extra_vals[[ek]] <- c(extra_vals[[ek]], as.numeric(data[[ek]][[i]]))
+      }
+    }
+  }
+  out <- data.frame(
+    y_events = y_events,
+    exposure = exposure,
+    time_bin = time_bin,
+    subject = subject
+  )
+  for (ek in extra) out[[ek]] <- extra_vals[[ek]]
+  out
 }
 
 #' Bin a continuous covariate into `n` groups (classic R-INLA `inla.group`).
@@ -737,12 +814,15 @@ inla_rs <- function(
     E = NULL,
     Ntrials = NULL,
     event = NULL,
+    y_upper = NULL,
     size = 1.0,
     zero_prob = 0.1,
     inflation = "type0",
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
+    variant = 1L,
+    lognormal_prec = 1.0,
     link = "default",
     adj_list = NULL,
     fixed_prec = 1e-4,
@@ -771,7 +851,9 @@ inla_rs <- function(
     "zeroinflatedpoisson0", "zeroinflatedpoisson1", "zero_inflated_poisson", "zip",
     "zeroinflatedbinomial0", "zeroinflatedbinomial1", "zero_inflated_binomial", "zib",
     "laplace", "exponential", "exponential_survival", "exponential.surv", "exponential_surv",
-    "weibull", "weibull_survival", "weibull.surv", "weibull_surv"
+    "weibull", "weibull_survival", "weibull.surv", "weibull_surv",
+    "loglogistic", "loglogistic_survival", "loglogistic.surv", "loglogistic_surv",
+    "lognormal", "lognormal_survival", "lognormal.surv", "lognormal_surv"
   )
   fam <- tolower(as.character(family)[1])
   if (!(fam %in% supported)) {
@@ -785,6 +867,10 @@ inla_rs <- function(
     "exponential_surv" = "exponential_survival",
     "weibull.surv" = "weibull_survival",
     "weibull_surv" = "weibull_survival",
+    "loglogistic.surv" = "loglogistic_survival",
+    "loglogistic_surv" = "loglogistic_survival",
+    "lognormal.surv" = "lognormal_survival",
+    "lognormal_surv" = "lognormal_survival",
     "negbin" = "negative_binomial",
     "nbinomial" = "negative_binomial",
     "zip" = "zero_inflated_poisson",
@@ -796,13 +882,35 @@ inla_rs <- function(
   )
 
   data <- as.data.frame(data)
-  if (is.null(event) && fam %in% c("exponential", "exponential_survival", "weibull", "weibull_survival")) {
+  surv_fams <- c(
+    "exponential", "exponential_survival", "weibull", "weibull_survival",
+    "loglogistic", "loglogistic_survival", "lognormal", "lognormal_survival"
+  )
+  if (is.null(event) && fam %in% surv_fams) {
     if (!is.null(data[["event"]])) {
       event <- as.numeric(data[["event"]])
     }
   }
+  if (is.null(y_upper) && fam %in% surv_fams) {
+    if (!is.null(data[["y_upper"]])) {
+      y_upper <- as.numeric(data[["y_upper"]])
+    } else if (!is.null(data[["time2"]])) {
+      y_upper <- as.numeric(data[["time2"]])
+    }
+  }
   resp_var <- all.vars(formula)[1]
-  y <- as.numeric(data[[resp_var]])
+  y_raw <- data[[resp_var]]
+  if (is.data.frame(y_raw) && "time" %in% names(y_raw)) {
+    y <- as.numeric(y_raw$time)
+    if (is.null(event) && "event" %in% names(y_raw)) {
+      event <- as.numeric(y_raw$event)
+    }
+    if (is.null(y_upper) && "time2" %in% names(y_raw)) {
+      y_upper <- as.numeric(y_raw$time2)
+    }
+  } else {
+    y <- as.numeric(y_raw)
+  }
   n_obs <- length(y)
 
   f_env <- new.env(parent = parent.frame())
@@ -1416,6 +1524,7 @@ inla_rs <- function(
   if (is.null(E)) E <- numeric(0)
   if (is.null(Ntrials)) Ntrials <- numeric(0)
   if (is.null(event)) event <- numeric(0)
+  if (is.null(y_upper)) y_upper <- numeric(0)
 
   raw <- inla_rs_run_inla_structured(
     initial_theta = theta,
@@ -1448,12 +1557,15 @@ inla_rs <- function(
     E = E,
     Ntrials = Ntrials,
     event = event,
+    y_upper = y_upper,
     size = size,
     zero_prob = zero_prob,
     inflation = inflation,
     alpha = alpha,
     gamma = gamma,
     shape = shape,
+    variant = variant,
+    prec = lognormal_prec,
     deterministic = deterministic,
     gaussian_free_prec = family_free_prec,
     family_prior_name = family_prior_name,

@@ -56,7 +56,7 @@ from inla._native import (
     rw2_precision_matrix,
     seasonal_precision_matrix,
 )
-from inla.api import InlaResult, _fit, fit, group
+from inla.api import InlaResult, _fit, competing_event, coxph_expand, fit, group
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
 from inla.models import (
@@ -77,17 +77,23 @@ from inla.models import (
     SPDE,
     Besag,
     Binomial,
+    CoxPH,
     Effect,
+    ExponentialSurvival,
     Family,
     Gamma,
     Gaussian,
     Generic,
     Intercept,
     Linear,
+    LoglogisticSurvival,
+    LognormalSurvival,
     ModelSpec,
     NegativeBinomial,
     Poisson,
     Seasonal,
+    Surv,
+    WeibullSurvival,
 )
 from inla.priors import (
     Flat,
@@ -148,6 +154,8 @@ _mod.__dict__.update(
         "__package__": __package__,
         "__all__": [
             "fit",
+            "coxph_expand",
+            "competing_event",
             "InlaResult",
             "PyCscMatrix",
             "PyMarginal1D",
@@ -191,6 +199,12 @@ _mod.__dict__.update(
             "Poisson",
             "NegativeBinomial",
             "Gamma",
+            "ExponentialSurvival",
+            "WeibullSurvival",
+            "LoglogisticSurvival",
+            "LognormalSurvival",
+            "CoxPH",
+            "Surv",
             # Priors
             "Prior",
             "PCPrec",
@@ -227,6 +241,8 @@ _mod.__dict__.update(
             "fgn_approx_latent_len",
         ],
         "fit": fit,
+        "coxph_expand": coxph_expand,
+        "competing_event": competing_event,
         "InlaResult": InlaResult,
         "PyCscMatrix": PyCscMatrix,
         "PyMarginal1D": PyMarginal1D,
@@ -268,6 +284,12 @@ _mod.__dict__.update(
         "Poisson": Poisson,
         "NegativeBinomial": NegativeBinomial,
         "Gamma": Gamma,
+        "ExponentialSurvival": ExponentialSurvival,
+        "WeibullSurvival": WeibullSurvival,
+        "LoglogisticSurvival": LoglogisticSurvival,
+        "LognormalSurvival": LognormalSurvival,
+        "CoxPH": CoxPH,
+        "Surv": Surv,
         "Prior": Prior,
         "PCPrec": PCPrec,
         "PCCor0": PCCor0,

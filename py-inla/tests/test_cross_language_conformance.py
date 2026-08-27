@@ -36,7 +36,19 @@ def _dataset() -> dict[str, np.ndarray]:
     count = np.abs(np.round(2.0 + 1.5 * np.sin(0.3 * idx))).astype(float)
     space = np.tile(np.arange(1, 7, dtype=float), 4)
     time = np.repeat(np.arange(1, 5, dtype=float), 6)
-    return {"y": y, "idx": idx, "count": count, "space": space, "time": time}
+    time_surv = np.abs(y) + 0.5
+    event_surv = (idx % 4).astype(float)
+    time2_surv = time_surv + 0.75
+    return {
+        "y": y,
+        "idx": idx,
+        "count": count,
+        "space": space,
+        "time": time,
+        "time_surv": time_surv,
+        "event_surv": event_surv,
+        "time2_surv": time2_surv,
+    }
 
 
 def _write_csv(data: dict[str, np.ndarray], path: Path) -> None:
@@ -112,11 +124,17 @@ def _python_fits(data: dict[str, np.ndarray]) -> dict[str, object]:
                 "field": data["idx"],
                 "loc_x": 0.15 + 0.7 * (data["idx"] - 1) / 23,
                 "loc_y": 0.15 + 0.7 * ((data["idx"] - 1) % 5) / 4,
-                "vertices": np.array(
-                    [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]]
-                ),
+                "vertices": np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]]),
                 "triangles": np.array([[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]]),
             },
+        ),
+        "surv_interval": fit(
+            "time_surv ~ -1 + f(idx, model='iid')",
+            data,
+            family="exponential_survival",
+            event=data["event_surv"],
+            y_upper=data["time2_surv"],
+            initial_theta=[0.0],
         ),
     }
 
@@ -148,6 +166,7 @@ MODELS = [
     "grouped_iid_ar1",
     "crw2_pairs",
     "spde_formula",
+    "surv_interval",
 ]
 
 

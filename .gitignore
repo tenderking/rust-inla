@@ -15,6 +15,7 @@ r-inla-testing-main.zip
 **/*.cpython-311.so
 **/__pycache__/
 **/*.so
+uv.lock
 
 # Generated SPDE validation images
 **/spde_validation/*.png

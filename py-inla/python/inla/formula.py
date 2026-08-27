@@ -84,7 +84,7 @@ class FTerm:
 
 @dataclass
 class ParsedFormula:
-    response: str
+    response: Any
     fixed_terms: list[str]
     intercept: bool
     f_terms: list[FTerm]

@@ -1038,6 +1038,13 @@ fn dict_get_f64(dict: &Bound<'_, PyAny>, key: &str) -> PyResult<f64> {
         .map_err(|_| PyValueError::new_err(format!("missing or invalid observation field '{key}'")))
 }
 
+fn opt_obs_f64(dict: &Bound<'_, PyAny>, key: &str, default: f64) -> PyResult<f64> {
+    match dict.get_item(key) {
+        Ok(item) if !item.is_none() => item.extract(),
+        _ => Ok(default),
+    }
+}
+
 fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
     if dict.is_none() {
         return Ok(inla_core::Obs::None);
@@ -1065,7 +1072,9 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
         Some("log") => inla_core::Link::Log,
         Some("logit") => inla_core::Link::Logit,
         None | Some("default") | Some("") => match family.as_str() {
-            "gaussian" | "laplace" => inla_core::Link::Identity,
+            "lognormal" | "lognormal_survival" | "gaussian" | "laplace" => {
+                inla_core::Link::Identity
+            }
             "poisson"
             | "nbinomial"
             | "negative_binomial"
@@ -1075,7 +1084,9 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
             | "exponential"
             | "exponential_survival"
             | "weibull"
-            | "weibull_survival" => inla_core::Link::Log,
+            | "weibull_survival"
+            | "loglogistic"
+            | "loglogistic_survival" => inla_core::Link::Log,
             "binomial"
             | "zero_inflated_binomial"
             | "zeroinflatedbinomial0"
@@ -1218,19 +1229,58 @@ fn parse_obs(dict: &Bound<'_, PyAny>) -> PyResult<inla_core::Obs> {
         "exponential_survival" | "exponential" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let event: f64 = dict.get_item("event")?.extract()?;
+            let y_upper = opt_obs_f64(dict, "y_upper", f64::NAN)?;
             Ok(inla_core::Obs::ExponentialSurvival(
-                inla_core::ExponentialSurvivalObs { y, event, link },
+                inla_core::ExponentialSurvivalObs {
+                    y,
+                    event,
+                    y_upper,
+                    link,
+                },
             ))
         }
         "weibull_survival" | "weibull" => {
             let y: f64 = dict.get_item("y")?.extract()?;
             let event: f64 = dict.get_item("event")?.extract()?;
+            let y_upper = opt_obs_f64(dict, "y_upper", f64::NAN)?;
             let shape: f64 = dict.get_item("shape")?.extract()?;
             Ok(inla_core::Obs::WeibullSurvival(
                 inla_core::WeibullSurvivalObs {
                     y,
                     event,
+                    y_upper,
                     shape,
+                    variant: opt_obs_f64(dict, "variant", 1.0)? as i32,
+                    link,
+                },
+            ))
+        }
+        "loglogistic_survival" | "loglogistic" => {
+            let y: f64 = dict.get_item("y")?.extract()?;
+            let event: f64 = dict.get_item("event")?.extract()?;
+            let y_upper = opt_obs_f64(dict, "y_upper", f64::NAN)?;
+            let shape: f64 = dict.get_item("shape")?.extract()?;
+            Ok(inla_core::Obs::LoglogisticSurvival(
+                inla_core::LoglogisticSurvivalObs {
+                    y,
+                    event,
+                    y_upper,
+                    shape,
+                    link,
+                },
+            ))
+        }
+        "lognormal_survival" | "lognormal" => {
+            let y: f64 = dict.get_item("y")?.extract()?;
+            let event: f64 = dict.get_item("event")?.extract()?;
+            let y_upper = opt_obs_f64(dict, "y_upper", f64::NAN)?;
+            let prec = opt_obs_f64(dict, "prec", 1.0)?;
+            Ok(inla_core::Obs::LognormalSurvival(
+                inla_core::LognormalSurvivalObs {
+                    y,
+                    event,
+                    y_upper,
+                    prec,
                     link,
                 },
             ))

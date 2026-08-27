@@ -21,12 +21,16 @@ class Family:
     Ntrials: Any = None
     E: Any = None
     event: Any = None
+    y_upper: Any = None
     size: float = 1.0
     zero_prob: float = 0.1
     inflation: str = "type0"
     alpha: float = 0.5
     gamma: float = 1.0
     shape: float = 1.0
+    variant: int = 1
+    prec: float = 1.0
+    cutpoints: Any = None
     control_family: Mapping[str, Any] | None = None
 
 
@@ -112,6 +116,147 @@ class Gamma(Family):
         control_family: Mapping[str, Any] | None = None,
     ):
         super().__init__(name="gamma", shape=shape, control_family=control_family)
+
+
+@dataclass
+class ExponentialSurvival(Family):
+    """Exponential survival likelihood (R-INLA ``exponential.surv``)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        y_upper: Any = None,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="exponential_survival",
+            event=event,
+            y_upper=y_upper,
+            control_family=control_family,
+        )
+
+
+@dataclass
+class WeibullSurvival(Family):
+    """Weibull survival likelihood (R-INLA ``weibull.surv``)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        shape: float = 1.0,
+        variant: int = 1,
+        y_upper: Any = None,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="weibull_survival",
+            event=event,
+            y_upper=y_upper,
+            shape=shape,
+            variant=int(variant),
+            control_family=control_family,
+        )
+
+
+@dataclass
+class LoglogisticSurvival(Family):
+    """Log-logistic survival likelihood (R-INLA ``loglogistic.surv``)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        shape: float = 1.0,
+        y_upper: Any = None,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="loglogistic_survival",
+            event=event,
+            y_upper=y_upper,
+            shape=shape,
+            control_family=control_family,
+        )
+
+
+@dataclass
+class LognormalSurvival(Family):
+    """Log-normal AFT survival likelihood (R-INLA ``lognormal.surv``)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        prec: float = 1.0,
+        y_upper: Any = None,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="lognormal_survival",
+            event=event,
+            y_upper=y_upper,
+            prec=float(prec),
+            control_family=control_family,
+        )
+
+
+@dataclass
+class CoxPH(Family):
+    """Cox PH via Poisson counting-process expansion (piecewise exponential baseline)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        cutpoints: Any = 20,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="coxph",
+            event=event,
+            cutpoints=cutpoints,
+            control_family=control_family,
+        )
+
+
+@dataclass
+class Surv:
+    """Survival response: times plus R-INLA event codes.
+
+    Event codes: 0 right-censored, 1 event, 2 left-censored, 3 interval-censored.
+    Interval observations also need ``time2`` / ``upper`` (``y_upper`` in the engine).
+
+    Examples
+    --------
+    ``Surv(time="time", event="status")``
+    ``Surv(lower="t_low", upper="t_high")``  # interval, event code 3
+    """
+
+    time: Any
+    event: Any = 1.0
+    time2: Any = None
+
+    def __init__(
+        self,
+        time: Any = None,
+        event: Any = None,
+        *,
+        lower: Any = None,
+        upper: Any = None,
+        time2: Any = None,
+    ):
+        if lower is not None:
+            self.time = lower
+            self.time2 = upper if upper is not None else time2
+            self.event = 3.0 if event is None else event
+        else:
+            if time is None:
+                raise ValueError("Surv requires time= or lower=")
+            self.time = time
+            self.event = 1.0 if event is None else event
+            self.time2 = time2 if time2 is not None else upper
 
 
 # =============================================================================
@@ -648,7 +793,7 @@ class ModelSpec:
     >>> result = inla.fit(DiseaseMapping, data=df)
     """
 
-    response: str | None = None
+    response: str | Surv | None = None
     family: str | Family = "gaussian"
     intercept: bool = True
     fixed: list[str | Linear] | None = None
@@ -662,7 +807,7 @@ class ModelSpec:
     def __init__(
         self,
         *,
-        response: str | None = None,
+        response: str | Surv | None = None,
         family: str | Family | None = None,
         intercept: bool | None = None,
         fixed: Sequence[str | Linear] | None = None,
@@ -768,6 +913,8 @@ class ModelSpec:
                 fit_kwargs["E"] = fam.E
             if fam.event is not None:
                 fit_kwargs["event"] = fam.event
+            if fam.y_upper is not None:
+                fit_kwargs["y_upper"] = fam.y_upper
             if fam.control_family is not None:
                 fit_kwargs["control_family"] = fam.control_family
             fit_kwargs["size"] = fam.size
@@ -776,6 +923,10 @@ class ModelSpec:
             fit_kwargs["alpha"] = fam.alpha
             fit_kwargs["gamma"] = fam.gamma
             fit_kwargs["shape"] = fam.shape
+            fit_kwargs["variant"] = fam.variant
+            fit_kwargs["prec"] = fam.prec
+            if fam.cutpoints is not None:
+                fit_kwargs["cutpoints"] = fam.cutpoints
         elif isinstance(inst.family, str):
             fit_kwargs["family"] = inst.family
         else:

@@ -38,15 +38,16 @@ pub use iidkd::{
 };
 pub use inference::{
     BinomialObs, ExponentialSurvivalObs, GammaPrior, GaussianObs, GaussianPrior, InferenceResult,
-    LaplaceObs, Link, NegativeBinomialObs, Obs, PoissonObs, WeibullSurvivalObs,
-    ZeroInflatedBinomialObs, ZeroInflatedPoissonObs, ZeroInflationType, eval_likelihood,
-    eval_likelihood_binomial, eval_likelihood_exponential_survival, eval_likelihood_gaussian,
-    eval_likelihood_laplace, eval_likelihood_negative_binomial, eval_likelihood_poisson,
-    eval_likelihood_weibull_survival, eval_likelihood_zero_inflated_binomial,
-    eval_likelihood_zero_inflated_poisson, eval_prior_gamma, eval_prior_gaussian,
-    eval_prior_loggamma, find_latent_mode, find_latent_mode_a, find_latent_mode_a_with_solver,
-    run_inla_inference, run_inla_inference_a, run_inla_inference_a_cancellable,
-    run_inla_inference_model,
+    LaplaceObs, Link, LoglogisticSurvivalObs, LognormalSurvivalObs, NegativeBinomialObs, Obs,
+    PoissonObs, WeibullSurvivalObs, ZeroInflatedBinomialObs, ZeroInflatedPoissonObs,
+    ZeroInflationType, eval_likelihood, eval_likelihood_binomial,
+    eval_likelihood_exponential_survival, eval_likelihood_gaussian, eval_likelihood_laplace,
+    eval_likelihood_loglogistic_survival, eval_likelihood_lognormal_survival,
+    eval_likelihood_negative_binomial, eval_likelihood_poisson, eval_likelihood_weibull_survival,
+    eval_likelihood_zero_inflated_binomial, eval_likelihood_zero_inflated_poisson,
+    eval_prior_gamma, eval_prior_gaussian, eval_prior_loggamma, find_latent_mode,
+    find_latent_mode_a, find_latent_mode_a_with_solver, run_inla_inference, run_inla_inference_a,
+    run_inla_inference_a_cancellable, run_inla_inference_model,
 };
 pub use latent_models::{
     fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,
