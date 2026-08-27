@@ -176,6 +176,105 @@ def test_coxph_expand_and_poisson_fit():
     assert np.isfinite(res.marginal_log_lik)
 
 
+def test_loglogistic_lognormal_and_weibull_ph():
+    times = np.array([0.8, 1.1, 1.4, 0.6, 2.0, 1.7])
+    events = np.array([1.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+    data = {"y": times, "event": events, "x": np.arange(6, dtype=int)}
+    res_ll = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family=inla.LoglogisticSurvival(shape=1.5),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_ll.marginal_log_lik)
+    res_ln = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family=inla.LognormalSurvival(prec=2.0),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_ln.marginal_log_lik)
+    res_ph = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family=inla.WeibullSurvival(shape=1.4, variant=0),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_ph.marginal_log_lik)
+
+
+def test_kidney_like_frailty_and_leukemia_like_spatial():
+    # Kidney-style clustered recurrent times with iid frailty.
+    rng = np.random.default_rng(16)
+    n_subj = 12
+    subject = np.repeat(np.arange(n_subj), 2)
+    frailty = np.repeat(rng.normal(0.0, 0.3, n_subj), 2)
+    time = rng.exponential(np.exp(-frailty))
+    event = np.ones(time.size)
+    data = {"time": time, "event": event, "subject": subject}
+    res_k = inla.fit(
+        data=data,
+        response=inla.Surv(time="time", event="event"),
+        random=[inla.IID("subject")],
+        intercept=False,
+        family=inla.ExponentialSurvival(),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_k.marginal_log_lik)
+
+    # Leukemia-style spatial survival on a small lattice.
+    nrow = ncol = 4
+    n = nrow * ncol
+    adj = np.zeros((n, n))
+    for i in range(nrow):
+        for j in range(ncol):
+            u = i * ncol + j
+            if j + 1 < ncol:
+                v = i * ncol + (j + 1)
+                adj[u, v] = adj[v, u] = 1.0
+            if i + 1 < nrow:
+                v = (i + 1) * ncol + j
+                adj[u, v] = adj[v, u] = 1.0
+    region = np.arange(n)
+    time = 0.4 + 0.05 * region
+    event = np.ones(n)
+    data_l = {"time": time, "event": event, "region": region, "adj_matrix": adj}
+    res_l = inla.fit(
+        "time ~ f(region, model='besag')",
+        data=data_l,
+        family=inla.WeibullSurvival(shape=1.2, variant=0),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_l.marginal_log_lik)
+
+
+def test_coxph_family_and_competing_risks():
+    raw = {
+        "time": np.array([1.0, 2.0, 3.0, 2.5, 1.5, 2.2]),
+        "status": np.array([1.0, 0.0, 1.0, 1.0, 2.0, 1.0]),
+        "idx": np.arange(6, dtype=int),
+    }
+    res = inla.fit(
+        data=raw,
+        response="time",
+        family=inla.CoxPH(event="status", cutpoints=4),
+        intercept=False,
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res.marginal_log_lik)
+    cause1 = inla.competing_event(raw["status"], 1)
+    assert cause1.sum() == 4.0
+    res_c = inla.fit(
+        data={**raw, "event": cause1},
+        response="time",
+        family=inla.ExponentialSurvival(),
+        random=[inla.IID("idx")],
+        intercept=False,
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_c.marginal_log_lik)
+
+
 def test_laplace_family():
     data = {
         "y": np.array([0.2, -0.5, 0.8, 0.1, -0.3, 0.4]),

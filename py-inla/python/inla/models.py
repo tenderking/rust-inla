@@ -28,6 +28,9 @@ class Family:
     alpha: float = 0.5
     gamma: float = 1.0
     shape: float = 1.0
+    variant: int = 1
+    prec: float = 1.0
+    cutpoints: Any = None
     control_family: Mapping[str, Any] | None = None
 
 
@@ -143,6 +146,7 @@ class WeibullSurvival(Family):
         event: Any = None,
         *,
         shape: float = 1.0,
+        variant: int = 1,
         y_upper: Any = None,
         control_family: Mapping[str, Any] | None = None,
     ):
@@ -151,6 +155,68 @@ class WeibullSurvival(Family):
             event=event,
             y_upper=y_upper,
             shape=shape,
+            variant=int(variant),
+            control_family=control_family,
+        )
+
+
+@dataclass
+class LoglogisticSurvival(Family):
+    """Log-logistic survival likelihood (R-INLA ``loglogistic.surv``)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        shape: float = 1.0,
+        y_upper: Any = None,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="loglogistic_survival",
+            event=event,
+            y_upper=y_upper,
+            shape=shape,
+            control_family=control_family,
+        )
+
+
+@dataclass
+class LognormalSurvival(Family):
+    """Log-normal AFT survival likelihood (R-INLA ``lognormal.surv``)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        prec: float = 1.0,
+        y_upper: Any = None,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="lognormal_survival",
+            event=event,
+            y_upper=y_upper,
+            prec=float(prec),
+            control_family=control_family,
+        )
+
+
+@dataclass
+class CoxPH(Family):
+    """Cox PH via Poisson counting-process expansion (piecewise exponential baseline)."""
+
+    def __init__(
+        self,
+        event: Any = None,
+        *,
+        cutpoints: Any = 20,
+        control_family: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(
+            name="coxph",
+            event=event,
+            cutpoints=cutpoints,
             control_family=control_family,
         )
 
@@ -857,6 +923,10 @@ class ModelSpec:
             fit_kwargs["alpha"] = fam.alpha
             fit_kwargs["gamma"] = fam.gamma
             fit_kwargs["shape"] = fam.shape
+            fit_kwargs["variant"] = fam.variant
+            fit_kwargs["prec"] = fam.prec
+            if fam.cutpoints is not None:
+                fit_kwargs["cutpoints"] = fam.cutpoints
         elif isinstance(inst.family, str):
             fit_kwargs["family"] = inst.family
         else:

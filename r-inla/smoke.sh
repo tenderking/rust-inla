@@ -264,6 +264,26 @@ res_int <- inla_rs(
 cat("ExponentialSurvival interval/left mode:", paste(round(res_int$mode, 4), collapse = ", "), "\n")
 stopifnot(is.finite(res_int$marginal_log_lik))
 
+res_ll <- inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_surv,
+  family = "loglogistic_survival",
+  shape = 1.5,
+  initial_theta = 0.0
+)
+cat("LoglogisticSurvival+IID mode:", paste(round(res_ll$mode, 4), collapse = ", "), "\n")
+stopifnot(is.finite(res_ll$marginal_log_lik))
+
+res_ln <- inla_rs(
+  y ~ -1 + f(idx, model = "iid"),
+  data = df_surv,
+  family = "lognormal_survival",
+  lognormal_prec = 2.0,
+  initial_theta = 0.0
+)
+cat("LognormalSurvival+IID mode:", paste(round(res_ln$mode, 4), collapse = ", "), "\n")
+stopifnot(is.finite(res_ln$marginal_log_lik))
+
 y_lap <- c(0.2, -0.1, 0.4, 0.0, -0.3, 0.1, 0.2, -0.2)
 df_l <- data.frame(y = y_lap, idx = seq_along(y_lap))
 res_lap <- inla_rs(

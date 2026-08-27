@@ -589,6 +589,7 @@ fn port_iid_weibull_survival() {
                 event: e,
                 y_upper: f64::NAN,
                 shape: 1.5,
+                variant: 1,
                 link: Link::Log,
             })
         })

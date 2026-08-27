@@ -111,6 +111,27 @@ pub struct WeibullSurvivalObs {
     /// Upper time when `event == 3`; ignored otherwise.
     pub y_upper: f64,
     pub shape: f64,
+    /// `0` = proportional hazards `H=λ t^α` (R-INLA default); `1` = AFT `H=(λ t)^α`.
+    pub variant: i32,
+    pub link: Link,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoglogisticSurvivalObs {
+    pub y: f64,
+    pub event: f64,
+    pub y_upper: f64,
+    pub shape: f64,
+    pub link: Link,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LognormalSurvivalObs {
+    pub y: f64,
+    pub event: f64,
+    pub y_upper: f64,
+    /// Precision of `log T` (R-INLA `lognormal.surv` hyperparameter, here observation-level).
+    pub prec: f64,
     pub link: Link,
 }
 
@@ -499,9 +520,7 @@ pub fn eval_likelihood_exponential_survival(
         }
         3 => {
             if !o.y_upper.is_finite() || o.y_upper <= o.y {
-                return Err(
-                    "interval-censored exponential survival needs y_upper > y".into(),
-                );
+                return Err("interval-censored exponential survival needs y_upper > y".into());
             }
             let delta = o.y_upper - o.y;
             let u = rate * delta;
@@ -539,51 +558,21 @@ pub fn eval_likelihood_weibull_survival(eta: f64, o: WeibullSurvivalObs) -> Resu
     }
 
     let k = o.shape;
-    let t = |y: f64| (lambda * y).powf(k);
-    let dt_dlambda = |ty: f64| k * ty / lambda;
-    let d2t_dlambda2 = |ty: f64| k * (k - 1.0) * ty / (lambda * lambda);
+    let (h, dh, d2h) = weibull_cumhaz(lambda, k, o.y, o.variant)?;
+    let log_f = weibull_log_density(lambda, k, o.y, h, o.variant)?;
+    let d_log_f = weibull_d_log_density(lambda, k, o.y, h, dh, o.variant);
+    let d2_log_f = weibull_d2_log_density(lambda, k, o.y, h, dh, d2h, o.variant);
 
     let (logp, dlog_dlambda, d2log_dlambda2) = match o.event as i32 {
-        0 | 1 => {
-            let ty = t(o.y);
-            (
-                o.event * (k.ln() + k * lambda.ln() + (k - 1.0) * o.y.ln()) - ty,
-                k * (o.event - ty) / lambda,
-                k * ((1.0 - k) * ty - o.event) / (lambda * lambda),
-            )
-        }
-        2 => {
-            let ty = t(o.y);
-            let logp = log1mexp(ty)?;
-            let e_t = ty.exp();
-            let dll_dt = 1.0 / (e_t - 1.0);
-            let d2ll_dt2 = -e_t / ((e_t - 1.0) * (e_t - 1.0));
-            let t1 = dt_dlambda(ty);
-            let t2 = d2t_dlambda2(ty);
-            (logp, dll_dt * t1, d2ll_dt2 * t1 * t1 + dll_dt * t2)
-        }
+        0 => (-h, -dh, -d2h),
+        1 => (log_f, d_log_f, d2_log_f),
+        2 => survival_left_from_cumhaz(h, dh, d2h)?,
         3 => {
             if !o.y_upper.is_finite() || o.y_upper <= o.y {
                 return Err("interval-censored weibull survival needs y_upper > y".into());
             }
-            let tl = t(o.y);
-            let tu = t(o.y_upper);
-            if tu <= tl {
-                return Err("interval-censored weibull: upper cumulative hazard must exceed lower".into());
-            }
-            let logp = -tl + log1mexp(tu - tl)?;
-            let em_l = (-tl).exp();
-            let em_u = (-tu).exp();
-            let g = em_l - em_u;
-            let tlp = dt_dlambda(tl);
-            let tup = dt_dlambda(tu);
-            let tlpp = d2t_dlambda2(tl);
-            let tupp = d2t_dlambda2(tu);
-            let gp = -em_l * tlp + em_u * tup;
-            let gpp = em_l * (tlp * tlp - tlpp) - em_u * (tup * tup - tupp);
-            let d1 = gp / g;
-            let d2 = (gpp * g - gp * gp) / (g * g);
-            (logp, d1, d2)
+            let (hu, dhu, d2hu) = weibull_cumhaz(lambda, k, o.y_upper, o.variant)?;
+            survival_interval_from_cumhaz(h, dh, d2h, hu, dhu, d2hu)?
         }
         _ => unreachable!(),
     };
@@ -592,6 +581,78 @@ pub fn eval_likelihood_weibull_survival(eta: f64, o: WeibullSurvivalObs) -> Resu
         logp,
         grad: dlog_dlambda * dlambda,
         hess: d2log_dlambda2 * dlambda * dlambda + dlog_dlambda * d2lambda,
+    })
+}
+
+pub fn eval_likelihood_loglogistic_survival(
+    eta: f64,
+    o: LoglogisticSurvivalObs,
+) -> Result<Eval1D, String> {
+    if !eta.is_finite() || !o.y.is_finite() {
+        return Err("loglogistic survival eta/y must be finite".to_string());
+    }
+    if o.y <= 0.0 {
+        return Err("loglogistic survival time must be > 0".to_string());
+    }
+    if o.shape <= 0.0 || !o.shape.is_finite() {
+        return Err("loglogistic shape must be finite and > 0".to_string());
+    }
+    validate_event_indicator(o.event, "loglogistic survival event")?;
+    let (scale, dscale, d2scale) = link_forward(eta, o.link)?;
+    if scale <= 0.0 {
+        return Err("loglogistic scale must be > 0".to_string());
+    }
+    let (logp, d1, d2) = match o.event as i32 {
+        0 => loglogistic_right(o.y, scale, o.shape)?,
+        1 => loglogistic_event(o.y, scale, o.shape)?,
+        2 => loglogistic_left(o.y, scale, o.shape)?,
+        3 => {
+            if !o.y_upper.is_finite() || o.y_upper <= o.y {
+                return Err("interval-censored loglogistic survival needs y_upper > y".into());
+            }
+            loglogistic_interval(o.y, o.y_upper, scale, o.shape)?
+        }
+        _ => unreachable!(),
+    };
+    Ok(Eval1D {
+        logp,
+        grad: d1 * dscale,
+        hess: d2 * dscale * dscale + d1 * d2scale,
+    })
+}
+
+pub fn eval_likelihood_lognormal_survival(
+    eta: f64,
+    o: LognormalSurvivalObs,
+) -> Result<Eval1D, String> {
+    if !eta.is_finite() || !o.y.is_finite() {
+        return Err("lognormal survival eta/y must be finite".to_string());
+    }
+    if o.y <= 0.0 {
+        return Err("lognormal survival time must be > 0".to_string());
+    }
+    if o.prec <= 0.0 || !o.prec.is_finite() {
+        return Err("lognormal precision must be finite and > 0".to_string());
+    }
+    validate_event_indicator(o.event, "lognormal survival event")?;
+    let (mu, dmu, d2mu) = link_forward(eta, o.link)?;
+    let sigma = o.prec.sqrt().recip();
+    let (logp, d1, d2) = match o.event as i32 {
+        0 => lognormal_right(o.y, mu, sigma, o.prec)?,
+        1 => lognormal_event(o.y, mu, sigma, o.prec),
+        2 => lognormal_left(o.y, mu, sigma)?,
+        3 => {
+            if !o.y_upper.is_finite() || o.y_upper <= o.y {
+                return Err("interval-censored lognormal survival needs y_upper > y".into());
+            }
+            lognormal_interval(o.y, o.y_upper, mu, sigma)?
+        }
+        _ => unreachable!(),
+    };
+    Ok(Eval1D {
+        logp,
+        grad: d1 * dmu,
+        hess: d2 * dmu * dmu + d1 * d2mu,
     })
 }
 
@@ -606,6 +667,8 @@ pub enum Obs {
     Laplace(LaplaceObs),
     ExponentialSurvival(ExponentialSurvivalObs),
     WeibullSurvival(WeibullSurvivalObs),
+    LoglogisticSurvival(LoglogisticSurvivalObs),
+    LognormalSurvival(LognormalSurvivalObs),
     None,
 }
 
@@ -620,6 +683,8 @@ pub fn eval_likelihood(eta: f64, o: &Obs) -> Result<Eval1D, String> {
         Obs::Laplace(lo) => eval_likelihood_laplace(eta, *lo),
         Obs::ExponentialSurvival(eso) => eval_likelihood_exponential_survival(eta, *eso),
         Obs::WeibullSurvival(wso) => eval_likelihood_weibull_survival(eta, *wso),
+        Obs::LoglogisticSurvival(lo) => eval_likelihood_loglogistic_survival(eta, *lo),
+        Obs::LognormalSurvival(lo) => eval_likelihood_lognormal_survival(eta, *lo),
         Obs::None => Ok(Eval1D {
             logp: 0.0,
             grad: 0.0,
@@ -1547,6 +1612,208 @@ fn logistic(x: f64) -> f64 {
     }
 }
 
+fn weibull_cumhaz(lambda: f64, k: f64, y: f64, variant: i32) -> Result<(f64, f64, f64), String> {
+    match variant {
+        0 => {
+            let ya = y.powf(k);
+            Ok((lambda * ya, ya, 0.0))
+        }
+        1 => {
+            let h = (lambda * y).powf(k);
+            Ok((h, k * h / lambda, k * (k - 1.0) * h / (lambda * lambda)))
+        }
+        _ => Err("weibull survival variant must be 0 (PH) or 1 (AFT)".into()),
+    }
+}
+
+fn weibull_log_density(lambda: f64, k: f64, y: f64, h: f64, variant: i32) -> Result<f64, String> {
+    match variant {
+        0 => Ok(k.ln() + (k - 1.0) * y.ln() + lambda.ln() - h),
+        1 => Ok(k.ln() + k * lambda.ln() + (k - 1.0) * y.ln() - h),
+        _ => Err("weibull survival variant must be 0 (PH) or 1 (AFT)".into()),
+    }
+}
+
+fn weibull_d_log_density(lambda: f64, k: f64, _y: f64, _h: f64, dh: f64, variant: i32) -> f64 {
+    match variant {
+        0 => 1.0 / lambda - dh,
+        _ => k / lambda - dh,
+    }
+}
+
+fn weibull_d2_log_density(
+    lambda: f64,
+    k: f64,
+    _y: f64,
+    _h: f64,
+    _dh: f64,
+    d2h: f64,
+    variant: i32,
+) -> f64 {
+    match variant {
+        0 => -1.0 / (lambda * lambda) - d2h,
+        _ => -k / (lambda * lambda) - d2h,
+    }
+}
+
+fn survival_left_from_cumhaz(h: f64, dh: f64, d2h: f64) -> Result<(f64, f64, f64), String> {
+    let logp = log1mexp(h)?;
+    let e_h = h.exp();
+    let dll_dh = 1.0 / (e_h - 1.0);
+    let d2ll_dh2 = -e_h / ((e_h - 1.0) * (e_h - 1.0));
+    Ok((logp, dll_dh * dh, d2ll_dh2 * dh * dh + dll_dh * d2h))
+}
+
+fn survival_interval_from_cumhaz(
+    hl: f64,
+    dhl: f64,
+    d2hl: f64,
+    hu: f64,
+    dhu: f64,
+    d2hu: f64,
+) -> Result<(f64, f64, f64), String> {
+    if hu <= hl {
+        return Err("interval-censored survival: upper cumulative hazard must exceed lower".into());
+    }
+    let logp = -hl + log1mexp(hu - hl)?;
+    let eml = (-hl).exp();
+    let emu = (-hu).exp();
+    let g = eml - emu;
+    let gp = -eml * dhl + emu * dhu;
+    let gpp = eml * (dhl * dhl - d2hl) - emu * (dhu * dhu - d2hu);
+    Ok((logp, gp / g, (gpp * g - gp * gp) / (g * g)))
+}
+
+fn loglogistic_u(t: f64, scale: f64, shape: f64) -> (f64, f64, f64) {
+    let u = (t / scale).powf(shape);
+    let du = -shape * u / scale;
+    let d2u = shape * (shape + 1.0) * u / (scale * scale);
+    (u, du, d2u)
+}
+
+fn chain_u(ell_u: f64, ell_uu: f64, du: f64, d2u: f64) -> (f64, f64) {
+    (ell_u * du, ell_uu * du * du + ell_u * d2u)
+}
+
+fn loglogistic_event(t: f64, scale: f64, shape: f64) -> Result<(f64, f64, f64), String> {
+    let (u, du, d2u) = loglogistic_u(t, scale, shape);
+    let logp = shape.ln() - t.ln() + u.ln() - 2.0 * (1.0 + u).ln();
+    let ell_u = 1.0 / u - 2.0 / (1.0 + u);
+    let ell_uu = -1.0 / (u * u) + 2.0 / ((1.0 + u) * (1.0 + u));
+    let (d1, d2) = chain_u(ell_u, ell_uu, du, d2u);
+    Ok((logp, d1, d2))
+}
+
+fn loglogistic_right(t: f64, scale: f64, shape: f64) -> Result<(f64, f64, f64), String> {
+    let (u, du, d2u) = loglogistic_u(t, scale, shape);
+    let logp = -(1.0 + u).ln();
+    let ell_u = -1.0 / (1.0 + u);
+    let ell_uu = 1.0 / ((1.0 + u) * (1.0 + u));
+    let (d1, d2) = chain_u(ell_u, ell_uu, du, d2u);
+    Ok((logp, d1, d2))
+}
+
+fn loglogistic_left(t: f64, scale: f64, shape: f64) -> Result<(f64, f64, f64), String> {
+    let (u, du, d2u) = loglogistic_u(t, scale, shape);
+    let logp = u.ln() - (1.0 + u).ln();
+    let ell_u = 1.0 / u - 1.0 / (1.0 + u);
+    let ell_uu = -1.0 / (u * u) + 1.0 / ((1.0 + u) * (1.0 + u));
+    let (d1, d2) = chain_u(ell_u, ell_uu, du, d2u);
+    Ok((logp, d1, d2))
+}
+
+fn loglogistic_interval(
+    t: f64,
+    t_upper: f64,
+    scale: f64,
+    shape: f64,
+) -> Result<(f64, f64, f64), String> {
+    let (ul, dul, d2ul) = loglogistic_u(t, scale, shape);
+    let (uu, duu, d2uu) = loglogistic_u(t_upper, scale, shape);
+    let sl = 1.0 / (1.0 + ul);
+    let su = 1.0 / (1.0 + uu);
+    let g = sl - su;
+    if !(g > 0.0) {
+        return Err("interval-censored loglogistic: survival mass must be positive".into());
+    }
+    let dsl_du = -1.0 / ((1.0 + ul) * (1.0 + ul));
+    let dsu_du = -1.0 / ((1.0 + uu) * (1.0 + uu));
+    let d2sl = 2.0 / (1.0 + ul).powi(3);
+    let d2su = 2.0 / (1.0 + uu).powi(3);
+    let gp = dsl_du * dul - dsu_du * duu;
+    let gpp = d2sl * dul * dul + dsl_du * d2ul - (d2su * duu * duu + dsu_du * d2uu);
+    Ok((g.ln(), gp / g, (gpp * g - gp * gp) / (g * g)))
+}
+
+fn lognormal_event(t: f64, mu: f64, _sigma: f64, prec: f64) -> (f64, f64, f64) {
+    let z = (t.ln() - mu) * prec.sqrt();
+    let logp = LOG_NORMC_GAUSSIAN + 0.5 * prec.ln() - 0.5 * z * z - t.ln();
+    (logp, prec * (t.ln() - mu), -prec)
+}
+
+fn lognormal_right(t: f64, mu: f64, sigma: f64, _prec: f64) -> Result<(f64, f64, f64), String> {
+    let z = (t.ln() - mu) / sigma;
+    let sf = standard_normal_cdf(-z);
+    if !(sf > 0.0) {
+        return Err("lognormal right-censor survival is numerically 0".into());
+    }
+    let m = standard_normal_pdf(-z) / sf;
+    let logp = sf.ln();
+    let d1 = m / sigma;
+    let d2 = (-(-z) * m - m * m) / (sigma * sigma);
+    Ok((logp, d1, d2))
+}
+
+fn lognormal_left(t: f64, mu: f64, sigma: f64) -> Result<(f64, f64, f64), String> {
+    let z = (t.ln() - mu) / sigma;
+    let f = standard_normal_cdf(z);
+    if !(f > 0.0) {
+        return Err("lognormal left-censor CDF is numerically 0".into());
+    }
+    let m = standard_normal_pdf(z) / f;
+    let logp = f.ln();
+    let d1 = -m / sigma;
+    let d2 = (-z * m - m * m) / (sigma * sigma);
+    Ok((logp, d1, d2))
+}
+
+fn lognormal_interval(
+    t: f64,
+    t_upper: f64,
+    mu: f64,
+    sigma: f64,
+) -> Result<(f64, f64, f64), String> {
+    let zl = (t.ln() - mu) / sigma;
+    let zu = (t_upper.ln() - mu) / sigma;
+    let g = standard_normal_cdf(zu) - standard_normal_cdf(zl);
+    if !(g > 0.0) {
+        return Err("interval-censored lognormal: probability mass must be positive".into());
+    }
+    let pl = standard_normal_pdf(zl);
+    let pu = standard_normal_pdf(zu);
+    let gp = (pl - pu) / sigma;
+    let gpp = (zl * pl - zu * pu) / (sigma * sigma);
+    Ok((g.ln(), gp / g, (gpp * g - gp * gp) / (g * g)))
+}
+
+pub(crate) fn standard_normal_cdf(x: f64) -> f64 {
+    const A1: f64 = 0.254829592;
+    const A2: f64 = -0.284496736;
+    const A3: f64 = 1.421413741;
+    const A4: f64 = -1.453152027;
+    const A5: f64 = 1.061405429;
+    const P: f64 = 0.3275911;
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let ax = x.abs();
+    let t = 1.0 / (1.0 + P * ax);
+    let y = 1.0 - (((((A5 * t + A4) * t) + A3) * t + A2) * t + A1) * t * (-ax * ax / 2.0).exp();
+    0.5 * (1.0 + sign * y)
+}
+
+fn standard_normal_pdf(z: f64) -> f64 {
+    (LOG_NORMC_GAUSSIAN - 0.5 * z * z).exp()
+}
+
 fn log1mexp(x: f64) -> Result<f64, String> {
     // log(1 - exp(-x)) for x > 0
     if !(x > 0.0) || !x.is_finite() {
@@ -1814,6 +2081,7 @@ mod tests {
                 event: 1.0,
                 y_upper: f64::NAN,
                 shape: 1.8,
+                variant: 1,
                 link: Link::Log,
             },
         )
@@ -1882,6 +2150,7 @@ mod tests {
                 event: 2.0,
                 y_upper: f64::NAN,
                 shape: 1.5,
+                variant: 1,
                 link: Link::Log,
             },
         )
@@ -1895,6 +2164,7 @@ mod tests {
                 event: 3.0,
                 y_upper: 2.5,
                 shape: 1.5,
+                variant: 1,
                 link: Link::Log,
             },
         )
@@ -1908,6 +2178,7 @@ mod tests {
                     event: 3.0,
                     y_upper: 2.5,
                     shape: 1.5,
+                    variant: 1,
                     link: Link::Log,
                 },
             )
@@ -1916,6 +2187,83 @@ mod tests {
         };
         let fd_g = (bump(eta + h) - bump(eta - h)) / (2.0 * h);
         approx(interval.grad, fd_g, 1e-5);
+    }
+
+    #[test]
+    fn weibull_ph_and_aft_variants_differ() {
+        let eta = 0.2_f64;
+        let ph = eval_likelihood_weibull_survival(
+            eta,
+            WeibullSurvivalObs {
+                y: 1.4,
+                event: 1.0,
+                y_upper: f64::NAN,
+                shape: 1.7,
+                variant: 0,
+                link: Link::Log,
+            },
+        )
+        .unwrap();
+        let aft = eval_likelihood_weibull_survival(
+            eta,
+            WeibullSurvivalObs {
+                y: 1.4,
+                event: 1.0,
+                y_upper: f64::NAN,
+                shape: 1.7,
+                variant: 1,
+                link: Link::Log,
+            },
+        )
+        .unwrap();
+        assert!((ph.logp - aft.logp).abs() > 1e-6);
+        let lambda = eta.exp();
+        let k = 1.7_f64;
+        let y = 1.4_f64;
+        let h = lambda * y.powf(k);
+        let expect = k.ln() + (k - 1.0) * y.ln() + lambda.ln() - h;
+        approx(ph.logp, expect, 1e-12);
+    }
+
+    #[test]
+    fn loglogistic_and_lognormal_survival_finite() {
+        let ll = eval_likelihood_loglogistic_survival(
+            0.0,
+            LoglogisticSurvivalObs {
+                y: 1.3,
+                event: 1.0,
+                y_upper: f64::NAN,
+                shape: 2.0,
+                link: Link::Log,
+            },
+        )
+        .unwrap();
+        assert!(ll.logp.is_finite() && ll.grad.is_finite() && ll.hess.is_finite());
+        let scale = 1.0_f64;
+        let t = 1.3_f64;
+        let b = 2.0_f64;
+        let u = (t / scale).powf(b);
+        let expect = b.ln() - t.ln() + u.ln() - 2.0 * (1.0 + u).ln();
+        approx(ll.logp, expect, 1e-12);
+
+        let ln = eval_likelihood_lognormal_survival(
+            0.1,
+            LognormalSurvivalObs {
+                y: 1.2,
+                event: 1.0,
+                y_upper: f64::NAN,
+                prec: 4.0,
+                link: Link::Identity,
+            },
+        )
+        .unwrap();
+        let mu = 0.1_f64;
+        let prec = 4.0_f64;
+        let t = 1.2_f64;
+        let z = (t.ln() - mu) * prec.sqrt();
+        let expect = LOG_NORMC_GAUSSIAN + 0.5 * prec.ln() - 0.5 * z * z - t.ln();
+        approx(ln.logp, expect, 1e-12);
+        approx(ln.grad, prec * (t.ln() - mu), 1e-12);
     }
 
     #[test]

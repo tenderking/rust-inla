@@ -255,6 +255,8 @@ inla_rs_run_inla_inference <- function(
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
+    variant = 1L,
+    prec = 1.0,
     adj_list = list(),
     deterministic = FALSE) {
   .Call(
@@ -278,6 +280,8 @@ inla_rs_run_inla_inference <- function(
     as.numeric(alpha),
     as.numeric(gamma),
     as.numeric(shape),
+    as.integer(variant),
+    as.numeric(prec),
     adj_list,
     as.logical(deterministic)
   )
@@ -321,6 +325,8 @@ inla_rs_run_inla_structured <- function(
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
+    variant = 1L,
+    prec = 1.0,
     deterministic = FALSE,
     gaussian_free_prec = FALSE,
     family_prior_name = "loggamma",
@@ -373,6 +379,8 @@ inla_rs_run_inla_structured <- function(
     as.numeric(alpha),
     as.numeric(gamma),
     as.numeric(shape),
+    as.integer(variant),
+    as.numeric(prec),
     as.logical(deterministic),
     as.logical(gaussian_free_prec),
     as.character(family_prior_name),
@@ -813,6 +821,8 @@ inla_rs <- function(
     alpha = 0.5,
     gamma = 1.0,
     shape = 1.0,
+    variant = 1L,
+    lognormal_prec = 1.0,
     link = "default",
     adj_list = NULL,
     fixed_prec = 1e-4,
@@ -841,7 +851,9 @@ inla_rs <- function(
     "zeroinflatedpoisson0", "zeroinflatedpoisson1", "zero_inflated_poisson", "zip",
     "zeroinflatedbinomial0", "zeroinflatedbinomial1", "zero_inflated_binomial", "zib",
     "laplace", "exponential", "exponential_survival", "exponential.surv", "exponential_surv",
-    "weibull", "weibull_survival", "weibull.surv", "weibull_surv"
+    "weibull", "weibull_survival", "weibull.surv", "weibull_surv",
+    "loglogistic", "loglogistic_survival", "loglogistic.surv", "loglogistic_surv",
+    "lognormal", "lognormal_survival", "lognormal.surv", "lognormal_surv"
   )
   fam <- tolower(as.character(family)[1])
   if (!(fam %in% supported)) {
@@ -855,6 +867,10 @@ inla_rs <- function(
     "exponential_surv" = "exponential_survival",
     "weibull.surv" = "weibull_survival",
     "weibull_surv" = "weibull_survival",
+    "loglogistic.surv" = "loglogistic_survival",
+    "loglogistic_surv" = "loglogistic_survival",
+    "lognormal.surv" = "lognormal_survival",
+    "lognormal_surv" = "lognormal_survival",
     "negbin" = "negative_binomial",
     "nbinomial" = "negative_binomial",
     "zip" = "zero_inflated_poisson",
@@ -866,12 +882,16 @@ inla_rs <- function(
   )
 
   data <- as.data.frame(data)
-  if (is.null(event) && fam %in% c("exponential", "exponential_survival", "weibull", "weibull_survival")) {
+  surv_fams <- c(
+    "exponential", "exponential_survival", "weibull", "weibull_survival",
+    "loglogistic", "loglogistic_survival", "lognormal", "lognormal_survival"
+  )
+  if (is.null(event) && fam %in% surv_fams) {
     if (!is.null(data[["event"]])) {
       event <- as.numeric(data[["event"]])
     }
   }
-  if (is.null(y_upper) && fam %in% c("exponential", "exponential_survival", "weibull", "weibull_survival")) {
+  if (is.null(y_upper) && fam %in% surv_fams) {
     if (!is.null(data[["y_upper"]])) {
       y_upper <- as.numeric(data[["y_upper"]])
     } else if (!is.null(data[["time2"]])) {
@@ -1544,6 +1564,8 @@ inla_rs <- function(
     alpha = alpha,
     gamma = gamma,
     shape = shape,
+    variant = variant,
+    prec = lognormal_prec,
     deterministic = deterministic,
     gaussian_free_prec = family_free_prec,
     family_prior_name = family_prior_name,

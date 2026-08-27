@@ -25,6 +25,11 @@ FAMILY_ALIASES = {
     "exponential_surv": "exponential_survival",
     "weibull.surv": "weibull_survival",
     "weibull_surv": "weibull_survival",
+    "loglogistic.surv": "loglogistic_survival",
+    "loglogistic_surv": "loglogistic_survival",
+    "lognormal.surv": "lognormal_survival",
+    "lognormal_surv": "lognormal_survival",
+    "piecewise_exponential": "coxph",
 }
 
 GenericLike = GenericModel | Model
@@ -656,6 +661,8 @@ def _build_obs(
     alpha: float = 0.5,
     gamma: float = 1.0,
     shape: float = 1.0,
+    variant: int = 1,
+    prec: float = 1.0,
     obs_precision: float = 1.0,
 ) -> list[dict[str, Any] | None]:
     fam = FAMILY_ALIASES.get(family.lower(), family.lower())
@@ -734,6 +741,17 @@ def _build_obs(
         elif fam in ("weibull", "weibull_survival"):
             d["event"] = float(event_arr[i]) if event_arr is not None else 1.0
             d["shape"] = float(shape)
+            d["variant"] = int(variant)
+            if y_upper_arr is not None:
+                d["y_upper"] = float(y_upper_arr[i])
+        elif fam in ("loglogistic", "loglogistic_survival"):
+            d["event"] = float(event_arr[i]) if event_arr is not None else 1.0
+            d["shape"] = float(shape)
+            if y_upper_arr is not None:
+                d["y_upper"] = float(y_upper_arr[i])
+        elif fam in ("lognormal", "lognormal_survival"):
+            d["event"] = float(event_arr[i]) if event_arr is not None else 1.0
+            d["prec"] = float(prec)
             if y_upper_arr is not None:
                 d["y_upper"] = float(y_upper_arr[i])
         else:
@@ -873,6 +891,9 @@ def _fit(
     alpha: float = 0.5,
     gamma: float = 1.0,
     shape: float = 1.0,
+    variant: int = 1,
+    prec: float = 1.0,
+    cutpoints: Any = None,
     strategy: str = "ccd",
     step_or_f0: float = 1.0,
     initial_theta: Sequence[float] | None = None,
@@ -968,6 +989,12 @@ def _fit(
             gamma = spec_kw["gamma"]
         if "shape" in spec_kw:
             shape = spec_kw["shape"]
+        if "variant" in spec_kw:
+            variant = int(spec_kw["variant"])
+        if "prec" in spec_kw:
+            prec = spec_kw["prec"]
+        if "cutpoints" in spec_kw and cutpoints is None:
+            cutpoints = spec_kw["cutpoints"]
         resp_lab = "Surv" if isinstance(parsed.response, Surv) else parsed.response
         formula_str = f"{resp_lab} ~ {' + '.join(parsed.fixed_terms) or '1'}"
     elif formula is None or response is not None:
@@ -1038,6 +1065,10 @@ def _fit(
         alpha = family.alpha
         gamma = family.gamma
         shape = family.shape
+        variant = family.variant
+        prec = family.prec
+        if family.cutpoints is not None and cutpoints is None:
+            cutpoints = family.cutpoints
         family = family.name
 
     if data is None:
@@ -1071,7 +1102,19 @@ def _fit(
     if isinstance(y_upper, str):
         y_upper = _get_col(data, y_upper)
 
-    if fam_key in ("exponential", "exponential_survival", "weibull", "weibull_survival"):
+    _SURV_FAMS = (
+        "exponential",
+        "exponential_survival",
+        "weibull",
+        "weibull_survival",
+        "loglogistic",
+        "loglogistic_survival",
+        "lognormal",
+        "lognormal_survival",
+        "coxph",
+        "piecewise_exponential",
+    )
+    if fam_key in _SURV_FAMS:
         if event is None and "event" in data:
             event = data["event"]
         if y_upper is None:
@@ -1079,6 +1122,32 @@ def _fit(
                 if key in data:
                     y_upper = data[key]
                     break
+
+    if fam_key in ("coxph", "piecewise_exponential"):
+        tmp = dict(data)
+        if isinstance(parsed.response, Surv):
+            tmp["_time"] = y
+            tmp["_event"] = np.asarray(event if event is not None else np.ones(y.size), dtype=float)
+            data = coxph_expand(tmp, time="_time", event="_event", cutpoints=cutpoints)
+        else:
+            data = coxph_expand(
+                tmp,
+                time=str(parsed.response),
+                event=event if event is not None else "event",
+                cutpoints=cutpoints,
+            )
+        parsed.response = "y_events"
+        y = np.asarray(data["y_events"], dtype=float)
+        n_obs = y.size
+        E = data["exposure"]
+        event = None
+        y_upper = None
+        family = "poisson"
+        fam_key = "poisson"
+        parsed.f_terms.append(FTerm(index="time_bin", model="rw1"))
+        resolved_generics.append(
+            _resolve_f_model(parsed.f_terms[-1], models=models, rgeneric=rgeneric)
+        )
 
     obs_precision = 1.0
     family_free_prec = False
@@ -1166,6 +1235,8 @@ def _fit(
         alpha=alpha,
         gamma=gamma,
         shape=shape,
+        variant=variant,
+        prec=prec,
         obs_precision=obs_precision,
     )
     # cbind may have rewritten y length
@@ -2076,12 +2147,15 @@ def coxph_expand(
     exposure: list[float] = []
     time_bin: list[float] = []
     subject: list[float] = []
+    skip: set[str] = set()
+    if isinstance(time, str):
+        skip.add(time)
+    if isinstance(event, str):
+        skip.add(event)
     extra_keys = [
         k
         for k, v in data.items()
-        if k not in (time, event)
-        and np.asarray(v).ndim == 1
-        and np.asarray(v).reshape(-1).size == t.size
+        if k not in skip and np.asarray(v).ndim == 1 and np.asarray(v).reshape(-1).size == t.size
     ]
     extra: dict[str, list[float]] = {k: [] for k in extra_keys}
 
@@ -2113,6 +2187,12 @@ def coxph_expand(
     for key, vals in extra.items():
         out[key] = np.asarray(vals, dtype=float)
     return out
+
+
+def competing_event(event: Any, cause: float | int) -> np.ndarray:
+    """Cause-specific indicator: 1 if ``event == cause``, else 0 (right-censored)."""
+    e = np.asarray(event, dtype=float).reshape(-1)
+    return np.where(np.isclose(e, float(cause)), 1.0, 0.0)
 
 
 class InlaResult:

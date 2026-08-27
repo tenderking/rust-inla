@@ -56,7 +56,7 @@ from inla._native import (
     rw2_precision_matrix,
     seasonal_precision_matrix,
 )
-from inla.api import InlaResult, _fit, coxph_expand, fit, group
+from inla.api import InlaResult, _fit, competing_event, coxph_expand, fit, group
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
 from inla.models import (
@@ -77,6 +77,7 @@ from inla.models import (
     SPDE,
     Besag,
     Binomial,
+    CoxPH,
     Effect,
     ExponentialSurvival,
     Family,
@@ -85,6 +86,8 @@ from inla.models import (
     Generic,
     Intercept,
     Linear,
+    LoglogisticSurvival,
+    LognormalSurvival,
     ModelSpec,
     NegativeBinomial,
     Poisson,
@@ -152,6 +155,7 @@ _mod.__dict__.update(
         "__all__": [
             "fit",
             "coxph_expand",
+            "competing_event",
             "InlaResult",
             "PyCscMatrix",
             "PyMarginal1D",
@@ -197,6 +201,9 @@ _mod.__dict__.update(
             "Gamma",
             "ExponentialSurvival",
             "WeibullSurvival",
+            "LoglogisticSurvival",
+            "LognormalSurvival",
+            "CoxPH",
             "Surv",
             # Priors
             "Prior",
@@ -235,6 +242,7 @@ _mod.__dict__.update(
         ],
         "fit": fit,
         "coxph_expand": coxph_expand,
+        "competing_event": competing_event,
         "InlaResult": InlaResult,
         "PyCscMatrix": PyCscMatrix,
         "PyMarginal1D": PyMarginal1D,
@@ -278,6 +286,9 @@ _mod.__dict__.update(
         "Gamma": Gamma,
         "ExponentialSurvival": ExponentialSurvival,
         "WeibullSurvival": WeibullSurvival,
+        "LoglogisticSurvival": LoglogisticSurvival,
+        "LognormalSurvival": LognormalSurvival,
+        "CoxPH": CoxPH,
         "Surv": Surv,
         "Prior": Prior,
         "PCPrec": PCPrec,

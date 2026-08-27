@@ -12,6 +12,8 @@ fn canonicalize_family(family: &str) -> String {
     match family.trim().to_lowercase().as_str() {
         "exponential.surv" | "exponential_surv" => "exponential_survival".into(),
         "weibull.surv" | "weibull_surv" => "weibull_survival".into(),
+        "loglogistic.surv" | "loglogistic_surv" => "loglogistic_survival".into(),
+        "lognormal.surv" | "lognormal_surv" => "lognormal_survival".into(),
         "negbin" | "nbinomial" => "negative_binomial".into(),
         "zip" | "zeroinflatedpoisson0" => "zero_inflated_poisson".into(),
         "zib" | "zeroinflatedbinomial0" => "zero_inflated_binomial".into(),
@@ -25,7 +27,6 @@ fn parse_link(link: &str, family: &str) -> std::result::Result<inla_core::Link, 
     let family = canonicalize_family(family);
     if link.is_empty() || link == "default" {
         return Ok(match family.as_str() {
-            "gaussian" | "laplace" => inla_core::Link::Identity,
             "poisson"
             | "nbinomial"
             | "negative_binomial"
@@ -35,7 +36,9 @@ fn parse_link(link: &str, family: &str) -> std::result::Result<inla_core::Link, 
             | "exponential"
             | "exponential_survival"
             | "weibull"
-            | "weibull_survival" => inla_core::Link::Log,
+            | "weibull_survival"
+            | "loglogistic"
+            | "loglogistic_survival" => inla_core::Link::Log,
             "binomial"
             | "zeroinflatedbinomial0"
             | "zeroinflatedbinomial1"
@@ -84,6 +87,8 @@ fn build_observations(
     alpha: f64,
     gamma: f64,
     shape: f64,
+    variant: i32,
+    prec: f64,
 ) -> std::result::Result<Vec<inla_core::Obs>, Error> {
     let n = y_obs.len();
     let fam = canonicalize_family(family);
@@ -175,6 +180,25 @@ fn build_observations(
                     event: ev[i],
                     y_upper: yu[i],
                     shape,
+                    variant,
+                    link,
+                })
+            }
+            "loglogistic" | "loglogistic_survival" => {
+                inla_core::Obs::LoglogisticSurvival(inla_core::LoglogisticSurvivalObs {
+                    y,
+                    event: ev[i],
+                    y_upper: yu[i],
+                    shape,
+                    link,
+                })
+            }
+            "lognormal" | "lognormal_survival" => {
+                inla_core::Obs::LognormalSurvival(inla_core::LognormalSurvivalObs {
+                    y,
+                    event: ev[i],
+                    y_upper: yu[i],
+                    prec,
                     link,
                 })
             }
@@ -213,6 +237,8 @@ fn inla_rs_run_inla_inference(
     alpha: f64,
     gamma: f64,
     shape: f64,
+    variant: i32,
+    prec: f64,
     adj_list: List,
     deterministic: bool,
 ) -> std::result::Result<List, Error> {
@@ -268,6 +294,8 @@ fn inla_rs_run_inla_inference(
         alpha,
         gamma,
         shape,
+        variant,
+        prec,
     )?;
 
     let model_type_owned = model_type_str.clone();
@@ -440,6 +468,8 @@ fn inla_rs_run_inla_structured(
     alpha: f64,
     gamma: f64,
     shape: f64,
+    variant: i32,
+    prec: f64,
     deterministic: bool,
     gaussian_free_prec: bool,
     family_prior_name: &str,
@@ -520,6 +550,8 @@ fn inla_rs_run_inla_structured(
         alpha,
         gamma,
         shape,
+        variant,
+        prec,
     )?;
 
     // Parse adjacency once per besag effect

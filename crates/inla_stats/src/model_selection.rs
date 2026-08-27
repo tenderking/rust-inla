@@ -440,6 +440,8 @@ fn observation_cdf(obs: &Obs, eta: f64, variance: f64) -> Option<f64> {
         | Obs::Laplace(_)
         | Obs::ExponentialSurvival(_)
         | Obs::WeibullSurvival(_)
+        | Obs::LoglogisticSurvival(_)
+        | Obs::LognormalSurvival(_)
         | Obs::None => None,
     }
 }
@@ -710,6 +712,7 @@ mod tests {
                 event: 1.0,
                 y_upper: f64::NAN,
                 shape: 1.5,
+                variant: 1,
                 link: Link::Log,
             }),
             Obs::None,
