@@ -1,4 +1,4 @@
-use inla_fmesher::{FemBlocks, Mesh2D, Vertex2};
+use inla_fmesher::{FemBlocks, Mesh1D, Mesh2D, Vertex2};
 use inla_math::{CscMatrix, sparse_from_triplets};
 use sprs::TriMatI;
 
@@ -31,6 +31,20 @@ pub fn spde_projector_csc(mesh: &Mesh2D, locations: &[Vertex2]) -> Result<CscMat
     }
     if n_v == 0 {
         return Err("SPDE projector requires a non-empty mesh".to_string());
+    }
+    let trips = mesh.observation_projector_triplets(locations)?;
+    Ok(sparse_from_triplets(n_obs, n_v, &trips))
+}
+
+/// Piecewise-linear 1D observation projector (`n_obs × n_knots`).
+pub fn spde_projector_1d_csc(mesh: &Mesh1D, locations: &[f64]) -> Result<CscMatrix, String> {
+    let n_obs = locations.len();
+    let n_v = mesh.n();
+    if n_obs == 0 {
+        return Err("SPDE 1D projector requires at least one location".to_string());
+    }
+    if n_v == 0 {
+        return Err("SPDE 1D projector requires a non-empty mesh".to_string());
     }
     let trips = mesh.observation_projector_triplets(locations)?;
     Ok(sparse_from_triplets(n_obs, n_v, &trips))
@@ -173,6 +187,26 @@ mod tests {
         for i in 0..4 {
             let diag_val = *q.get(i, i).unwrap_or(&0.0);
             assert!(diag_val > 0.0, "diagonal value at {} is {}", i, diag_val);
+        }
+    }
+
+    #[test]
+    fn projector_1d_interpolates_midpoint() {
+        let mesh = inla_fmesher::build_mesh1d(vec![0.0, 1.0]).unwrap();
+        let a = spde_projector_1d_csc(&mesh, &[0.5]).unwrap();
+        assert_eq!(a.rows(), 1);
+        assert_eq!(a.cols(), 2);
+        assert!((*a.get(0, 0).unwrap_or(&0.0) - 0.5).abs() < 1e-12);
+        assert!((*a.get(0, 1).unwrap_or(&0.0) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn precision_1d_positive_diagonal() {
+        let mesh = inla_fmesher::build_mesh1d(vec![0.0, 1.0, 2.0, 3.0]).unwrap();
+        let q = spde_precision_csc(&mesh.assemble_fem_blocks(), 1.0, 2.0).unwrap();
+        assert_eq!(q.rows(), 4);
+        for i in 0..4 {
+            assert!(*q.get(i, i).unwrap_or(&0.0) > 0.0);
         }
     }
 }

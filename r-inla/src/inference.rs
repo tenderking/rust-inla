@@ -657,11 +657,29 @@ fn inla_rs_run_inla_structured(
                 group_n: usize::try_from(effect_group_ns[ei]).unwrap_or(0),
                 group_scale_model: effect_group_scales[ei] != 0,
                 copy_of,
-                mesh: match (meshes[ei].0.clone(), meshes[ei].1.clone()) {
-                    (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
-                        vertices,
-                        triangles,
+                mesh: match (
+                    meshes[ei].vertices.clone(),
+                    meshes[ei].triangles.clone(),
+                    meshes[ei].loc_1d.clone(),
+                ) {
+                    (_, _, Some(loc_1d)) => Some(Box::new(inla_core::SpdeMesh {
+                        vertices: vec![],
+                        triangles: vec![],
+                        loc_1d: Some(loc_1d),
+                        barrier_triangles: meshes[ei].barrier_triangles.clone(),
+                        range_fraction: meshes[ei].range_fraction,
+                        diffusion: meshes[ei].diffusion,
                     })),
+                    (Some(vertices), Some(triangles), None) => {
+                        Some(Box::new(inla_core::SpdeMesh {
+                            vertices,
+                            triangles,
+                            loc_1d: None,
+                            barrier_triangles: meshes[ei].barrier_triangles.clone(),
+                            range_fraction: meshes[ei].range_fraction,
+                            diffusion: meshes[ei].diffusion,
+                        }))
+                    }
                     _ => None,
                 },
             }

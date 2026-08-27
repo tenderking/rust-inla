@@ -63,12 +63,92 @@ pub(crate) fn parse_mesh2d_from_r(
     inla_core::fmesher::build_mesh2d(vertices, triangles).map_err(Error::Other)
 }
 
+#[derive(Clone)]
+pub(crate) struct EffectMesh {
+    pub vertices: Option<Vec<(f64, f64)>>,
+    pub triangles: Option<Vec<[usize; 3]>>,
+    pub loc_1d: Option<Vec<f64>>,
+    pub barrier_triangles: Vec<usize>,
+    pub range_fraction: f64,
+    pub diffusion: [f64; 3],
+}
+
+impl EffectMesh {
+    fn empty() -> Self {
+        Self {
+            vertices: None,
+            triangles: None,
+            loc_1d: None,
+            barrier_triangles: Vec::new(),
+            range_fraction: 1.0,
+            diffusion: [1.0, 0.0, 1.0],
+        }
+    }
+}
+
+fn list_named(sub: &List, key: &str) -> Option<Robj> {
+    let names = sub.names()?;
+    for (i, name) in names.enumerate() {
+        if name == key {
+            return sub.elt(i).ok();
+        }
+    }
+    None
+}
+
+fn parse_barrier_triangles(obj: &Robj) -> std::result::Result<Vec<usize>, Error> {
+    if obj.is_null() {
+        return Ok(Vec::new());
+    }
+    let ints = obj.as_integer_vector().ok_or_else(|| {
+        Error::Other("barrier_triangles must be integer (1-based triangle indices)".into())
+    })?;
+    let mut out = Vec::with_capacity(ints.len());
+    for v in ints {
+        if v == i32::MIN {
+            continue;
+        }
+        if v < 1 {
+            return Err(Error::Other(
+                "barrier_triangles must be 1-based triangle indices".into(),
+            ));
+        }
+        out.push((v - 1) as usize);
+    }
+    Ok(out)
+}
+
+fn parse_range_fraction(obj: &Robj, has_barrier: bool) -> std::result::Result<f64, Error> {
+    if obj.is_null() {
+        return Ok(if has_barrier { 0.1 } else { 1.0 });
+    }
+    let xs = obj
+        .as_real_vector()
+        .ok_or_else(|| Error::Other("range_fraction must be numeric".into()))?;
+    xs.first()
+        .copied()
+        .ok_or_else(|| Error::Other("range_fraction must be numeric".into()))
+}
+
+fn parse_diffusion(obj: &Robj) -> std::result::Result<[f64; 3], Error> {
+    if obj.is_null() {
+        return Ok([1.0, 0.0, 1.0]);
+    }
+    let xs = obj
+        .as_real_vector()
+        .ok_or_else(|| Error::Other("diffusion must be numeric length 3".into()))?;
+    if xs.len() != 3 {
+        return Err(Error::Other("diffusion must be c(hxx, hxy, hyy)".into()));
+    }
+    Ok([xs[0], xs[1], xs[2]])
+}
+
 pub(crate) fn parse_effect_meshes(
     lists: &List,
     n_effects: usize,
-) -> std::result::Result<Vec<(Option<Vec<(f64, f64)>>, Option<Vec<[usize; 3]>>)>, Error> {
+) -> std::result::Result<Vec<EffectMesh>, Error> {
     if lists.is_empty() {
-        return Ok(vec![(None, None); n_effects]);
+        return Ok(vec![EffectMesh::empty(); n_effects]);
     }
     if lists.len() != n_effects {
         return Err(Error::Other(
@@ -78,36 +158,101 @@ pub(crate) fn parse_effect_meshes(
     let mut out = Vec::with_capacity(n_effects);
     for item in lists.values() {
         if item.is_null() {
-            out.push((None, None));
+            out.push(EffectMesh::empty());
             continue;
         }
         let sub: List = match item.clone().try_into() {
             Ok(list) => list,
             Err(_) => {
-                out.push((None, None));
+                out.push(EffectMesh::empty());
                 continue;
             }
         };
         if sub.is_empty() {
-            out.push((None, None));
+            out.push(EffectMesh::empty());
             continue;
         }
-        if sub.len() < 2 {
-            out.push((None, None));
+
+        let barrier = match list_named(&sub, "barrier_triangles") {
+            Some(obj) => parse_barrier_triangles(&obj)?,
+            None => Vec::new(),
+        };
+        let range_fraction = match list_named(&sub, "range_fraction") {
+            Some(obj) => parse_range_fraction(&obj, !barrier.is_empty())?,
+            None => {
+                if barrier.is_empty() {
+                    1.0
+                } else {
+                    0.1
+                }
+            }
+        };
+        let diffusion = match list_named(&sub, "diffusion") {
+            Some(obj) => parse_diffusion(&obj)?,
+            None => [1.0, 0.0, 1.0],
+        };
+
+        if let Some(loc_obj) = list_named(&sub, "loc")
+            && let Some(loc) = loc_obj.as_real_vector()
+        {
+            out.push(EffectMesh {
+                vertices: None,
+                triangles: None,
+                loc_1d: Some(loc.to_vec()),
+                barrier_triangles: barrier,
+                range_fraction,
+                diffusion,
+            });
             continue;
         }
+
+        if let (Some(v), Some(t)) = (list_named(&sub, "vertices"), list_named(&sub, "triangles")) {
+            let mesh = parse_mesh2d_from_r(&v, &t)?;
+            let vertices = mesh.vertices.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>();
+            let triangles = mesh.triangles.iter().map(|tri| tri.0).collect::<Vec<_>>();
+            out.push(EffectMesh {
+                vertices: Some(vertices),
+                triangles: Some(triangles),
+                loc_1d: None,
+                barrier_triangles: barrier,
+                range_fraction,
+                diffusion,
+            });
+            continue;
+        }
+
         let mut parts: Vec<Robj> = Vec::new();
         for part in sub.values() {
             parts.push(part);
         }
+        if parts.len() == 1
+            && let Some(loc) = parts[0].as_real_vector()
+        {
+            out.push(EffectMesh {
+                vertices: None,
+                triangles: None,
+                loc_1d: Some(loc.to_vec()),
+                barrier_triangles: barrier,
+                range_fraction,
+                diffusion,
+            });
+            continue;
+        }
         if parts.len() < 2 {
-            out.push((None, None));
+            out.push(EffectMesh::empty());
             continue;
         }
         let mesh = parse_mesh2d_from_r(&parts[0], &parts[1])?;
-        let vertices = mesh.vertices.iter().map(|v| (v.x, v.y)).collect::<Vec<_>>();
-        let triangles = mesh.triangles.iter().map(|t| t.0).collect::<Vec<_>>();
-        out.push((Some(vertices), Some(triangles)));
+        let vertices = mesh.vertices.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>();
+        let triangles = mesh.triangles.iter().map(|tri| tri.0).collect::<Vec<_>>();
+        out.push(EffectMesh {
+            vertices: Some(vertices),
+            triangles: Some(triangles),
+            loc_1d: None,
+            barrier_triangles: barrier,
+            range_fraction,
+            diffusion,
+        });
     }
     Ok(out)
 }
@@ -121,6 +266,26 @@ fn inla_rs_spde_precision_mesh_csc(
 ) -> std::result::Result<Robj, Error> {
     let mesh = parse_mesh2d_from_r(&vertices_mat, &triangles_mat)?;
     let fem = mesh.assemble_fem_blocks();
+    let csc = inla_core::spde::spde_precision_csc(&fem, kappa, tau).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&csc)
+}
+
+#[extendr]
+fn inla_rs_spde_precision_diffusion_csc(
+    vertices_mat: Robj,
+    triangles_mat: Robj,
+    kappa: f64,
+    tau: f64,
+    barrier_triangles: Robj,
+    range_fraction: f64,
+    diffusion: Robj,
+) -> std::result::Result<Robj, Error> {
+    let mesh = parse_mesh2d_from_r(&vertices_mat, &triangles_mat)?;
+    let barrier = parse_barrier_triangles(&barrier_triangles)?;
+    let h = parse_diffusion(&diffusion)?;
+    let fem = mesh
+        .assemble_fem_geometry(&barrier, range_fraction, h)
+        .map_err(Error::Other)?;
     let csc = inla_core::spde::spde_precision_csc(&fem, kappa, tau).map_err(Error::Other)?;
     csc_to_dgcmatrix(&csc)
 }
@@ -237,11 +402,57 @@ fn inla_rs_run_spde(
     ))
 }
 
+#[extendr]
+fn inla_rs_mesh_1d(loc: Vec<f64>) -> std::result::Result<List, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    Ok(list!(loc = mesh.loc.clone(), n = mesh.n() as i32))
+}
+
+#[extendr]
+fn inla_rs_fem_blocks_1d(loc: Vec<f64>) -> std::result::Result<List, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    let fem = mesh.assemble_fem_blocks();
+    let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
+    let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
+    Ok(list!(
+        c0 = csc_to_dgcmatrix(&c0)?,
+        g1 = csc_to_dgcmatrix(&g1)?,
+        n_vertices = mesh.n() as i32
+    ))
+}
+
+#[extendr]
+fn inla_rs_spde_precision_1d_csc(
+    loc: Vec<f64>,
+    kappa: f64,
+    tau: f64,
+) -> std::result::Result<Robj, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    let fem = mesh.assemble_fem_blocks();
+    let csc = inla_core::spde::spde_precision_csc(&fem, kappa, tau).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&csc)
+}
+
+#[extendr]
+fn inla_rs_spde_projector_1d_csc(
+    loc: Vec<f64>,
+    points: Vec<f64>,
+) -> std::result::Result<Robj, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    let a = inla_core::spde_projector_1d_csc(&mesh, &points).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&a)
+}
+
 extendr_module! {
     mod mesh;
     fn inla_rs_read_mesh;
     fn inla_rs_spde_precision_mesh_csc;
+    fn inla_rs_spde_precision_diffusion_csc;
     fn inla_rs_fem_blocks_mesh;
     fn inla_rs_spde_projector_csc;
     fn inla_rs_run_spde;
+    fn inla_rs_mesh_1d;
+    fn inla_rs_fem_blocks_1d;
+    fn inla_rs_spde_precision_1d_csc;
+    fn inla_rs_spde_projector_1d_csc;
 }

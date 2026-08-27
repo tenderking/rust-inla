@@ -78,7 +78,8 @@ pub use registry::{
 };
 pub use rw2d::rw2d_precision_csc;
 pub use spde::{
-    spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
+    spde_params_from_theta, spde_precision_csc, spde_projector_1d_csc, spde_projector_csc,
+    spde_projector_from_xy,
 };
 pub use structured::{
     SpdeMesh, StructuredEffect, StructuredPlan, build_structured_precision,

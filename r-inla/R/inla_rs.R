@@ -95,6 +95,21 @@ inla_rs_spde_precision_mesh_csc <- function(vertices_mat, triangles_mat, kappa, 
   .Call("wrap__inla_rs_spde_precision_mesh_csc", as.matrix(vertices_mat), as.matrix(triangles_mat), as.numeric(kappa), as.numeric(tau))
 }
 
+inla_rs_spde_precision_diffusion_csc <- function(
+    vertices_mat, triangles_mat, kappa, tau = 1,
+    barrier_triangles = integer(0), range_fraction = 1, diffusion = c(1, 0, 1)) {
+  .Call(
+    "wrap__inla_rs_spde_precision_diffusion_csc",
+    as.matrix(vertices_mat),
+    as.matrix(triangles_mat),
+    as.numeric(kappa),
+    as.numeric(tau),
+    as.integer(barrier_triangles),
+    as.numeric(range_fraction)[1],
+    as.numeric(diffusion)
+  )
+}
+
 #' FEM mass (c0 / C) and stiffness (g1 / G) for a triangular mesh.
 #'
 #' Corresponds to classic INLA `spde$param.inla$M0` / `M1`.
@@ -148,6 +163,23 @@ inla_rs_spde_projector_csc <- function(vertices_mat, triangles_mat, loc_x, loc_y
     as.numeric(loc_x),
     as.numeric(loc_y)
   )
+}
+
+#' 1D mesh on strictly increasing knots (classic `inla.mesh.1d`).
+inla_rs_mesh_1d <- function(loc) {
+  .Call("wrap__inla_rs_mesh_1d", as.numeric(loc))
+}
+
+inla_rs_fem_blocks_1d <- function(loc) {
+  .Call("wrap__inla_rs_fem_blocks_1d", as.numeric(loc))
+}
+
+inla_rs_spde_precision_1d_csc <- function(loc, kappa, tau = 1) {
+  .Call("wrap__inla_rs_spde_precision_1d_csc", as.numeric(loc), as.numeric(kappa), as.numeric(tau))
+}
+
+inla_rs_spde_projector_1d_csc <- function(loc, points) {
+  .Call("wrap__inla_rs_spde_projector_1d_csc", as.numeric(loc), as.numeric(points))
 }
 
 #' Fit a Gaussian SPDE model on a triangular mesh.
@@ -1347,10 +1379,37 @@ inla_rs <- function(
       if (is.null(spde_mod)) spde_mod <- fs$args$mesh
       verts <- fs$args$vertices
       tris <- fs$args$triangles
+      loc_1d <- NULL
       if (!is.null(spde_mod)) {
         if (is.null(verts) && !is.null(spde_mod$vertices)) verts <- spde_mod$vertices
         if (is.null(tris) && !is.null(spde_mod$triangles)) tris <- spde_mod$triangles
+        if (!is.null(spde_mod$loc) && is.null(spde_mod$vertices) && is.null(verts)) {
+          loc_1d <- as.numeric(spde_mod$loc)
+        }
       }
+      if (!is.null(loc_1d)) {
+        loc <- fs$args$loc
+        if (is.null(loc)) loc <- fs$args$loc_x
+        if (is.character(loc) && length(loc) == 1L) {
+          if (is.null(data[[loc]])) stop("loc column '", loc, "' not found in data", call. = FALSE)
+          loc <- data[[loc]]
+        }
+        if (is.null(loc)) {
+          stop("f(..., model=\"spde\") 1D mesh needs loc= coordinates", call. = FALSE)
+        }
+        pts <- as.numeric(loc)
+        if (length(pts) != n_obs) {
+          stop("spde 1D loc must have length n", call. = FALSE)
+        }
+        a_spde <- inla_rs_spde_projector_1d_csc(loc_1d, pts)
+        sm <- Matrix::summary(a_spde)
+        add_triplets(as.integer(sm$i) - 1L, col_off + as.integer(sm$j) - 1L, sm$x)
+        n_e <- as.integer(length(loc_1d))
+        graph <- NULL
+        order_enc <- as.integer(order)
+        effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
+        mesh_store <- list(loc_1d)
+      } else {
       verts <- resolve_matrix(verts, "vertices")
       tris <- resolve_matrix(tris, "triangles")
       if (is.null(verts) || is.null(tris)) {
@@ -1400,6 +1459,20 @@ inla_rs <- function(
       order_enc <- as.integer(order)
       effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
       mesh_store <- list(vertices = verts, triangles = tris)
+      barrier <- fs$args$barrier_triangles
+      if (is.null(barrier) && !is.null(spde_mod$barrier_triangles)) {
+        barrier <- spde_mod$barrier_triangles
+      }
+      if (!is.null(barrier)) {
+        mesh_store$barrier_triangles <- as.integer(barrier)
+      }
+      rf <- fs$args$range_fraction
+      if (is.null(rf) && !is.null(spde_mod$range_fraction)) rf <- spde_mod$range_fraction
+      if (!is.null(rf)) mesh_store$range_fraction <- as.numeric(rf)[1]
+      diff <- fs$args$diffusion
+      if (is.null(diff) && !is.null(spde_mod$diffusion)) diff <- spde_mod$diffusion
+      if (!is.null(diff)) mesh_store$diffusion <- as.numeric(diff)
+      }
     } else if (identical(model, "crw2")) {
       lev <- sort(unique(idx))
       n_main <- length(lev)

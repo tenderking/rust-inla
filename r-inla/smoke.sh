@@ -30,6 +30,14 @@ cat("mesh_n=", m$n_vertices,
     " csc_class=", class(q_csc)[1],
     " csc_nnz=", length(q_csc@x), "\n", sep="")
 
+cat("\n--- Testing 1D SPDE mesh ---\n")
+m1 <- inla_rs_mesh_1d(c(0, 1, 2, 4))
+stopifnot(identical(as.integer(m1$n), 4L))
+q1 <- inla_rs_spde_precision_1d_csc(m1$loc, 1.0, 2.0)
+a1 <- inla_rs_spde_projector_1d_csc(m1$loc, c(0.5, 3.0))
+stopifnot(nrow(q1) == 4L, ncol(a1) == 4L)
+cat("1d_mesh_n=", m1$n, " q_nnz=", length(q1@x), " A_nnz=", length(a1@x), "\n", sep="")
+
 cat("\n--- Testing FGN precision ---\n")
 q_fgn <- inla_rs_fgn_precision_csc(5L, 0.7, 1.5)
 print(as.matrix(q_fgn))
@@ -335,6 +343,14 @@ cat("SPDE formula+fixed mode length:", length(res_spde_f$mode),
 stopifnot(length(res_spde_f$mode) == 3L)
 stopifnot(length(res_spde_f$latent_means) == nrow(verts) + 1L)
 stopifnot(is.finite(res_spde_f$marginal_log_lik))
+
+q_iso <- inla_rs_spde_precision_mesh_csc(verts, tris, 1.0, 1.0)
+q_bar <- inla_rs_spde_precision_diffusion_csc(
+  verts, tris, 1.0, 1.0,
+  barrier_triangles = 1L, range_fraction = 0.1, diffusion = c(1, 0, 1)
+)
+stopifnot(!isTRUE(all.equal(as.matrix(q_iso), as.matrix(q_bar))))
+cat("barrier SPDE Q differs from isotropic, nnz_bar=", length(q_bar@x), "\n", sep = "")
 
 # Intentionally omit `copy` formula productization in this pass (shared β scaling).
 # Python already covers rgeneric; R exposes inla_rs_rgeneric_define() + rw2d formula.

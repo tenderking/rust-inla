@@ -448,7 +448,18 @@ fn run_inla_inference_py(
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
+    let mut prec_slots: Vec<Option<usize>> = Vec::with_capacity(obs.len());
     for item in obs {
+        if item.is_none() {
+            prec_slots.push(None);
+            rust_obs.push(inla_core::Obs::None);
+            continue;
+        }
+        let slot = match item.get_item("prec_theta") {
+            Ok(v) if !v.is_none() => v.extract::<usize>().ok(),
+            _ => None,
+        };
+        prec_slots.push(slot);
         rust_obs.push(parse_obs(&item)?);
     }
 
@@ -547,13 +558,19 @@ fn run_inla_inference_py(
 
     let base_rust_obs = rust_obs.clone();
     let build_obs_closure = move |th: &[f64]| -> Vec<inla_core::inference::Obs> {
-        let prec = if !th.is_empty() { th[0].exp() } else { 1.0 };
         base_rust_obs
             .iter()
-            .map(|o| match o {
+            .zip(prec_slots.iter())
+            .map(|(o, slot)| match o {
                 inla_core::inference::Obs::Gaussian(g) => {
+                    let idx = slot.unwrap_or(0);
+                    let precision = if idx < th.len() {
+                        th[idx].exp()
+                    } else {
+                        g.precision
+                    };
                     inla_core::inference::Obs::Gaussian(inla_core::inference::GaussianObs {
-                        precision: prec,
+                        precision,
                         ..*g
                     })
                 }
@@ -843,6 +860,36 @@ fn structured_constraints_py(
     }
 }
 
+fn parse_spde_geometry(d: &Bound<'_, PyDict>) -> PyResult<(Vec<usize>, f64, [f64; 3])> {
+    let barrier: Vec<usize> = match d.get_item("barrier_triangles")? {
+        Some(value) if !value.is_none() => value.extract()?,
+        _ => Vec::new(),
+    };
+    let range_fraction: f64 = match d.get_item("range_fraction")? {
+        Some(value) if !value.is_none() => value.extract()?,
+        _ => {
+            if barrier.is_empty() {
+                1.0
+            } else {
+                0.1
+            }
+        }
+    };
+    let diffusion: [f64; 3] = match d.get_item("diffusion")? {
+        Some(value) if !value.is_none() => {
+            let xs: Vec<f64> = value.extract()?;
+            if xs.len() != 3 {
+                return Err(PyValueError::new_err(
+                    "diffusion must be [hxx, hxy, hyy] of length 3",
+                ));
+            }
+            [xs[0], xs[1], xs[2]]
+        }
+        _ => [1.0, 0.0, 1.0],
+    };
+    Ok((barrier, range_fraction, diffusion))
+}
+
 fn parse_structured_effects(
     effects: &[Bound<'_, PyDict>],
 ) -> PyResult<Vec<inla_core::StructuredEffect>> {
@@ -955,6 +1002,11 @@ fn parse_structured_effects(
             }
             _ => None,
         };
+        let mesh_loc_1d: Option<Vec<f64>> = match d.get_item("mesh_loc_1d")? {
+            Some(value) if !value.is_none() => Some(value.extract()?),
+            _ => None,
+        };
+        let (barrier_triangles, range_fraction, diffusion) = parse_spde_geometry(d)?;
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -974,12 +1026,27 @@ fn parse_structured_effects(
             group_n,
             group_scale_model,
             copy_of,
-            mesh: match (mesh_vertices, mesh_triangles) {
-                (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
-                    vertices,
-                    triangles,
-                })),
-                _ => None,
+            mesh: if mesh_loc_1d.is_some() {
+                Some(Box::new(inla_core::SpdeMesh {
+                    vertices: mesh_vertices.unwrap_or_default(),
+                    triangles: mesh_triangles.unwrap_or_default(),
+                    loc_1d: mesh_loc_1d,
+                    barrier_triangles,
+                    range_fraction,
+                    diffusion,
+                }))
+            } else {
+                match (mesh_vertices, mesh_triangles) {
+                    (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
+                        vertices,
+                        triangles,
+                        loc_1d: None,
+                        barrier_triangles,
+                        range_fraction,
+                        diffusion,
+                    })),
+                    _ => None,
+                }
             },
         });
     }
@@ -1445,12 +1512,23 @@ fn kronecker_csc(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyCscMa
 
 /// SPDE precision from a triangular mesh (`vertices` Nx2, `triangles` Mx3, 0-based).
 #[pyfunction]
-#[pyo3(signature = (vertices, triangles, kappa, tau=1.0))]
+#[pyo3(signature = (
+    vertices,
+    triangles,
+    kappa,
+    tau=1.0,
+    barrier_triangles=None,
+    range_fraction=None,
+    diffusion=None,
+))]
 fn spde_precision_matrix(
     vertices: Vec<(f64, f64)>,
     triangles: Vec<(usize, usize, usize)>,
     kappa: f64,
     tau: f64,
+    barrier_triangles: Option<Vec<usize>>,
+    range_fraction: Option<f64>,
+    diffusion: Option<Vec<f64>>,
 ) -> PyResult<PyCscMatrix> {
     let verts: Vec<inla_core::fmesher::Vertex2> = vertices
         .into_iter()
@@ -1461,7 +1539,20 @@ fn spde_precision_matrix(
         .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
         .collect();
     let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
-    let fem = mesh.assemble_fem_blocks();
+    let barrier = barrier_triangles.unwrap_or_default();
+    let rf = range_fraction.unwrap_or(if barrier.is_empty() { 1.0 } else { 0.1 });
+    let h = match diffusion {
+        Some(xs) if xs.len() == 3 => [xs[0], xs[1], xs[2]],
+        Some(_) => {
+            return Err(PyValueError::new_err(
+                "diffusion must be [hxx, hxy, hyy] of length 3",
+            ));
+        }
+        None => [1.0, 0.0, 1.0],
+    };
+    let fem = mesh
+        .assemble_fem_geometry(&barrier, rf, h)
+        .map_err(PyValueError::new_err)?;
     let csc = inla_core::spde_precision_csc(&fem, kappa, tau).map_err(PyValueError::new_err)?;
     Ok(PyCscMatrix { matrix: csc })
 }
@@ -1493,10 +1584,20 @@ fn spde_projector_matrix(
 ///
 /// Analogous to classic INLA `spde$param.inla$M0` / `M1`.
 #[pyfunction]
+#[pyo3(signature = (
+    vertices,
+    triangles,
+    barrier_triangles=None,
+    range_fraction=None,
+    diffusion=None,
+))]
 fn fem_blocks_mesh(
     py: Python<'_>,
     vertices: Vec<(f64, f64)>,
     triangles: Vec<(usize, usize, usize)>,
+    barrier_triangles: Option<Vec<usize>>,
+    range_fraction: Option<f64>,
+    diffusion: Option<Vec<f64>>,
 ) -> PyResult<Bound<'_, PyDict>> {
     let verts: Vec<inla_core::fmesher::Vertex2> = vertices
         .into_iter()
@@ -1507,7 +1608,20 @@ fn fem_blocks_mesh(
         .map(|(a, b, c)| inla_core::fmesher::Triangle([a, b, c]))
         .collect();
     let mesh = inla_core::fmesher::build_mesh2d(verts, tris).map_err(PyValueError::new_err)?;
-    let fem = mesh.assemble_fem_blocks();
+    let barrier = barrier_triangles.unwrap_or_default();
+    let rf = range_fraction.unwrap_or(if barrier.is_empty() { 1.0 } else { 0.1 });
+    let h = match diffusion {
+        Some(xs) if xs.len() == 3 => [xs[0], xs[1], xs[2]],
+        Some(_) => {
+            return Err(PyValueError::new_err(
+                "diffusion must be [hxx, hxy, hyy] of length 3",
+            ));
+        }
+        None => [1.0, 0.0, 1.0],
+    };
+    let fem = mesh
+        .assemble_fem_geometry(&barrier, rf, h)
+        .map_err(PyValueError::new_err)?;
     let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
     let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
     let out = PyDict::new(py);
@@ -1515,6 +1629,38 @@ fn fem_blocks_mesh(
     out.set_item("g1", PyCscMatrix { matrix: g1 })?;
     out.set_item("n_vertices", mesh.vertices.len())?;
     out.set_item("n_triangles", mesh.triangles.len())?;
+    Ok(out)
+}
+
+/// 1D SPDE precision from ordered knots (`θ` scale via `kappa`, `tau`).
+#[pyfunction]
+#[pyo3(signature = (loc, kappa, tau=1.0))]
+fn spde_precision_matrix_1d(loc: Vec<f64>, kappa: f64, tau: f64) -> PyResult<PyCscMatrix> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(PyValueError::new_err)?;
+    let fem = mesh.assemble_fem_blocks();
+    let csc = inla_core::spde_precision_csc(&fem, kappa, tau).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Piecewise-linear 1D projector A (`n_obs × n_knots`).
+#[pyfunction]
+fn spde_projector_matrix_1d(loc: Vec<f64>, points: Vec<f64>) -> PyResult<PyCscMatrix> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(PyValueError::new_err)?;
+    let csc = inla_core::spde_projector_1d_csc(&mesh, &points).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// FEM mass (`c0`) and stiffness (`g1`) for a 1D mesh.
+#[pyfunction]
+fn fem_blocks_mesh_1d(py: Python<'_>, loc: Vec<f64>) -> PyResult<Bound<'_, PyDict>> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(PyValueError::new_err)?;
+    let fem = mesh.assemble_fem_blocks();
+    let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
+    let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
+    let out = PyDict::new(py);
+    out.set_item("c0", PyCscMatrix { matrix: c0 })?;
+    out.set_item("g1", PyCscMatrix { matrix: g1 })?;
+    out.set_item("n_vertices", mesh.n())?;
     Ok(out)
 }
 
@@ -1587,8 +1733,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rw2d_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(kronecker_csc, m)?)?;
     m.add_function(wrap_pyfunction!(spde_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(spde_precision_matrix_1d, m)?)?;
     m.add_function(wrap_pyfunction!(spde_projector_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(spde_projector_matrix_1d, m)?)?;
     m.add_function(wrap_pyfunction!(fem_blocks_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(fem_blocks_mesh_1d, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_intern_from_hurst, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_latent_len, m)?)?;
