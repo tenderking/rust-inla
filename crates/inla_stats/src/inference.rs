@@ -1733,7 +1733,7 @@ fn loglogistic_interval(
     let sl = 1.0 / (1.0 + ul);
     let su = 1.0 / (1.0 + uu);
     let g = sl - su;
-    if !(g > 0.0) {
+    if !g.is_finite() || g <= 0.0 {
         return Err("interval-censored loglogistic: survival mass must be positive".into());
     }
     let dsl_du = -1.0 / ((1.0 + ul) * (1.0 + ul));
@@ -1754,7 +1754,7 @@ fn lognormal_event(t: f64, mu: f64, _sigma: f64, prec: f64) -> (f64, f64, f64) {
 fn lognormal_right(t: f64, mu: f64, sigma: f64, _prec: f64) -> Result<(f64, f64, f64), String> {
     let z = (t.ln() - mu) / sigma;
     let sf = standard_normal_cdf(-z);
-    if !(sf > 0.0) {
+    if !sf.is_finite() || sf <= 0.0 {
         return Err("lognormal right-censor survival is numerically 0".into());
     }
     let m = standard_normal_pdf(-z) / sf;
@@ -1767,7 +1767,7 @@ fn lognormal_right(t: f64, mu: f64, sigma: f64, _prec: f64) -> Result<(f64, f64,
 fn lognormal_left(t: f64, mu: f64, sigma: f64) -> Result<(f64, f64, f64), String> {
     let z = (t.ln() - mu) / sigma;
     let f = standard_normal_cdf(z);
-    if !(f > 0.0) {
+    if !f.is_finite() || f <= 0.0 {
         return Err("lognormal left-censor CDF is numerically 0".into());
     }
     let m = standard_normal_pdf(z) / f;
@@ -1786,7 +1786,7 @@ fn lognormal_interval(
     let zl = (t.ln() - mu) / sigma;
     let zu = (t_upper.ln() - mu) / sigma;
     let g = standard_normal_cdf(zu) - standard_normal_cdf(zl);
-    if !(g > 0.0) {
+    if !g.is_finite() || g <= 0.0 {
         return Err("interval-censored lognormal: probability mass must be positive".into());
     }
     let pl = standard_normal_pdf(zl);
@@ -1816,7 +1816,7 @@ fn standard_normal_pdf(z: f64) -> f64 {
 
 fn log1mexp(x: f64) -> Result<f64, String> {
     // log(1 - exp(-x)) for x > 0
-    if !(x > 0.0) || !x.is_finite() {
+    if !x.is_finite() || x <= 0.0 {
         return Err("survival CDF argument must be finite and > 0".into());
     }
     if x < 1e-8 {
