@@ -12,7 +12,7 @@ from scipy import sparse
 from inla import _native as core
 from inla.formula import FTerm, ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
-from inla.models import Effect, Family, Linear, ModelSpec
+from inla.models import Effect, Family, Linear, ModelSpec, Surv
 
 SUPPORTED_F_MODELS = tuple(core.supported_models())
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
@@ -21,6 +21,10 @@ FAMILY_ALIASES = {
     "cbinomial": "binomial",
     "nbinomial": "negative_binomial",
     "negbin": "negative_binomial",
+    "exponential.surv": "exponential_survival",
+    "exponential_surv": "exponential_survival",
+    "weibull.surv": "weibull_survival",
+    "weibull_surv": "weibull_survival",
 }
 
 GenericLike = GenericModel | Model
@@ -37,6 +41,30 @@ def _get_col(data: Mapping[str, Any], key: str) -> np.ndarray:
     if key not in data:
         raise KeyError(f"column '{key}' not found in data")
     return _as_1d(data[key], key)
+
+
+def _as_data_or_array(
+    data: Mapping[str, Any], value: Any, *, n: int | None = None, name: str
+) -> np.ndarray:
+    if isinstance(value, str):
+        arr = _get_col(data, value)
+    else:
+        arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.size == 1 and n is not None and n != 1:
+        arr = np.full(n, float(arr[0]))
+    return arr
+
+
+def _unpack_surv(
+    surv: Surv, data: Mapping[str, Any]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    y = _as_data_or_array(data, surv.time, name="Surv.time")
+    n = y.size
+    event = _as_data_or_array(data, surv.event, n=n, name="Surv.event")
+    y_upper = None
+    if surv.time2 is not None:
+        y_upper = _as_data_or_array(data, surv.time2, n=n, name="Surv.time2")
+    return y, event, y_upper
 
 
 def _iidkd_dim(model: str) -> int | None:
@@ -621,6 +649,7 @@ def _build_obs(
     E=None,
     Ntrials=None,
     event=None,
+    y_upper=None,
     size: float = 1.0,
     zero_prob: float = 0.1,
     inflation: str = "type0",
@@ -657,6 +686,7 @@ def _build_obs(
 
     E_arr = _opt_arr(E)
     event_arr = _opt_arr(event)
+    y_upper_arr = _opt_arr(y_upper)
 
     for i in range(n):
         if np.isnan(y[i]):
@@ -699,9 +729,13 @@ def _build_obs(
             d["inflation"] = str(inflation)
         elif fam in ("exponential", "exponential_survival"):
             d["event"] = float(event_arr[i]) if event_arr is not None else 1.0
+            if y_upper_arr is not None:
+                d["y_upper"] = float(y_upper_arr[i])
         elif fam in ("weibull", "weibull_survival"):
             d["event"] = float(event_arr[i]) if event_arr is not None else 1.0
             d["shape"] = float(shape)
+            if y_upper_arr is not None:
+                d["y_upper"] = float(y_upper_arr[i])
         else:
             raise ValueError(f"unsupported family '{family}'")
         obs.append(d)
@@ -822,7 +856,7 @@ def _fit(
     data: Any | None = None,
     family: str | Family = "gaussian",
     *,
-    response: str | None = None,
+    response: str | Surv | None = None,
     fixed: Sequence[str | Linear] | None = None,
     fixed_effects: Sequence[str | Linear] | None = None,
     random: Sequence[Effect | FTerm] | None = None,
@@ -832,6 +866,7 @@ def _fit(
     E=None,
     Ntrials=None,
     event=None,
+    y_upper=None,
     size: float = 1.0,
     zero_prob: float = 0.1,
     inflation: str = "type0",
@@ -917,6 +952,8 @@ def _fit(
             E = spec_kw["E"]
         if "event" in spec_kw and event is None:
             event = spec_kw["event"]
+        if "y_upper" in spec_kw and y_upper is None:
+            y_upper = spec_kw["y_upper"]
         if "control_family" in spec_kw and control_family is None:
             control_family = spec_kw["control_family"]
         if "size" in spec_kw:
@@ -931,7 +968,8 @@ def _fit(
             gamma = spec_kw["gamma"]
         if "shape" in spec_kw:
             shape = spec_kw["shape"]
-        formula_str = f"{parsed.response} ~ {' + '.join(parsed.fixed_terms) or '1'}"
+        resp_lab = "Surv" if isinstance(parsed.response, Surv) else parsed.response
+        formula_str = f"{resp_lab} ~ {' + '.join(parsed.fixed_terms) or '1'}"
     elif formula is None or response is not None:
         if response is None:
             raise ValueError(
@@ -966,7 +1004,8 @@ def _fit(
             intercept=bool(intercept),
             f_terms=f_terms,
         )
-        formula_str = f"{response} ~ {' + '.join(fixed_terms) or ('1' if intercept else '-1')}"
+        resp_label = "Surv" if isinstance(response, Surv) else response
+        formula_str = f"{resp_label} ~ {' + '.join(fixed_terms) or ('1' if intercept else '-1')}"
     elif isinstance(formula, str):
         parsed = parse_formula(formula)
         raw_random = random if random is not None else random_effects
@@ -989,6 +1028,8 @@ def _fit(
             E = family.E
         if family.event is not None and event is None:
             event = family.event
+        if family.y_upper is not None and y_upper is None:
+            y_upper = family.y_upper
         if family.control_family is not None and control_family is None:
             control_family = family.control_family
         size = family.size
@@ -1010,7 +1051,15 @@ def _fit(
         if g is None and ft.model not in SUPPORTED_F_MODELS:
             raise ValueError(f"unsupported f() model '{ft.model}'")
 
-    y = _get_col(data, parsed.response)
+    fam_key = FAMILY_ALIASES.get(str(family).lower(), str(family).lower())
+    if isinstance(parsed.response, Surv):
+        y, ev_s, yu_s = _unpack_surv(parsed.response, data)
+        if event is None:
+            event = ev_s
+        if y_upper is None:
+            y_upper = yu_s
+    else:
+        y = _get_col(data, str(parsed.response))
     n_obs = y.size
 
     if isinstance(Ntrials, str):
@@ -1019,6 +1068,17 @@ def _fit(
         E = _get_col(data, E)
     if isinstance(event, str):
         event = _get_col(data, event)
+    if isinstance(y_upper, str):
+        y_upper = _get_col(data, y_upper)
+
+    if fam_key in ("exponential", "exponential_survival", "weibull", "weibull_survival"):
+        if event is None and "event" in data:
+            event = data["event"]
+        if y_upper is None:
+            for key in ("y_upper", "time2"):
+                if key in data:
+                    y_upper = data[key]
+                    break
 
     obs_precision = 1.0
     family_free_prec = False
@@ -1099,6 +1159,7 @@ def _fit(
         E=E,
         Ntrials=Ntrials,
         event=event,
+        y_upper=y_upper,
         size=size,
         zero_prob=zero_prob,
         inflation=inflation,
@@ -1605,9 +1666,7 @@ def _fit(
             theta_lens.append(_theta_len(t, o, gm))
     has_intercept = bool(parsed.intercept)
 
-    use_shared_q = all(g is None for g in generics) and hasattr(
-        core, "build_structured_precision"
-    )
+    use_shared_q = all(g is None for g in generics) and hasattr(core, "build_structured_precision")
 
     def _structured_effect_dicts() -> list[dict]:
         out = []
@@ -1960,6 +2019,99 @@ def _natural_hyperpar_table(
             lo, hi = sorted((out["0.025quant"][j], out["0.975quant"][j]))
             out["0.025quant"][j], out["0.975quant"][j] = lo, hi
     out["names"] = list(labels)
+    return out
+
+
+def coxph_expand(
+    data: Any,
+    time: Any = "time",
+    event: Any = "status",
+    cutpoints: int | Sequence[float] | None = None,
+) -> dict[str, np.ndarray]:
+    """Poisson counting-process expansion for a Cox PH model.
+
+    Each subject contributes one row per time interval they are at risk. The
+    expanded table has ``y_events`` (0/1), ``exposure`` (interval length),
+    ``time_bin`` (0-based baseline-hazard index), and ``subject``, plus copies
+    of length-``n`` columns from ``data``. Fit with ``family=Poisson(E="exposure")``
+    and an ``RW1``/``RW2`` effect on ``time_bin``.
+    """
+    if data is not None and hasattr(data, "to_dict"):
+        try:
+            data = data.to_dict(orient="series")
+        except TypeError:
+            data = data.to_dict()
+    if not isinstance(data, Mapping):
+        raise TypeError("coxph_expand expects a mapping or DataFrame")
+
+    t = _as_data_or_array(data, time, name="time")
+    d = _as_data_or_array(data, event, n=t.size, name="event")
+    if t.size != d.size:
+        raise ValueError("time and event must have the same length")
+    if np.any(t <= 0.0):
+        raise ValueError("coxph_expand requires strictly positive times")
+
+    tmax = float(np.max(t))
+    if cutpoints is None:
+        failures = np.unique(t[np.isclose(d, 1.0)])
+        edges = np.concatenate(([0.0], failures)) if failures.size else np.array([0.0])
+    elif isinstance(cutpoints, (int, np.integer)):
+        n_cut = int(cutpoints)
+        if n_cut < 1:
+            raise ValueError("cutpoints count must be >= 1")
+        edges = np.linspace(0.0, tmax, n_cut + 1)
+    else:
+        edges = np.concatenate(([0.0], np.unique(np.asarray(cutpoints, dtype=float))))
+
+    edges = edges[np.isfinite(edges)]
+    edges = np.unique(edges)
+    if edges.size == 0 or edges[0] != 0.0:
+        edges = np.concatenate(([0.0], edges))
+    if edges[-1] < tmax:
+        edges = np.append(edges, tmax)
+    if edges.size < 2:
+        raise ValueError("coxph_expand needs at least one positive time cut")
+
+    y_events: list[float] = []
+    exposure: list[float] = []
+    time_bin: list[float] = []
+    subject: list[float] = []
+    extra_keys = [
+        k
+        for k, v in data.items()
+        if k not in (time, event)
+        and np.asarray(v).ndim == 1
+        and np.asarray(v).reshape(-1).size == t.size
+    ]
+    extra: dict[str, list[float]] = {k: [] for k in extra_keys}
+
+    for i in range(t.size):
+        ti = float(t[i])
+        di = float(d[i])
+        for k in range(edges.size - 1):
+            left = float(edges[k])
+            right = float(edges[k + 1])
+            if left >= ti:
+                break
+            expo = min(ti, right) - left
+            if expo <= 0.0:
+                continue
+            failed = 1.0 if (di == 1.0 and left < ti <= right) else 0.0
+            y_events.append(failed)
+            exposure.append(expo)
+            time_bin.append(float(k))
+            subject.append(float(i))
+            for key in extra_keys:
+                extra[key].append(float(np.asarray(data[key], dtype=float).reshape(-1)[i]))
+
+    out: dict[str, np.ndarray] = {
+        "y_events": np.asarray(y_events, dtype=float),
+        "exposure": np.asarray(exposure, dtype=float),
+        "time_bin": np.asarray(time_bin, dtype=float),
+        "subject": np.asarray(subject, dtype=float),
+    }
+    for key, vals in extra.items():
+        out[key] = np.asarray(vals, dtype=float)
     return out
 
 

@@ -564,6 +564,7 @@ fn port_iid_exponential_survival() {
             Obs::ExponentialSurvival(ExponentialSurvivalObs {
                 y: t,
                 event: e,
+                y_upper: f64::NAN,
                 link: Link::Log,
             })
         })
@@ -586,6 +587,7 @@ fn port_iid_weibull_survival() {
             Obs::WeibullSurvival(WeibullSurvivalObs {
                 y: t,
                 event: e,
+                y_upper: f64::NAN,
                 shape: 1.5,
                 link: Link::Log,
             })

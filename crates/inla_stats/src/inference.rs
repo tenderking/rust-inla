@@ -96,14 +96,20 @@ pub struct LaplaceObs {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExponentialSurvivalObs {
     pub y: f64,
+    /// R-INLA `inla.surv` codes: 0 right, 1 event, 2 left, 3 interval.
     pub event: f64,
+    /// Upper time when `event == 3`; ignored otherwise.
+    pub y_upper: f64,
     pub link: Link,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeibullSurvivalObs {
     pub y: f64,
+    /// R-INLA `inla.surv` codes: 0 right, 1 event, 2 left, 3 interval.
     pub event: f64,
+    /// Upper time when `event == 3`; ignored otherwise.
+    pub y_upper: f64,
     pub shape: f64,
     pub link: Link,
 }
@@ -474,10 +480,42 @@ pub fn eval_likelihood_exponential_survival(
     if rate <= 0.0 {
         return Err("exponential survival rate must be > 0".to_string());
     }
-    let dlog_drate = o.event / rate - o.y;
-    let d2log_drate2 = -o.event / (rate * rate);
+
+    let (logp, dlog_drate, d2log_drate2) = match o.event as i32 {
+        0 => (-rate * o.y, -o.y, 0.0),
+        1 => (
+            o.event * rate.ln() - rate * o.y,
+            1.0 / rate - o.y,
+            -1.0 / (rate * rate),
+        ),
+        2 => {
+            // F(t) = 1 - exp(-λ t)
+            let u = rate * o.y;
+            let logp = log1mexp(u)?;
+            let emu = u.exp();
+            let d1 = o.y / (emu - 1.0);
+            let d2 = -o.y * o.y * emu / ((emu - 1.0) * (emu - 1.0));
+            (logp, d1, d2)
+        }
+        3 => {
+            if !o.y_upper.is_finite() || o.y_upper <= o.y {
+                return Err(
+                    "interval-censored exponential survival needs y_upper > y".into(),
+                );
+            }
+            let delta = o.y_upper - o.y;
+            let u = rate * delta;
+            let logp = -rate * o.y + log1mexp(u)?;
+            let emu = u.exp();
+            let d1 = -o.y + delta / (emu - 1.0);
+            let d2 = -delta * delta * emu / ((emu - 1.0) * (emu - 1.0));
+            (logp, d1, d2)
+        }
+        _ => unreachable!(),
+    };
+
     Ok(Eval1D {
-        logp: o.event * rate.ln() - rate * o.y,
+        logp,
         grad: dlog_drate * drate,
         hess: d2log_drate2 * drate * drate + dlog_drate * d2rate,
     })
@@ -501,12 +539,57 @@ pub fn eval_likelihood_weibull_survival(eta: f64, o: WeibullSurvivalObs) -> Resu
     }
 
     let k = o.shape;
-    let t = (lambda * o.y).powf(k);
-    let dlog_dlambda = k * (o.event - t) / lambda;
-    let d2log_dlambda2 = k * ((1.0 - k) * t - o.event) / (lambda * lambda);
+    let t = |y: f64| (lambda * y).powf(k);
+    let dt_dlambda = |ty: f64| k * ty / lambda;
+    let d2t_dlambda2 = |ty: f64| k * (k - 1.0) * ty / (lambda * lambda);
+
+    let (logp, dlog_dlambda, d2log_dlambda2) = match o.event as i32 {
+        0 | 1 => {
+            let ty = t(o.y);
+            (
+                o.event * (k.ln() + k * lambda.ln() + (k - 1.0) * o.y.ln()) - ty,
+                k * (o.event - ty) / lambda,
+                k * ((1.0 - k) * ty - o.event) / (lambda * lambda),
+            )
+        }
+        2 => {
+            let ty = t(o.y);
+            let logp = log1mexp(ty)?;
+            let e_t = ty.exp();
+            let dll_dt = 1.0 / (e_t - 1.0);
+            let d2ll_dt2 = -e_t / ((e_t - 1.0) * (e_t - 1.0));
+            let t1 = dt_dlambda(ty);
+            let t2 = d2t_dlambda2(ty);
+            (logp, dll_dt * t1, d2ll_dt2 * t1 * t1 + dll_dt * t2)
+        }
+        3 => {
+            if !o.y_upper.is_finite() || o.y_upper <= o.y {
+                return Err("interval-censored weibull survival needs y_upper > y".into());
+            }
+            let tl = t(o.y);
+            let tu = t(o.y_upper);
+            if tu <= tl {
+                return Err("interval-censored weibull: upper cumulative hazard must exceed lower".into());
+            }
+            let logp = -tl + log1mexp(tu - tl)?;
+            let em_l = (-tl).exp();
+            let em_u = (-tu).exp();
+            let g = em_l - em_u;
+            let tlp = dt_dlambda(tl);
+            let tup = dt_dlambda(tu);
+            let tlpp = d2t_dlambda2(tl);
+            let tupp = d2t_dlambda2(tu);
+            let gp = -em_l * tlp + em_u * tup;
+            let gpp = em_l * (tlp * tlp - tlpp) - em_u * (tup * tup - tupp);
+            let d1 = gp / g;
+            let d2 = (gpp * g - gp * gp) / (g * g);
+            (logp, d1, d2)
+        }
+        _ => unreachable!(),
+    };
 
     Ok(Eval1D {
-        logp: o.event * (k.ln() + k * lambda.ln() + (k - 1.0) * o.y.ln()) - t,
+        logp,
         grad: dlog_dlambda * dlambda,
         hess: d2log_dlambda2 * dlambda * dlambda + dlog_dlambda * d2lambda,
     })
@@ -1464,9 +1547,23 @@ fn logistic(x: f64) -> f64 {
     }
 }
 
+fn log1mexp(x: f64) -> Result<f64, String> {
+    // log(1 - exp(-x)) for x > 0
+    if !(x > 0.0) || !x.is_finite() {
+        return Err("survival CDF argument must be finite and > 0".into());
+    }
+    if x < 1e-8 {
+        Ok(x.ln())
+    } else {
+        Ok((-(-x).exp()).ln_1p())
+    }
+}
+
 fn validate_event_indicator(v: f64, label: &str) -> Result<(), String> {
-    if !v.is_finite() || (v != 0.0 && v != 1.0) {
-        return Err(format!("{label} must be 0 or 1"));
+    if !v.is_finite() || !(0.0..=3.0).contains(&v) || v.fract() != 0.0 {
+        return Err(format!(
+            "{label} must be 0 (right), 1 (event), 2 (left), or 3 (interval)"
+        ));
     }
     Ok(())
 }
@@ -1691,6 +1788,7 @@ mod tests {
             ExponentialSurvivalObs {
                 y: 2.0,
                 event: 1.0,
+                y_upper: f64::NAN,
                 link: Link::Log,
             },
         )
@@ -1714,6 +1812,7 @@ mod tests {
             WeibullSurvivalObs {
                 y: 1.5,
                 event: 1.0,
+                y_upper: f64::NAN,
                 shape: 1.8,
                 link: Link::Log,
             },
@@ -1722,6 +1821,101 @@ mod tests {
         assert!(out.logp.is_finite());
         assert!(out.grad.is_finite());
         assert!(out.hess.is_finite());
+    }
+
+    #[test]
+    fn exponential_left_and_interval_match_finite_differences() {
+        let eta = (0.8_f64).ln();
+        let left = eval_likelihood_exponential_survival(
+            eta,
+            ExponentialSurvivalObs {
+                y: 1.5,
+                event: 2.0,
+                y_upper: f64::NAN,
+                link: Link::Log,
+            },
+        )
+        .expect("left");
+        let rate = 0.8;
+        let f = 1.0 - (-rate * 1.5_f64).exp();
+        approx(left.logp, f.ln(), 1e-12);
+
+        let interval = eval_likelihood_exponential_survival(
+            eta,
+            ExponentialSurvivalObs {
+                y: 0.5,
+                event: 3.0,
+                y_upper: 2.0,
+                link: Link::Log,
+            },
+        )
+        .expect("interval");
+        let sl = (-rate * 0.5_f64).exp();
+        let su = (-rate * 2.0_f64).exp();
+        approx(interval.logp, (sl - su).ln(), 1e-12);
+
+        let h = 1e-6;
+        let bump = |e: f64| {
+            eval_likelihood_exponential_survival(
+                e,
+                ExponentialSurvivalObs {
+                    y: 0.5,
+                    event: 3.0,
+                    y_upper: 2.0,
+                    link: Link::Log,
+                },
+            )
+            .unwrap()
+            .logp
+        };
+        let fd_g = (bump(eta + h) - bump(eta - h)) / (2.0 * h);
+        approx(interval.grad, fd_g, 1e-6);
+    }
+
+    #[test]
+    fn weibull_left_and_interval_logp_finite() {
+        let eta = (1.1_f64).ln();
+        let left = eval_likelihood_weibull_survival(
+            eta,
+            WeibullSurvivalObs {
+                y: 1.2,
+                event: 2.0,
+                y_upper: f64::NAN,
+                shape: 1.5,
+                link: Link::Log,
+            },
+        )
+        .expect("left");
+        assert!(left.logp.is_finite() && left.grad.is_finite() && left.hess.is_finite());
+
+        let interval = eval_likelihood_weibull_survival(
+            eta,
+            WeibullSurvivalObs {
+                y: 0.8,
+                event: 3.0,
+                y_upper: 2.5,
+                shape: 1.5,
+                link: Link::Log,
+            },
+        )
+        .expect("interval");
+        let h = 1e-6;
+        let bump = |e: f64| {
+            eval_likelihood_weibull_survival(
+                e,
+                WeibullSurvivalObs {
+                    y: 0.8,
+                    event: 3.0,
+                    y_upper: 2.5,
+                    shape: 1.5,
+                    link: Link::Log,
+                },
+            )
+            .unwrap()
+            .logp
+        };
+        let fd_g = (bump(eta + h) - bump(eta - h)) / (2.0 * h);
+        approx(interval.grad, fd_g, 1e-5);
     }
 
     #[test]

@@ -131,6 +131,51 @@ def test_survival_families_with_event():
     assert np.isfinite(res_weib.marginal_log_lik)
 
 
+def test_survival_left_and_interval_censoring():
+    times = np.array([0.5, 1.2, 0.8, 1.5, 2.0, 0.4])
+    events = np.array([1.0, 0.0, 2.0, 3.0, 1.0, 3.0])
+    y_upper = np.array([np.nan, np.nan, np.nan, 2.4, np.nan, 1.1])
+    data = {"y": times, "event": events, "y_upper": y_upper, "x": np.arange(6, dtype=int)}
+    res = inla.fit(
+        data=data,
+        response=inla.Surv(time="y", event="event", time2="y_upper"),
+        random=[inla.IID("x")],
+        intercept=False,
+        family=inla.ExponentialSurvival(),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res.marginal_log_lik)
+
+    res_w = inla.fit(
+        "y ~ f(x, model='iid')",
+        data=data,
+        family=inla.WeibullSurvival(shape=1.2),
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res_w.marginal_log_lik)
+
+
+def test_coxph_expand_and_poisson_fit():
+    raw = {
+        "time": np.array([1.0, 2.0, 3.0, 2.5]),
+        "status": np.array([1.0, 0.0, 1.0, 1.0]),
+        "treat": np.array([0.0, 1.0, 0.0, 1.0]),
+    }
+    exp = inla.coxph_expand(raw, time="time", event="status", cutpoints=4)
+    assert exp["y_events"].size == exp["exposure"].size
+    assert exp["y_events"].sum() == 3.0
+    assert np.all(exp["exposure"] > 0)
+    res = inla.fit(
+        data=exp,
+        response="y_events",
+        family=inla.Poisson(E="exposure"),
+        random=[inla.RW1("time_bin")],
+        intercept=False,
+        initial_theta=[0.0],
+    )
+    assert np.isfinite(res.marginal_log_lik)
+
+
 def test_laplace_family():
     data = {
         "y": np.array([0.2, -0.5, 0.8, 0.1, -0.3, 0.4]),

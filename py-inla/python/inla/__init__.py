@@ -56,7 +56,7 @@ from inla._native import (
     rw2_precision_matrix,
     seasonal_precision_matrix,
 )
-from inla.api import InlaResult, _fit, fit, group
+from inla.api import InlaResult, _fit, coxph_expand, fit, group
 from inla.formula import parse_formula
 from inla.generic import GenericModel, Model, define
 from inla.models import (
@@ -78,6 +78,7 @@ from inla.models import (
     Besag,
     Binomial,
     Effect,
+    ExponentialSurvival,
     Family,
     Gamma,
     Gaussian,
@@ -88,6 +89,8 @@ from inla.models import (
     NegativeBinomial,
     Poisson,
     Seasonal,
+    Surv,
+    WeibullSurvival,
 )
 from inla.priors import (
     Flat,
@@ -148,6 +151,7 @@ _mod.__dict__.update(
         "__package__": __package__,
         "__all__": [
             "fit",
+            "coxph_expand",
             "InlaResult",
             "PyCscMatrix",
             "PyMarginal1D",
@@ -191,6 +195,9 @@ _mod.__dict__.update(
             "Poisson",
             "NegativeBinomial",
             "Gamma",
+            "ExponentialSurvival",
+            "WeibullSurvival",
+            "Surv",
             # Priors
             "Prior",
             "PCPrec",
@@ -227,6 +234,7 @@ _mod.__dict__.update(
             "fgn_approx_latent_len",
         ],
         "fit": fit,
+        "coxph_expand": coxph_expand,
         "InlaResult": InlaResult,
         "PyCscMatrix": PyCscMatrix,
         "PyMarginal1D": PyMarginal1D,
@@ -268,6 +276,9 @@ _mod.__dict__.update(
         "Poisson": Poisson,
         "NegativeBinomial": NegativeBinomial,
         "Gamma": Gamma,
+        "ExponentialSurvival": ExponentialSurvival,
+        "WeibullSurvival": WeibullSurvival,
+        "Surv": Surv,
         "Prior": Prior,
         "PCPrec": PCPrec,
         "PCCor0": PCCor0,

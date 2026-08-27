@@ -77,6 +77,7 @@ fn build_observations(
     exposure: &[f64],
     ntrials: &[f64],
     event: &[f64],
+    y_upper: &[f64],
     size: f64,
     zero_prob: f64,
     inflation: &str,
@@ -93,6 +94,7 @@ fn build_observations(
     let e = pad_or_default(exposure, n, 1.0);
     let nt = pad_or_default(ntrials, n, 1.0);
     let ev = pad_or_default(event, n, 1.0);
+    let yu = pad_or_default(y_upper, n, f64::NAN);
 
     let mut obs = Vec::with_capacity(n_latent);
     for i in 0..n {
@@ -163,6 +165,7 @@ fn build_observations(
                 inla_core::Obs::ExponentialSurvival(inla_core::ExponentialSurvivalObs {
                     y,
                     event: ev[i],
+                    y_upper: yu[i],
                     link,
                 })
             }
@@ -170,6 +173,7 @@ fn build_observations(
                 inla_core::Obs::WeibullSurvival(inla_core::WeibullSurvivalObs {
                     y,
                     event: ev[i],
+                    y_upper: yu[i],
                     shape,
                     link,
                 })
@@ -202,6 +206,7 @@ fn inla_rs_run_inla_inference(
     exposure: Vec<f64>,
     ntrials: Vec<f64>,
     event: Vec<f64>,
+    y_upper: Vec<f64>,
     size: f64,
     zero_prob: f64,
     inflation: &str,
@@ -256,6 +261,7 @@ fn inla_rs_run_inla_inference(
         &exposure,
         &ntrials,
         &event,
+        &y_upper,
         size,
         zero_prob,
         inflation,
@@ -427,6 +433,7 @@ fn inla_rs_run_inla_structured(
     exposure: Vec<f64>,
     ntrials: Vec<f64>,
     event: Vec<f64>,
+    y_upper: Vec<f64>,
     size: f64,
     zero_prob: f64,
     inflation: &str,
@@ -506,6 +513,7 @@ fn inla_rs_run_inla_structured(
         &exposure,
         &ntrials,
         &event,
+        &y_upper,
         size,
         zero_prob,
         inflation,

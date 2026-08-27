@@ -112,3 +112,12 @@ report("spde_formula", inla_rs(
              loc_x = "loc_x", loc_y = "loc_y", obs_precision = 25.0),
   data = df
 ))
+
+report("surv_interval", inla_rs(
+  time_surv ~ -1 + f(idx, model = "iid"),
+  data = df,
+  family = "exponential_survival",
+  event = df$event_surv,
+  y_upper = df$time2_surv,
+  initial_theta = 0.0
+))

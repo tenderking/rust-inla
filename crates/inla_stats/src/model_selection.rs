@@ -702,11 +702,13 @@ mod tests {
             Obs::ExponentialSurvival(ExponentialSurvivalObs {
                 y: 1.0,
                 event: 1.0,
+                y_upper: f64::NAN,
                 link: Link::Log,
             }),
             Obs::WeibullSurvival(WeibullSurvivalObs {
                 y: 1.0,
                 event: 1.0,
+                y_upper: f64::NAN,
                 shape: 1.5,
                 link: Link::Log,
             }),
