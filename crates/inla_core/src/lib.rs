@@ -18,10 +18,10 @@ pub use inla_math as math;
 
 // --- Geometry ([`inla_fmesher`]) ---
 pub use inla_fmesher::{
-    BoundaryInput, EdgeRef, FemBlocks, Mesh2D, MeshSummary, PathStep, PathTrace, PointLocation,
-    SparseTriplet, Triangle, Vertex2, build_boundary_segments, build_mesh2d,
-    load_fmesher_boundary_input, load_fmesher_raw_boundary_input, read_boundary_indices,
-    read_mesh_summary, read_positions_xy,
+    BoundaryInput, EdgeRef, FemBlocks, Mesh1D, Mesh2D, MeshSummary, PathStep, PathTrace,
+    PointLocation, SparseTriplet, Triangle, Vertex2, build_boundary_segments, build_mesh1d,
+    build_mesh2d, load_fmesher_boundary_input, load_fmesher_raw_boundary_input,
+    read_boundary_indices, read_mesh_summary, read_positions_xy,
 };
 
 // --- Math / sparse engine ([`inla_math`]) ---
@@ -173,8 +173,9 @@ pub use inla_stats::{
     run_inla_inference_a_cancellable, run_inla_inference_model, run_structured_gaussian_plan,
     rw1_cyclic_precision_csc, rw1_precision_csc, rw2_cyclic_precision_csc, rw2_precision_csc,
     rw2d_precision_csc, sample_latent_gaussian, seasonal_constraint, seasonal_precision_csc,
-    spde_params_from_theta, spde_precision_csc, spde_projector_csc, spde_projector_from_xy,
-    structured_constraints, structured_prior_stack, sum_to_zero_constraint, two_diid_precision_csc,
+    spde_params_from_theta, spde_precision_csc, spde_projector_1d_csc, spde_projector_csc,
+    spde_projector_from_xy, structured_constraints, structured_prior_stack, sum_to_zero_constraint,
+    two_diid_precision_csc,
 };
 
 pub mod marginals {

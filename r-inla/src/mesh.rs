@@ -63,12 +63,29 @@ pub(crate) fn parse_mesh2d_from_r(
     inla_core::fmesher::build_mesh2d(vertices, triangles).map_err(Error::Other)
 }
 
+#[derive(Clone)]
+pub(crate) struct EffectMesh {
+    pub vertices: Option<Vec<(f64, f64)>>,
+    pub triangles: Option<Vec<[usize; 3]>>,
+    pub loc_1d: Option<Vec<f64>>,
+}
+
+impl EffectMesh {
+    fn empty() -> Self {
+        Self {
+            vertices: None,
+            triangles: None,
+            loc_1d: None,
+        }
+    }
+}
+
 pub(crate) fn parse_effect_meshes(
     lists: &List,
     n_effects: usize,
-) -> std::result::Result<Vec<(Option<Vec<(f64, f64)>>, Option<Vec<[usize; 3]>>)>, Error> {
+) -> std::result::Result<Vec<EffectMesh>, Error> {
     if lists.is_empty() {
-        return Ok(vec![(None, None); n_effects]);
+        return Ok(vec![EffectMesh::empty(); n_effects]);
     }
     if lists.len() != n_effects {
         return Err(Error::Other(
@@ -78,36 +95,46 @@ pub(crate) fn parse_effect_meshes(
     let mut out = Vec::with_capacity(n_effects);
     for item in lists.values() {
         if item.is_null() {
-            out.push((None, None));
+            out.push(EffectMesh::empty());
             continue;
         }
         let sub: List = match item.clone().try_into() {
             Ok(list) => list,
             Err(_) => {
-                out.push((None, None));
+                out.push(EffectMesh::empty());
                 continue;
             }
         };
         if sub.is_empty() {
-            out.push((None, None));
-            continue;
-        }
-        if sub.len() < 2 {
-            out.push((None, None));
+            out.push(EffectMesh::empty());
             continue;
         }
         let mut parts: Vec<Robj> = Vec::new();
         for part in sub.values() {
             parts.push(part);
         }
+        if parts.len() == 1
+            && let Some(loc) = parts[0].as_real_vector()
+        {
+            out.push(EffectMesh {
+                vertices: None,
+                triangles: None,
+                loc_1d: Some(loc.to_vec()),
+            });
+            continue;
+        }
         if parts.len() < 2 {
-            out.push((None, None));
+            out.push(EffectMesh::empty());
             continue;
         }
         let mesh = parse_mesh2d_from_r(&parts[0], &parts[1])?;
         let vertices = mesh.vertices.iter().map(|v| (v.x, v.y)).collect::<Vec<_>>();
         let triangles = mesh.triangles.iter().map(|t| t.0).collect::<Vec<_>>();
-        out.push((Some(vertices), Some(triangles)));
+        out.push(EffectMesh {
+            vertices: Some(vertices),
+            triangles: Some(triangles),
+            loc_1d: None,
+        });
     }
     Ok(out)
 }
@@ -237,6 +264,47 @@ fn inla_rs_run_spde(
     ))
 }
 
+#[extendr]
+fn inla_rs_mesh_1d(loc: Vec<f64>) -> std::result::Result<List, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    Ok(list!(loc = mesh.loc.clone(), n = mesh.n() as i32))
+}
+
+#[extendr]
+fn inla_rs_fem_blocks_1d(loc: Vec<f64>) -> std::result::Result<List, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    let fem = mesh.assemble_fem_blocks();
+    let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
+    let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
+    Ok(list!(
+        c0 = csc_to_dgcmatrix(&c0)?,
+        g1 = csc_to_dgcmatrix(&g1)?,
+        n_vertices = mesh.n() as i32
+    ))
+}
+
+#[extendr]
+fn inla_rs_spde_precision_1d_csc(
+    loc: Vec<f64>,
+    kappa: f64,
+    tau: f64,
+) -> std::result::Result<Robj, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    let fem = mesh.assemble_fem_blocks();
+    let csc = inla_core::spde::spde_precision_csc(&fem, kappa, tau).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&csc)
+}
+
+#[extendr]
+fn inla_rs_spde_projector_1d_csc(
+    loc: Vec<f64>,
+    points: Vec<f64>,
+) -> std::result::Result<Robj, Error> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(Error::Other)?;
+    let a = inla_core::spde_projector_1d_csc(&mesh, &points).map_err(Error::Other)?;
+    csc_to_dgcmatrix(&a)
+}
+
 extendr_module! {
     mod mesh;
     fn inla_rs_read_mesh;
@@ -244,4 +312,8 @@ extendr_module! {
     fn inla_rs_fem_blocks_mesh;
     fn inla_rs_spde_projector_csc;
     fn inla_rs_run_spde;
+    fn inla_rs_mesh_1d;
+    fn inla_rs_fem_blocks_1d;
+    fn inla_rs_spde_precision_1d_csc;
+    fn inla_rs_spde_projector_1d_csc;
 }

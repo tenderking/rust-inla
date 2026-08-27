@@ -150,6 +150,23 @@ inla_rs_spde_projector_csc <- function(vertices_mat, triangles_mat, loc_x, loc_y
   )
 }
 
+#' 1D mesh on strictly increasing knots (classic `inla.mesh.1d`).
+inla_rs_mesh_1d <- function(loc) {
+  .Call("wrap__inla_rs_mesh_1d", as.numeric(loc))
+}
+
+inla_rs_fem_blocks_1d <- function(loc) {
+  .Call("wrap__inla_rs_fem_blocks_1d", as.numeric(loc))
+}
+
+inla_rs_spde_precision_1d_csc <- function(loc, kappa, tau = 1) {
+  .Call("wrap__inla_rs_spde_precision_1d_csc", as.numeric(loc), as.numeric(kappa), as.numeric(tau))
+}
+
+inla_rs_spde_projector_1d_csc <- function(loc, points) {
+  .Call("wrap__inla_rs_spde_projector_1d_csc", as.numeric(loc), as.numeric(points))
+}
+
 #' Fit a Gaussian SPDE model on a triangular mesh.
 #'
 #' Hyperparameters are internal \eqn{\theta = (\log\tau, \log\kappa)}.
@@ -1347,10 +1364,37 @@ inla_rs <- function(
       if (is.null(spde_mod)) spde_mod <- fs$args$mesh
       verts <- fs$args$vertices
       tris <- fs$args$triangles
+      loc_1d <- NULL
       if (!is.null(spde_mod)) {
         if (is.null(verts) && !is.null(spde_mod$vertices)) verts <- spde_mod$vertices
         if (is.null(tris) && !is.null(spde_mod$triangles)) tris <- spde_mod$triangles
+        if (!is.null(spde_mod$loc) && is.null(spde_mod$vertices) && is.null(verts)) {
+          loc_1d <- as.numeric(spde_mod$loc)
+        }
       }
+      if (!is.null(loc_1d)) {
+        loc <- fs$args$loc
+        if (is.null(loc)) loc <- fs$args$loc_x
+        if (is.character(loc) && length(loc) == 1L) {
+          if (is.null(data[[loc]])) stop("loc column '", loc, "' not found in data", call. = FALSE)
+          loc <- data[[loc]]
+        }
+        if (is.null(loc)) {
+          stop("f(..., model=\"spde\") 1D mesh needs loc= coordinates", call. = FALSE)
+        }
+        pts <- as.numeric(loc)
+        if (length(pts) != n_obs) {
+          stop("spde 1D loc must have length n", call. = FALSE)
+        }
+        a_spde <- inla_rs_spde_projector_1d_csc(loc_1d, pts)
+        sm <- Matrix::summary(a_spde)
+        add_triplets(as.integer(sm$i) - 1L, col_off + as.integer(sm$j) - 1L, sm$x)
+        n_e <- as.integer(length(loc_1d))
+        graph <- NULL
+        order_enc <- as.integer(order)
+        effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
+        mesh_store <- list(loc_1d)
+      } else {
       verts <- resolve_matrix(verts, "vertices")
       tris <- resolve_matrix(tris, "triangles")
       if (is.null(verts) || is.null(tris)) {
@@ -1400,6 +1444,7 @@ inla_rs <- function(
       order_enc <- as.integer(order)
       effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
       mesh_store <- list(vertices = verts, triangles = tris)
+      }
     } else if (identical(model, "crw2")) {
       lev <- sort(unique(idx))
       n_main <- length(lev)

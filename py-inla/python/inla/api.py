@@ -13,6 +13,7 @@ from inla import _native as core
 from inla.formula import FTerm, ParsedFormula, parse_formula
 from inla.generic import GenericModel, Model
 from inla.models import Effect, Family, Linear, ModelSpec, Surv
+from inla.stack import Stack
 
 SUPPORTED_F_MODELS = tuple(core.supported_models())
 GENERIC_MODEL_ALIASES = ("rgeneric", "generic", "cgeneric")
@@ -40,6 +41,78 @@ def _as_1d(x, name: str) -> np.ndarray:
     if arr.size == 0:
         raise ValueError(f"{name} is empty")
     return arr
+
+
+def _family_spec_name(fam: str | Family) -> str:
+    if isinstance(fam, Family):
+        return FAMILY_ALIASES.get(fam.name.lower(), fam.name.lower())
+    return FAMILY_ALIASES.get(str(fam).lower(), str(fam).lower())
+
+
+def _as_family_list(family: str | Family | Sequence[str | Family]) -> list[str | Family]:
+    if isinstance(family, (list, tuple)):
+        if not family:
+            raise ValueError("family list must be non-empty")
+        return list(family)
+    return [family]
+
+
+def _expand_multi_family_data(
+    data: Mapping[str, Any],
+    response: str,
+    n_fam: int,
+) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray]:
+    """Expand an n×k response (and matching n×k covariates) to stacked rows.
+
+    Returns (data, y, src_row, fam_index).
+    """
+    raw = data[response]
+    arr = np.asarray(raw, dtype=float)
+    if arr.ndim <= 1:
+        y1 = _as_1d(arr, response)
+        if n_fam != 1:
+            raise ValueError(
+                f"family has length {n_fam} but response '{response}' is 1-D; "
+                "pass an n x k matrix (NA marks unused likelihoods)"
+            )
+        n = y1.size
+        return dict(data), y1, np.arange(n, dtype=int), np.zeros(n, dtype=int)
+    if arr.ndim != 2:
+        raise ValueError(f"response '{response}' must be 1-D or 2-D")
+    if arr.shape[1] != n_fam:
+        raise ValueError(
+            f"response '{response}' has {arr.shape[1]} columns but family has length {n_fam}"
+        )
+    n_src = arr.shape[0]
+    src_rows: list[int] = []
+    fam_idx: list[int] = []
+    yvals: list[float] = []
+    for i in range(n_src):
+        for j in range(n_fam):
+            v = arr[i, j]
+            if np.isnan(v):
+                continue
+            src_rows.append(i)
+            fam_idx.append(j)
+            yvals.append(float(v))
+    if not yvals:
+        raise ValueError("all response entries are NA")
+    src = np.asarray(src_rows, dtype=int)
+    fam = np.asarray(fam_idx, dtype=int)
+    y = np.asarray(yvals, dtype=float)
+    out: dict[str, Any] = {}
+    for key, val in data.items():
+        if key == response:
+            out[key] = y
+            continue
+        col = np.asarray(val)
+        if col.ndim == 2 and col.shape[0] == n_src and col.shape[1] == n_fam:
+            out[key] = np.asarray(col, dtype=float)[src, fam]
+        elif col.ndim >= 1 and col.shape[0] == n_src:
+            out[key] = np.asarray(col)[src]
+        else:
+            out[key] = val
+    return out, y, src, fam
 
 
 def _get_col(data: Mapping[str, Any], key: str) -> np.ndarray:
@@ -664,6 +737,7 @@ def _build_obs(
     variant: int = 1,
     prec: float = 1.0,
     obs_precision: float = 1.0,
+    prec_theta: int | None = None,
 ) -> list[dict[str, Any] | None]:
     fam = FAMILY_ALIASES.get(family.lower(), family.lower())
     n = y.size
@@ -702,6 +776,8 @@ def _build_obs(
         d: dict[str, Any] = {"family": fam, "y": float(y[i])}
         if fam == "gaussian":
             d["precision"] = float(obs_precision)
+            if prec_theta is not None:
+                d["prec_theta"] = int(prec_theta)
         elif fam == "poisson":
             d["E"] = float(E_arr[i]) if E_arr is not None else 1.0
         elif fam == "binomial":
@@ -872,7 +948,7 @@ def _try_gaussian_ar1_plan(
 def _fit(
     formula: str | ModelSpec | type[ModelSpec] | None = None,
     data: Any | None = None,
-    family: str | Family = "gaussian",
+    family: str | Family | Sequence[str | Family] = "gaussian",
     *,
     response: str | Surv | None = None,
     fixed: Sequence[str | Linear] | None = None,
@@ -954,7 +1030,9 @@ def _fit(
         data = formula
         formula = None
 
-    if data is not None and hasattr(data, "to_dict"):
+    if isinstance(data, Stack):
+        data = dict(data.data)
+    elif data is not None and hasattr(data, "to_dict"):
         try:
             data = data.to_dict(orient="series")
         except TypeError:
@@ -1048,29 +1126,29 @@ def _fit(
             f"Unsupported formula type: {type(formula)}. Pass str, ModelSpec, or response=..."
         )
 
-    if isinstance(family, Family):
-        if family.Ntrials is not None and Ntrials is None:
-            Ntrials = family.Ntrials
-        if family.E is not None and E is None:
-            E = family.E
-        if family.event is not None and event is None:
-            event = family.event
-        if family.y_upper is not None and y_upper is None:
-            y_upper = family.y_upper
-        if family.control_family is not None and control_family is None:
-            control_family = family.control_family
-        size = family.size
-        zero_prob = family.zero_prob
-        inflation = family.inflation
-        alpha = family.alpha
-        gamma = family.gamma
-        shape = family.shape
-        variant = family.variant
-        prec = family.prec
-        if family.cutpoints is not None and cutpoints is None:
-            cutpoints = family.cutpoints
-        family = family.name
-
+    family_items = _as_family_list(family)
+    if len(family_items) == 1 and isinstance(family_items[0], Family):
+        fam0 = family_items[0]
+        if fam0.Ntrials is not None and Ntrials is None:
+            Ntrials = fam0.Ntrials
+        if fam0.E is not None and E is None:
+            E = fam0.E
+        if fam0.event is not None and event is None:
+            event = fam0.event
+        if fam0.y_upper is not None and y_upper is None:
+            y_upper = fam0.y_upper
+        if fam0.control_family is not None and control_family is None:
+            control_family = fam0.control_family
+        size = fam0.size
+        zero_prob = fam0.zero_prob
+        inflation = fam0.inflation
+        alpha = fam0.alpha
+        gamma = fam0.gamma
+        shape = fam0.shape
+        variant = fam0.variant
+        prec = fam0.prec
+        if fam0.cutpoints is not None and cutpoints is None:
+            cutpoints = fam0.cutpoints
     if data is None:
         raise ValueError("data must be provided")
 
@@ -1082,16 +1160,21 @@ def _fit(
         if g is None and ft.model not in SUPPORTED_F_MODELS:
             raise ValueError(f"unsupported f() model '{ft.model}'")
 
-    fam_key = FAMILY_ALIASES.get(str(family).lower(), str(family).lower())
+    n_fam = len(family_items)
+    if n_fam > 1 and isinstance(parsed.response, Surv):
+        raise ValueError("Surv() cannot be combined with a multi-family specification")
     if isinstance(parsed.response, Surv):
         y, ev_s, yu_s = _unpack_surv(parsed.response, data)
         if event is None:
             event = ev_s
         if y_upper is None:
             y_upper = yu_s
+        fam_index = np.zeros(y.size, dtype=int)
     else:
-        y = _get_col(data, str(parsed.response))
+        data, y, _src_row, fam_index = _expand_multi_family_data(data, str(parsed.response), n_fam)
     n_obs = y.size
+    family = _family_spec_name(family_items[0])
+    fam_key = family
 
     if isinstance(Ntrials, str):
         Ntrials = _get_col(data, Ntrials)
@@ -1139,6 +1222,9 @@ def _fit(
         parsed.response = "y_events"
         y = np.asarray(data["y_events"], dtype=float)
         n_obs = y.size
+        fam_index = np.zeros(n_obs, dtype=int)
+        family_items = ["poisson"]
+        n_fam = 1
         E = data["exposure"]
         event = None
         y_upper = None
@@ -1149,46 +1235,73 @@ def _fit(
             _resolve_f_model(parsed.f_terms[-1], models=models, rgeneric=rgeneric)
         )
 
-    obs_precision = 1.0
-    family_free_prec = False
-    family_initial_theta = 0.0
-    family_prior_spec = ("loggamma", [1.0, 5e-5])
-
     has_kw_obs_prec = any(ft.kwargs.get("obs_precision") is not None for ft in parsed.f_terms)
+    control_list: list[Mapping[str, Any] | None]
+    if isinstance(control_family, (list, tuple)):
+        if len(control_family) != n_fam:
+            raise ValueError("control_family list length must match family")
+        control_list = list(control_family)
+    else:
+        control_list = [control_family] * n_fam
 
-    if family.lower() in ("gaussian", "normal"):
+    fam_obs_prec = [1.0] * n_fam
+    fam_free = [False] * n_fam
+    fam_init = [0.0] * n_fam
+    fam_prior = [("loggamma", [1.0, 5e-5])] * n_fam
+    for j, fam_obj in enumerate(family_items):
+        fname = _family_spec_name(fam_obj)
+        ctrl = control_list[j]
+        if (
+            isinstance(fam_obj, Family)
+            and fam_obj.control_family is not None
+            and ctrl is control_family
+        ):
+            ctrl = fam_obj.control_family
+        if fname not in ("gaussian", "normal"):
+            continue
         prec_cfg = None
-        if control_family is not None and isinstance(control_family.get("hyper"), Mapping):
-            prec_cfg = control_family["hyper"].get("prec")
-
+        if ctrl is not None and isinstance(ctrl.get("hyper"), Mapping):
+            prec_cfg = ctrl["hyper"].get("prec")
         if has_kw_obs_prec:
             for ft in parsed.f_terms:
                 if ft.kwargs.get("obs_precision") is not None:
-                    obs_precision = float(ft.kwargs["obs_precision"])
-            family_free_prec = False
+                    fam_obs_prec[j] = float(ft.kwargs["obs_precision"])
+            fam_free[j] = False
         elif prec_cfg is not None and hasattr(prec_cfg, "to_tuple"):
-            family_free_prec = True
+            fam_free[j] = True
             prior_name, prior_param = prec_cfg.to_tuple()
-            family_prior_spec = (prior_name, prior_param)
+            fam_prior[j] = (prior_name, prior_param)
         elif prec_cfg is not None and isinstance(prec_cfg, Mapping):
             is_fixed = bool(prec_cfg.get("fixed", False))
             init = prec_cfg.get("initial")
             if init is not None:
-                family_initial_theta = float(init)
-                obs_precision = float(np.exp(family_initial_theta))
+                fam_init[j] = float(init)
+                fam_obs_prec[j] = float(np.exp(fam_init[j]))
             if is_fixed:
-                family_free_prec = False
+                fam_free[j] = False
             else:
-                family_free_prec = True
+                fam_free[j] = True
                 prior_name = str(prec_cfg.get("prior", "loggamma"))
                 prior_param = _as_param_list(prec_cfg.get("param", [1.0, 5e-5]))
-                family_prior_spec = (prior_name, prior_param)
+                fam_prior[j] = (prior_name, prior_param)
         else:
-            # Default in R-INLA: Gaussian observation precision is free
-            family_free_prec = True
-            family_initial_theta = 0.0
-            obs_precision = 1.0
-            family_prior_spec = ("loggamma", [1.0, 5e-5])
+            fam_free[j] = True
+            fam_init[j] = 0.0
+            fam_obs_prec[j] = 1.0
+            fam_prior[j] = ("loggamma", [1.0, 5e-5])
+
+    n_family_theta = 0
+    fam_theta_slot: list[int | None] = [None] * n_fam
+    family_prior_specs: list[tuple[str, list[float]]] = []
+    family_initials: list[float] = []
+    for j in range(n_fam):
+        if fam_free[j]:
+            fam_theta_slot[j] = n_family_theta
+            n_family_theta += 1
+            family_prior_specs.append(fam_prior[j])
+            family_initials.append(fam_init[j])
+    family_free_prec = n_family_theta > 0
+    obs_precision = fam_obs_prec[0]
 
     controls = _resolve_controls(
         control_compute,
@@ -1202,7 +1315,7 @@ def _fit(
     fixed_prec = controls["fixed_prec"]
     deterministic = controls["deterministic"]
 
-    if not family_free_prec and all(g is None for g in resolved_generics):
+    if n_fam == 1 and not family_free_prec and all(g is None for g in resolved_generics):
         planned = _try_gaussian_ar1_plan(
             formula=formula,
             parsed=parsed,
@@ -1222,23 +1335,62 @@ def _fit(
         if planned is not None:
             return planned
 
-    obs = _build_obs(
-        family,
-        y,
-        E=E,
-        Ntrials=Ntrials,
-        event=event,
-        y_upper=y_upper,
-        size=size,
-        zero_prob=zero_prob,
-        inflation=inflation,
-        alpha=alpha,
-        gamma=gamma,
-        shape=shape,
-        variant=variant,
-        prec=prec,
-        obs_precision=obs_precision,
-    )
+    obs: list[dict[str, Any] | None] = [None] * n_obs
+    for j, fam_obj in enumerate(family_items):
+        idx = np.flatnonzero(fam_index == j)
+        if idx.size == 0:
+            continue
+        fname = _family_spec_name(fam_obj)
+
+        def _slice_opt(v):
+            if v is None or isinstance(v, (str, int, float)):
+                return v
+            a = np.asarray(v)
+            if a.ndim == 0 or a.size <= 1:
+                return v
+            if a.shape[0] == n_obs:
+                return a[idx]
+            return v
+
+        kw = dict(
+            E=_slice_opt(E),
+            Ntrials=_slice_opt(Ntrials),
+            event=_slice_opt(event),
+            y_upper=_slice_opt(y_upper),
+            size=size,
+            zero_prob=zero_prob,
+            inflation=inflation,
+            alpha=alpha,
+            gamma=gamma,
+            shape=shape,
+            variant=variant,
+            prec=prec,
+            obs_precision=fam_obs_prec[j],
+            prec_theta=fam_theta_slot[j],
+        )
+        if isinstance(fam_obj, Family):
+            if fam_obj.Ntrials is not None:
+                nt = fam_obj.Ntrials
+                kw["Ntrials"] = _get_col(data, nt) if isinstance(nt, str) else _slice_opt(nt)
+            if fam_obj.E is not None:
+                kw["E"] = _get_col(data, fam_obj.E) if isinstance(fam_obj.E, str) else fam_obj.E
+            if fam_obj.event is not None:
+                ev = fam_obj.event
+                kw["event"] = _get_col(data, ev) if isinstance(ev, str) else ev
+            if fam_obj.y_upper is not None:
+                yu = fam_obj.y_upper
+                kw["y_upper"] = _get_col(data, yu) if isinstance(yu, str) else yu
+            kw["size"] = fam_obj.size
+            kw["zero_prob"] = fam_obj.zero_prob
+            kw["inflation"] = fam_obj.inflation
+            kw["alpha"] = fam_obj.alpha
+            kw["gamma"] = fam_obj.gamma
+            kw["shape"] = fam_obj.shape
+            kw["variant"] = fam_obj.variant
+            kw["prec"] = fam_obj.prec
+        sub = _build_obs(fname, y[idx], **kw)
+        for k, d in zip(idx, sub, strict=True):
+            obs[int(k)] = d
     # cbind may have rewritten y length
     n_obs = len(obs)
 
@@ -1261,7 +1413,7 @@ def _fit(
     effect_prior_specs: list[list[tuple[str, list[float]]]] = []
     theta: list[float] = []
     if family_free_prec:
-        theta.append(family_initial_theta)
+        theta.extend(family_initials)
 
     effect_positions: list[list[float] | None] = []
     effect_layouts: list[str] = []
@@ -1469,57 +1621,85 @@ def _fit(
             spde_mod = ft.kwargs.get("spde_model") or ft.kwargs.get("mesh")
             verts = ft.kwargs.get("vertices")
             tris = ft.kwargs.get("triangles")
+            loc_1d = None
             if spde_mod is not None:
                 if isinstance(spde_mod, Mapping):
                     verts = spde_mod.get("vertices", verts)
                     tris = spde_mod.get("triangles", tris)
+                    if spde_mod.get("kind") == "1d" or (
+                        "loc" in spde_mod and verts is None and tris is None
+                    ):
+                        loc_1d = np.asarray(spde_mod["loc"], dtype=float).reshape(-1)
                 elif hasattr(spde_mod, "vertices") and hasattr(spde_mod, "triangles"):
                     verts = getattr(spde_mod, "vertices", verts)
                     tris = getattr(spde_mod, "triangles", tris)
-            if isinstance(verts, str):
+            if loc_1d is None and isinstance(verts, str):
                 verts = data[verts]
-            if isinstance(tris, str):
+            if loc_1d is None and isinstance(tris, str):
                 tris = data[tris]
-            if verts is None or tris is None:
-                raise ValueError(
-                    "f(..., model='spde') requires vertices= and triangles= (or spde_model=)"
-                )
-            verts_arr = np.asarray(verts, dtype=float)
-            tris_arr = np.asarray(tris)
-            if verts_arr.ndim != 2 or verts_arr.shape[1] != 2:
-                raise ValueError("spde vertices must be N x 2")
-            if tris_arr.ndim != 2 or tris_arr.shape[1] != 3:
-                raise ValueError("spde triangles must be M x 3")
-            # Accept 1-based triangles
-            if int(tris_arr.min()) >= 1:
-                tris_arr = tris_arr - 1
-            vert_tuples = [(float(x), float(y)) for x, y in verts_arr]
-            tri_tuples = [(int(a), int(b), int(c)) for a, b, c in tris_arr]
-            mesh_store = (vert_tuples, tri_tuples)
-            n_main = len(vert_tuples)
-            loc_x_key = ft.kwargs.get("loc_x", "loc_x")
-            loc_y_key = ft.kwargs.get("loc_y", "loc_y")
+            loc_obs = None
             if "loc" in ft.kwargs:
                 loc_raw = (
                     data[ft.kwargs["loc"]]
                     if isinstance(ft.kwargs["loc"], str)
                     else ft.kwargs["loc"]
                 )
-                loc = np.asarray(loc_raw, dtype=float)
-                loc_x = loc[:, 0]
-                loc_y = loc[:, 1]
-            elif loc_x_key in data and loc_y_key in data:
-                loc_x = _get_col(data, str(loc_x_key))
-                loc_y = _get_col(data, str(loc_y_key))
+                loc_obs = np.asarray(loc_raw, dtype=float)
+            if loc_1d is not None:
+                if loc_obs is None:
+                    loc_key = ft.kwargs.get("loc", ft.index)
+                    if loc_key in data:
+                        loc_obs = np.asarray(data[loc_key], dtype=float)
+                    else:
+                        raise ValueError("f(..., model='spde') 1D mesh needs loc= coordinates")
+                pts = loc_obs.reshape(-1)
+                if pts.size != n_obs:
+                    raise ValueError("spde 1D loc length must equal n_obs")
+                mesh_store = ("1d", [float(x) for x in loc_1d])
+                n_main = int(loc_1d.size)
+                a_spde = (
+                    core.spde_projector_matrix_1d(list(mesh_store[1]), pts.tolist())
+                    .to_scipy()
+                    .tocsc()
+                    .copy()
+                )
             else:
-                raise ValueError("f(..., model='spde') needs loc= or loc_x=/loc_y= columns")
-            a_spde = (
-                core.spde_projector_matrix(vert_tuples, tri_tuples, loc_x.tolist(), loc_y.tolist())
-                .to_scipy()
-                .tocsc()
-                .copy()
-            )
-            # Scatter projector into global A
+                if verts is None or tris is None:
+                    raise ValueError(
+                        "f(..., model='spde') requires vertices= and triangles= (or spde_model=)"
+                    )
+                verts_arr = np.asarray(verts, dtype=float)
+                tris_arr = np.asarray(tris)
+                if verts_arr.ndim != 2 or verts_arr.shape[1] != 2:
+                    raise ValueError("spde vertices must be N x 2")
+                if tris_arr.ndim != 2 or tris_arr.shape[1] != 3:
+                    raise ValueError("spde triangles must be M x 3")
+                if int(tris_arr.min()) >= 1:
+                    tris_arr = tris_arr - 1
+                vert_tuples = [(float(x), float(y)) for x, y in verts_arr]
+                tri_tuples = [(int(a), int(b), int(c)) for a, b, c in tris_arr]
+                mesh_store = (vert_tuples, tri_tuples)
+                n_main = len(vert_tuples)
+                loc_x_key = ft.kwargs.get("loc_x", "loc_x")
+                loc_y_key = ft.kwargs.get("loc_y", "loc_y")
+                if loc_obs is not None:
+                    if loc_obs.ndim == 1:
+                        raise ValueError("2D spde loc must be n x 2")
+                    loc_x = loc_obs[:, 0]
+                    loc_y = loc_obs[:, 1]
+                elif loc_x_key in data and loc_y_key in data:
+                    loc_x = _get_col(data, str(loc_x_key))
+                    loc_y = _get_col(data, str(loc_y_key))
+                else:
+                    raise ValueError("f(..., model='spde') needs loc= or loc_x=/loc_y= columns")
+                a_spde = (
+                    core.spde_projector_matrix(
+                        vert_tuples, tri_tuples, loc_x.tolist(), loc_y.tolist()
+                    )
+                    .to_scipy()
+                    .tocsc()
+                    .copy()
+                )
             coo = a_spde.tocoo()
             for r, c, v in zip(coo.row, coo.col, coo.data):
                 rows.append(int(r))
@@ -1768,9 +1948,12 @@ def _fit(
                 d["copy_of"] = int(copy_src)
             mesh = meshes[ei]
             if mesh is not None:
-                verts, tris = mesh
-                d["mesh_vertices"] = [[float(x), float(y)] for x, y in verts]
-                d["mesh_triangles"] = [[int(a), int(b), int(c)] for a, b, c in tris]
+                if isinstance(mesh, tuple) and mesh and mesh[0] == "1d":
+                    d["mesh_loc_1d"] = [float(x) for x in mesh[1]]
+                else:
+                    verts, tris = mesh
+                    d["mesh_vertices"] = [[float(x), float(y)] for x, y in verts]
+                    d["mesh_triangles"] = [[int(a), int(b), int(c)] for a, b, c in tris]
             out.append(d)
         return out
 
@@ -1783,10 +1966,12 @@ def _fit(
         assert mesh is not None
         tau = float(np.exp(ti[0]))
         kappa = float(np.exp(ti[1]))
+        if isinstance(mesh, tuple) and mesh and mesh[0] == "1d":
+            return core.spde_precision_matrix_1d(list(mesh[1]), kappa=kappa, tau=tau)
         return core.spde_precision_matrix(mesh[0], mesh[1], kappa=kappa, tau=tau)
 
     def build_prior(th):
-        latent_th = list(th[1:]) if family_free_prec else list(th)
+        latent_th = list(th[n_family_theta:]) if family_free_prec else list(th)
         if use_shared_q:
             return core.build_structured_precision(
                 _structured_effect_dicts(), latent_th, float(fixed_prec)
@@ -1865,13 +2050,15 @@ def _fit(
         th = list(th)
         lp = 0.0
         if family_free_prec:
-            fam_th = [float(th[0])]
+            fam_th = [float(x) for x in th[:n_family_theta]]
             lp += float(
                 core.hyper_prior_stack_log_density(
-                    [family_prior_spec[0]], [family_prior_spec[1]], fam_th
+                    [s[0] for s in family_prior_specs],
+                    [s[1] for s in family_prior_specs],
+                    fam_th,
                 )
             )
-            latent_th = th[1:]
+            latent_th = th[n_family_theta:]
         else:
             latent_th = th
         off = 0
@@ -1895,14 +2082,14 @@ def _fit(
     if initial_theta is not None:
         init_arr = list(np.asarray(initial_theta, dtype=float).reshape(-1))
         if family_free_prec:
-            if len(init_arr) == 1 + total_latent_dim:
+            if len(init_arr) == n_family_theta + total_latent_dim:
                 theta = init_arr
             elif len(init_arr) == total_latent_dim:
-                theta = [family_initial_theta] + init_arr
+                theta = list(family_initials) + init_arr
             else:
                 raise ValueError(
                     f"initial_theta length {len(init_arr)} != expected "
-                    f"{1 + total_latent_dim} (or {total_latent_dim})"
+                    f"{n_family_theta + total_latent_dim} (or {total_latent_dim})"
                 )
         else:
             if len(init_arr) == total_latent_dim:
@@ -1990,8 +2177,17 @@ def _fit(
         theta_lens[ei] if typ == "rgeneric" else effect_orders[ei]
         for ei, typ in enumerate(effect_types)
     ]
-    family_labels = ["Precision for the Gaussian observations"] if family_free_prec else None
-    family_transforms = ["exp"] if family_free_prec else None
+    if family_free_prec:
+        if n_family_theta == 1:
+            family_labels = ["Precision for the Gaussian observations"]
+        else:
+            family_labels = [
+                f"Precision for the Gaussian observations[{j + 1}]" for j in range(n_family_theta)
+            ]
+        family_transforms = ["exp"] * n_family_theta
+    else:
+        family_labels = None
+        family_transforms = None
     hyper_labels, hyper_transforms = _hyper_labels(
         effect_types,
         effect_names,

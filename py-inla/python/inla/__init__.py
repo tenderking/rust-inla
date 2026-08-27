@@ -114,6 +114,7 @@ from inla.priors import (
     Prior,
     Uniform,
 )
+from inla.stack import Stack
 
 
 class _InlaModule(types.ModuleType):
@@ -167,6 +168,7 @@ _mod.__dict__.update(
             "GenericModel",
             "Model",
             "spde",
+            "Stack",
             "models",
             "priors",
             # ModelSpec & Effects
@@ -251,6 +253,7 @@ _mod.__dict__.update(
         "group": group,
         "generic": _generic,
         "spde": _spde,
+        "Stack": Stack,
         "models": _models_mod,
         "priors": _priors_mod,
         "define": define,

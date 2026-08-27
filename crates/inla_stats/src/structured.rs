@@ -27,7 +27,7 @@ use crate::priors::HyperPriorStack;
 use crate::registry::{SUPPORTED_MODELS, model_metadata};
 use crate::rw2d::rw2d_precision_csc;
 use crate::spde::{spde_params_from_theta, spde_precision_csc};
-use inla_fmesher::{Triangle, Vertex2, build_mesh2d};
+use inla_fmesher::{Triangle, Vertex2, build_mesh1d, build_mesh2d};
 
 /// One latent block in a structured (multi-effect) model.
 ///
@@ -61,11 +61,13 @@ pub struct StructuredEffect {
     pub mesh: Option<Box<SpdeMesh>>,
 }
 
-/// Triangular mesh used to build SPDE `Q(θ)`.
+/// Mesh used to build SPDE `Q(θ)` (2D triangles, or 1D knots via [`Self::loc_1d`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpdeMesh {
     pub vertices: Vec<(f64, f64)>,
     pub triangles: Vec<[usize; 3]>,
+    /// Ordered 1D knot locations. When set, FEM uses the 1D assembler.
+    pub loc_1d: Option<Vec<f64>>,
 }
 
 impl StructuredEffect {
@@ -120,29 +122,40 @@ fn apply_tau(q: &CscMatrix, tau: f64) -> Result<CscMatrix, String> {
     scale_csc(q, tau)
 }
 
-fn spde_mesh(effect: &StructuredEffect) -> Result<inla_fmesher::Mesh2D, String> {
+fn spde_fem(effect: &StructuredEffect) -> Result<(inla_fmesher::FemBlocks, usize), String> {
     let mesh = effect
         .mesh
         .as_deref()
         .ok_or_else(|| "spde missing mesh vertices".to_string())?;
-    if mesh.vertices.is_empty() {
-        return Err("spde mesh has no vertices".into());
+    if let Some(loc) = mesh.loc_1d.as_ref() {
+        if loc.is_empty() {
+            return Err("spde 1D mesh has no knots".into());
+        }
+        let m1 = build_mesh1d(loc.clone())?;
+        let n = m1.n();
+        Ok((m1.assemble_fem_blocks(), n))
+    } else {
+        if mesh.vertices.is_empty() {
+            return Err("spde mesh has no vertices".into());
+        }
+        if mesh.triangles.is_empty() {
+            return Err("spde mesh has no triangles".into());
+        }
+        let vertices = mesh
+            .vertices
+            .iter()
+            .map(|&(x, y)| Vertex2 { x, y })
+            .collect::<Vec<_>>();
+        let triangles = mesh
+            .triangles
+            .iter()
+            .copied()
+            .map(Triangle)
+            .collect::<Vec<_>>();
+        let m2 = build_mesh2d(vertices, triangles)?;
+        let n = m2.vertices.len();
+        Ok((m2.assemble_fem_blocks(), n))
     }
-    if mesh.triangles.is_empty() {
-        return Err("spde mesh has no triangles".into());
-    }
-    let vertices = mesh
-        .vertices
-        .iter()
-        .map(|&(x, y)| Vertex2 { x, y })
-        .collect::<Vec<_>>();
-    let triangles = mesh
-        .triangles
-        .iter()
-        .copied()
-        .map(Triangle)
-        .collect::<Vec<_>>();
-    build_mesh2d(vertices, triangles)
 }
 
 /// R-INLA `f(..., diagonal=)` default when `constr=TRUE`.
@@ -374,14 +387,10 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
         }
         "spde" => {
             let (tau, kappa) = spde_params_from_theta(th)?;
-            let mesh = spde_mesh(effect)?;
-            if mesh.vertices.len() != n_e {
-                return Err(format!(
-                    "spde mesh vertices {} != effect n {n_e}",
-                    mesh.vertices.len()
-                ));
+            let (fem, n_v) = spde_fem(effect)?;
+            if n_v != n_e {
+                return Err(format!("spde mesh vertices {n_v} != effect n {n_e}"));
             }
-            let fem = mesh.assemble_fem_blocks();
             spde_precision_csc(&fem, kappa, tau)
         }
         other => Err(format!("unsupported effect type: {other}")),
@@ -534,7 +543,7 @@ pub fn resolve_structured_plan(effects: &[StructuredEffect]) -> Result<Structure
             if effect.group_model.is_some() {
                 return Err("grouped SPDE effects are not supported".into());
             }
-            spde_mesh(effect)?;
+            spde_fem(effect)?;
         }
         latent_offsets.push(latent_len);
         theta_offsets.push(theta_len);
@@ -1046,6 +1055,7 @@ mod tests {
                 effect.mesh = Some(Box::new(SpdeMesh {
                     vertices: vec![(0.0, 1.0), (1.0, 1.0), (0.0, 0.0), (1.0, 0.0)],
                     triangles: vec![[0, 2, 1], [1, 2, 3]],
+                    loc_1d: None,
                 }));
             }
             _ => {}
@@ -1099,6 +1109,23 @@ mod tests {
             err.contains("spde missing") || err.contains("no vertices"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn spde_1d_mesh_q_matches_knot_count() {
+        let meta = model_metadata("spde", 0, None, false).unwrap();
+        let loc = vec![0.0, 1.0, 2.0, 4.0];
+        let mut effect = StructuredEffect::simple("spde", loc.len(), meta.theta_len);
+        effect.mesh = Some(Box::new(SpdeMesh {
+            vertices: vec![],
+            triangles: vec![],
+            loc_1d: Some(loc.clone()),
+        }));
+        let q =
+            build_structured_precision(std::slice::from_ref(&effect), &meta.default_theta, 1e-4)
+                .unwrap();
+        assert_eq!(q.rows(), loc.len());
+        assert!(q.data().iter().all(|v| v.is_finite()));
     }
 
     #[test]

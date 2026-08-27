@@ -76,7 +76,7 @@ pub struct SparseTriplet {
 }
 
 impl SparseTriplet {
-    fn new(rows: usize, cols: usize) -> Self {
+    pub(crate) fn new(rows: usize, cols: usize) -> Self {
         Self {
             rows,
             cols,
@@ -84,11 +84,11 @@ impl SparseTriplet {
         }
     }
 
-    fn add(&mut self, row: usize, col: usize, value: f64) {
+    pub(crate) fn add(&mut self, row: usize, col: usize, value: f64) {
         self.entries.push((row, col, value));
     }
 
-    fn coalesce(mut self) -> Self {
+    pub(crate) fn coalesce(mut self) -> Self {
         self.entries
             .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut merged: Vec<(usize, usize, f64)> = Vec::with_capacity(self.entries.len());

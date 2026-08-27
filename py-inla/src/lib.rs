@@ -448,7 +448,18 @@ fn run_inla_inference_py(
 ) -> PyResult<PyInferenceResult> {
     // 1. Parse Python observation list to Rust Obs structs
     let mut rust_obs = Vec::with_capacity(obs.len());
+    let mut prec_slots: Vec<Option<usize>> = Vec::with_capacity(obs.len());
     for item in obs {
+        if item.is_none() {
+            prec_slots.push(None);
+            rust_obs.push(inla_core::Obs::None);
+            continue;
+        }
+        let slot = match item.get_item("prec_theta") {
+            Ok(v) if !v.is_none() => v.extract::<usize>().ok(),
+            _ => None,
+        };
+        prec_slots.push(slot);
         rust_obs.push(parse_obs(&item)?);
     }
 
@@ -547,13 +558,19 @@ fn run_inla_inference_py(
 
     let base_rust_obs = rust_obs.clone();
     let build_obs_closure = move |th: &[f64]| -> Vec<inla_core::inference::Obs> {
-        let prec = if !th.is_empty() { th[0].exp() } else { 1.0 };
         base_rust_obs
             .iter()
-            .map(|o| match o {
+            .zip(prec_slots.iter())
+            .map(|(o, slot)| match o {
                 inla_core::inference::Obs::Gaussian(g) => {
+                    let idx = slot.unwrap_or(0);
+                    let precision = if idx < th.len() {
+                        th[idx].exp()
+                    } else {
+                        g.precision
+                    };
                     inla_core::inference::Obs::Gaussian(inla_core::inference::GaussianObs {
-                        precision: prec,
+                        precision,
                         ..*g
                     })
                 }
@@ -955,6 +972,10 @@ fn parse_structured_effects(
             }
             _ => None,
         };
+        let mesh_loc_1d: Option<Vec<f64>> = match d.get_item("mesh_loc_1d")? {
+            Some(value) if !value.is_none() => Some(value.extract()?),
+            _ => None,
+        };
         out.push(inla_core::StructuredEffect {
             model,
             n,
@@ -974,12 +995,21 @@ fn parse_structured_effects(
             group_n,
             group_scale_model,
             copy_of,
-            mesh: match (mesh_vertices, mesh_triangles) {
-                (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
-                    vertices,
-                    triangles,
-                })),
-                _ => None,
+            mesh: if mesh_loc_1d.is_some() {
+                Some(Box::new(inla_core::SpdeMesh {
+                    vertices: mesh_vertices.unwrap_or_default(),
+                    triangles: mesh_triangles.unwrap_or_default(),
+                    loc_1d: mesh_loc_1d,
+                }))
+            } else {
+                match (mesh_vertices, mesh_triangles) {
+                    (Some(vertices), Some(triangles)) => Some(Box::new(inla_core::SpdeMesh {
+                        vertices,
+                        triangles,
+                        loc_1d: None,
+                    })),
+                    _ => None,
+                }
             },
         });
     }
@@ -1518,6 +1548,38 @@ fn fem_blocks_mesh(
     Ok(out)
 }
 
+/// 1D SPDE precision from ordered knots (`θ` scale via `kappa`, `tau`).
+#[pyfunction]
+#[pyo3(signature = (loc, kappa, tau=1.0))]
+fn spde_precision_matrix_1d(loc: Vec<f64>, kappa: f64, tau: f64) -> PyResult<PyCscMatrix> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(PyValueError::new_err)?;
+    let fem = mesh.assemble_fem_blocks();
+    let csc = inla_core::spde_precision_csc(&fem, kappa, tau).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// Piecewise-linear 1D projector A (`n_obs × n_knots`).
+#[pyfunction]
+fn spde_projector_matrix_1d(loc: Vec<f64>, points: Vec<f64>) -> PyResult<PyCscMatrix> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(PyValueError::new_err)?;
+    let csc = inla_core::spde_projector_1d_csc(&mesh, &points).map_err(PyValueError::new_err)?;
+    Ok(PyCscMatrix { matrix: csc })
+}
+
+/// FEM mass (`c0`) and stiffness (`g1`) for a 1D mesh.
+#[pyfunction]
+fn fem_blocks_mesh_1d(py: Python<'_>, loc: Vec<f64>) -> PyResult<Bound<'_, PyDict>> {
+    let mesh = inla_core::build_mesh1d(loc).map_err(PyValueError::new_err)?;
+    let fem = mesh.assemble_fem_blocks();
+    let c0 = inla_core::sparse_from_triplets(fem.c0.rows, fem.c0.cols, &fem.c0.entries);
+    let g1 = inla_core::sparse_from_triplets(fem.g1.rows, fem.g1.cols, &fem.g1.entries);
+    let out = PyDict::new(py);
+    out.set_item("c0", PyCscMatrix { matrix: c0 })?;
+    out.set_item("g1", PyCscMatrix { matrix: g1 })?;
+    out.set_item("n_vertices", mesh.n())?;
+    Ok(out)
+}
+
 /// Build a CRW2 precision matrix from positions.
 #[pyfunction]
 #[pyo3(signature = (positions, tau=1.0, layout="simple"))]
@@ -1587,8 +1649,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rw2d_precision_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(kronecker_csc, m)?)?;
     m.add_function(wrap_pyfunction!(spde_precision_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(spde_precision_matrix_1d, m)?)?;
     m.add_function(wrap_pyfunction!(spde_projector_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(spde_projector_matrix_1d, m)?)?;
     m.add_function(wrap_pyfunction!(fem_blocks_mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(fem_blocks_mesh_1d, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_hurst_from_intern, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_intern_from_hurst, m)?)?;
     m.add_function(wrap_pyfunction!(fgn_approx_latent_len, m)?)?;
