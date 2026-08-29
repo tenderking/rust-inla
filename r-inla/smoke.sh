@@ -120,6 +120,42 @@ stopifnot(length(res_rs$mode) == 3L, length(res_rs$latent_means) == 2L * n_subj)
 cat("iid2d intercept+slope latent n=", length(res_rs$latent_means), "\n", sep = "")
 stopifnot(is.finite(ex2))
 
+cat("\n--- Testing rgeneric Q callbacks (iid precision tau * I_n) ---\n")
+set.seed(11)
+n_g <- 16L
+y_g <- rnorm(n_g)
+df_g <- data.frame(y = y_g, idx = seq_len(n_g))
+n_q_calls <- 0L
+gen <- inla_rs_rgeneric_define(
+  n = n_g,
+  n_theta = 1L,
+  initial = 0.0,
+  Q = function(theta) {
+    n_q_calls <<- n_q_calls + 1L
+    Matrix::Diagonal(n_g, x = exp(theta[1]))
+  },
+  name = "myiid"
+)
+res_rg <- inla_rs(
+  y ~ -1 + f(idx, model = "rgeneric"),
+  data = df_g,
+  rgeneric = gen,
+  control.family = list(hyper = list(prec = list(initial = log(4), fixed = TRUE)))
+)
+cat("rgeneric mlik=", round(res_rg$marginal_log_lik, 4),
+    " Q_calls=", n_q_calls, "\n", sep = "")
+stopifnot(is.finite(res_rg$marginal_log_lik))
+stopifnot(length(res_rg$latent_means) == n_g)
+stopifnot(n_q_calls >= 2L)
+res_rg2 <- inla_rs(
+  y ~ -1 + f(idx, model = "myiid"),
+  data = df_g,
+  models = list(myiid = gen),
+  control.family = list(hyper = list(prec = list(initial = log(4), fixed = TRUE)))
+)
+stopifnot(is.finite(res_rg2$marginal_log_lik))
+cat("rgeneric named-model mlik=", round(res_rg2$marginal_log_lik, 4), "\n", sep = "")
+
 cat("\n--- Testing Formula Parser & Inference (FGN) ---\n")
 res_fgn <- inla_rs(y ~ -1 + f(idx, model = "fgn", obs_precision = 25.0), data = df)
 cat("FGN Hyperparameter Mode (log_tau, logit_hurst):", paste(round(res_fgn$mode, 4), collapse = ", "), "\n")

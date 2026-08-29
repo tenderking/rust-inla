@@ -371,7 +371,8 @@ inla_rs_run_inla_structured <- function(
     effect_meshes = list(),
     dic = TRUE,
     waic = TRUE,
-    cpo = TRUE) {
+    cpo = TRUE,
+    rgeneric_callbacks = list()) {
   .Call(
     "wrap__inla_rs_run_inla_structured",
     as.numeric(initial_theta),
@@ -425,7 +426,8 @@ inla_rs_run_inla_structured <- function(
     effect_meshes,
     as.logical(dic),
     as.logical(waic),
-    as.logical(cpo)
+    as.logical(cpo),
+    rgeneric_callbacks
   )
 }
 
@@ -796,17 +798,35 @@ inla_rs_resolve_compute_options <- function(controls = list()) {
   list(names = prior_names, params = params)
 }
 
-#' Define an R-callback generic latent model (Python ``inla.define`` analogue).
+#' Define an R-callback generic latent model (Python ``inla.generic.define`` analogue).
+#'
+#' Host-owned `Q(theta)` (and optional `log.prior(theta)`). The shared engine never
+#' implements rgeneric precision; it consumes CSC `Q(θ)` returned by this callback
+#' on every hyperparameter evaluation (Nelder–Mead mode + CCD/grid nodes), matching
+#' Python `inla.generic.define`.
+#'
+#' Surface vs Python:
+#' - R: `inla_rs_rgeneric_define(n, Q, n_theta, initial, log.prior, name)` then
+#'   `inla_rs(..., rgeneric=model)` with `f(..., model="rgeneric")`, or
+#'   `inla_rs(..., models=list(name=model))` with `f(..., model="name")`.
+#' - Python: `inla.generic.define(...)` then `inla(..., rgeneric=model)` or
+#'   `models={"name": model}`.
+#' - Both: `n` is latent size, `n_theta` is θ length, `initial` starts θ,
+#'   `Q(theta)` returns a sparse precision (`dgCMatrix` / SciPy CSC).
 #'
 #' @param n Latent dimension.
-#' @param Q Function `function(theta)` returning a `dgCMatrix` precision.
+#' @param Q Function `function(theta)` returning a `dgCMatrix` (or coercible) precision.
 #' @param n_theta Number of hyperparameters.
-#' @param initial Starting θ.
-#' @param log.prior Optional `function(theta)` log-prior density.
+#' @param initial Starting θ (length `n_theta`; default zeros).
+#' @param log.prior Optional `function(theta)` log-prior. Default matches Python:
+#'   weak Gaussian `-0.5 * 0.1 * sum(theta^2)`.
+#' @param name Optional label; use the same string in `f(..., model=name)` with `models=`.
 inla_rs_rgeneric_define <- function(n, Q, n_theta = 1L, initial = NULL, log.prior = NULL,
                                     name = "rgeneric") {
   n <- as.integer(n)[1]
   n_theta <- as.integer(n_theta)[1]
+  if (is.na(n) || n <= 0L) stop("n must be > 0", call. = FALSE)
+  if (is.na(n_theta) || n_theta < 0L) stop("n_theta must be >= 0", call. = FALSE)
   if (is.null(initial)) initial <- rep(0.0, n_theta)
   initial <- as.numeric(initial)
   if (length(initial) != n_theta) {
@@ -823,6 +843,57 @@ inla_rs_rgeneric_define <- function(n, Q, n_theta = 1L, initial = NULL, log.prio
   )
 }
 
+.GENERIC_MODEL_ALIASES <- c("rgeneric", "generic", "cgeneric")
+
+.inla_rs_as_dgcmatrix <- function(q) {
+  if (inherits(q, "dgCMatrix")) return(q)
+  if (!requireNamespace("Matrix", quietly = TRUE)) {
+    stop("Package 'Matrix' is required for rgeneric Q callbacks", call. = FALSE)
+  }
+  methods::as(q, "dgCMatrix")
+}
+
+# Coerce host Q to dgCMatrix so extendr can read CSC slots on every θ evaluation.
+.inla_rs_wrap_rgeneric_q <- function(Q, n) {
+  force(Q)
+  n <- as.integer(n)[1]
+  function(theta) {
+    q <- Q(as.numeric(theta))
+    q <- .inla_rs_as_dgcmatrix(q)
+    if (nrow(q) != n || ncol(q) != n) {
+      stop(sprintf("Q(theta) is %dx%d, expected %dx%d", nrow(q), ncol(q), n, n),
+           call. = FALSE)
+    }
+    q
+  }
+}
+
+.inla_rs_resolve_generic <- function(fs, rgeneric, models) {
+  key <- tolower(as.character(fs$model)[1])
+  supported <- .inla_rs_supported_f_models()
+  if (is.null(models)) models <- list()
+  if (!is.list(models)) {
+    stop("models= must be a named list of inla_rs_rgeneric_define() objects", call. = FALSE)
+  }
+  if (key %in% supported) return(NULL)
+  if (key %in% .GENERIC_MODEL_ALIASES) {
+    if (!is.null(rgeneric)) return(rgeneric)
+    if (length(models) == 1L) return(models[[1L]])
+    if (!is.null(models[[fs$model]])) return(models[[fs$model]])
+    stop("f(..., model='rgeneric') requires rgeneric=... or a single entry in models=",
+         call. = FALSE)
+  }
+  if (!is.null(names(models))) {
+    if (!is.null(models[[fs$model]])) return(models[[fs$model]])
+    hit <- which(tolower(names(models)) == key)
+    if (length(hit) == 1L) return(models[[hit]])
+  }
+  stop("Unsupported f() model '", fs$model, "'. Supported: ",
+       paste(c(supported, .GENERIC_MODEL_ALIASES), collapse = ", "),
+       ". Or pass models=list('", fs$model, "' = inla_rs_rgeneric_define(...)).",
+       call. = FALSE)
+}
+
 #' Fit a latent GMRF model (formula API with A-matrix / multi-f / fixed effects).
 #'
 #' Supports:
@@ -832,7 +903,10 @@ inla_rs_rgeneric_define <- function(n, Q, n_theta = 1L, initial = NULL, log.prio
 #' - `f(..., initial=c(...))` per-effect starting values for θ
 #' - many observations per latent index via sparse projector `A`
 #'
-#' Supported `f()` models: `iid`, `rw2`, `ar1`, `besag`, `fgn`.
+#' - `f(..., model="rgeneric")` with `rgeneric=` / `models=` (`inla_rs_rgeneric_define`)
+#'
+#' Built-in `f()` models come from the Rust registry. Host-callback aliases:
+#' `rgeneric`, `generic`, `cgeneric` (Python: `inla.generic.define`).
 #'
 #' Preprocessing helpers: [inla_rs_group], [inla_rs_scale_model].
 inla_rs <- function(
@@ -860,6 +934,8 @@ inla_rs <- function(
     fixed_prec = 1e-4,
     deterministic = FALSE,
     control.compute = NULL,
+    rgeneric = NULL,
+    models = NULL,
     ...) {
   # Rust owns control names, defaults and validation (shared with Python).
   .controls <- .inla_rs_resolve_controls(
@@ -1095,6 +1171,7 @@ inla_rs <- function(
   effect_season <- integer(0)
   effect_layouts <- character(0)
   effect_meshes <- list()
+  rgeneric_callbacks <- list()
   prior_names <- character(0)
   prior_params <- list()
   theta <- numeric(0)
@@ -1163,15 +1240,29 @@ inla_rs <- function(
     effect_ids[[1L]] <- colnames(X)
     effect_positions[[1L]] <- numeric(0)
     effect_names_acc <- "fixed"
+    rgeneric_callbacks[[1L]] <- NULL
     col_off <- as.integer(p)
   }
 
   for (fs in f_structs) {
-    model <- if (!is.null(fs$args$copy)) "copy" else tolower(fs$model)
-    supported <- .inla_rs_supported_f_models()
-    if (!(model %in% supported)) {
-      stop("Unsupported f() model '", fs$model, "'. Supported: ",
-           paste(supported, collapse = ", "), call. = FALSE)
+    g <- NULL
+    if (!is.null(fs$args$copy)) {
+      model <- "copy"
+    } else {
+      g <- .inla_rs_resolve_generic(fs, rgeneric, models)
+      if (!is.null(g)) {
+        if (!is.list(g) || !is.function(g$Q)) {
+          stop("rgeneric model must come from inla_rs_rgeneric_define()", call. = FALSE)
+        }
+        model <- "rgeneric"
+      } else {
+        model <- tolower(fs$model)
+        supported <- .inla_rs_supported_f_models()
+        if (!(model %in% supported)) {
+          stop("Unsupported f() model '", fs$model, "'. Supported: ",
+               paste(c(supported, .GENERIC_MODEL_ALIASES), collapse = ", "), call. = FALSE)
+        }
+      }
     }
     idx_name <- fs$name
     # Support inla.group(...) captured as name string — evaluate index from data
@@ -1489,6 +1580,20 @@ inla_rs <- function(
       graph <- NULL
       order_enc <- as.integer(order)
       effect_ids[[length(effect_ids) + 1L]] <- lev
+    } else if (identical(model, "rgeneric")) {
+      n_e <- as.integer(g$n)[1]
+      if (is.na(n_e) || n_e <= 0L) {
+        stop("rgeneric n must be > 0", call. = FALSE)
+      }
+      zcol <- as.integer(idx)
+      if (min(zcol) >= 1L) zcol <- zcol - 1L
+      if (any(zcol < 0L | zcol >= n_e)) {
+        stop("generic index for '", idx_name, "' out of range for n=", n_e, call. = FALSE)
+      }
+      add_triplets(seq_len(n_obs) - 1L, col_off + zcol, weight_vec(fs$args$weights))
+      graph <- NULL
+      order_enc <- as.integer(g$n_theta)[1]
+      effect_ids[[length(effect_ids) + 1L]] <- seq_len(n_e)
     } else {
       # Generic: unique sorted levels → latent size
       lev <- sort(unique(idx))
@@ -1517,7 +1622,11 @@ inla_rs <- function(
     effect_group_models <- c(effect_group_models, if (is.null(group_model)) "" else group_model)
     effect_group_ns <- c(effect_group_ns, if (is.null(group_model)) 0L else as.integer(group_n))
     effect_group_scales <- c(effect_group_scales, if (isTRUE(group_scale)) 1L else 0L)
-    tlen <- .inla_rs_effect_theta_len(model, order, group_model)
+    tlen <- if (identical(model, "rgeneric")) {
+      as.integer(g$n_theta)[1]
+    } else {
+      .inla_rs_effect_theta_len(model, order, group_model)
+    }
     effect_theta_lens <- c(effect_theta_lens, tlen)
     effect_orders <- c(effect_orders, as.integer(order_enc))
     effect_nrow <- c(effect_nrow, as.integer(nrow_i))
@@ -1537,6 +1646,16 @@ inla_rs <- function(
       effect_meshes[[length(effect_meshes) + 1L]] <- list()
     } else {
       effect_meshes[[length(effect_meshes) + 1L]] <- mesh_store
+    }
+    if (identical(model, "rgeneric")) {
+      lp <- g$log.prior
+      if (is.null(lp)) lp <- g$log_prior
+      rgeneric_callbacks[[length(rgeneric_callbacks) + 1L]] <- list(
+        Q = .inla_rs_wrap_rgeneric_q(g$Q, n_e),
+        log.prior = lp
+      )
+    } else {
+      rgeneric_callbacks[[length(rgeneric_callbacks) + 1L]] <- NULL
     }
     ids <- effect_ids[[length(effect_ids)]]
     n_knots <- if (identical(model, "crw2") && layout %in% c("pairs", "block")) {
@@ -1575,6 +1694,13 @@ inla_rs <- function(
         }
         if (any(!is.finite(init))) {
           stop("f(", idx_name, "): initial must be finite", call. = FALSE)
+        }
+        theta <- c(theta, init)
+      } else if (identical(model, "rgeneric")) {
+        init <- as.numeric(g$initial)
+        if (length(init) != tlen) {
+          stop("rgeneric initial has length ", length(init), " but n_theta=", tlen,
+               call. = FALSE)
         }
         theta <- c(theta, init)
       } else {
@@ -1651,7 +1777,8 @@ inla_rs <- function(
     effect_meshes = effect_meshes,
     dic = dic,
     waic = waic,
-    cpo = cpo
+    cpo = cpo,
+    rgeneric_callbacks = rgeneric_callbacks
   )
 
   .inla_rs_attach_summaries(
@@ -1695,7 +1822,9 @@ inla_rs <- function(
     } else {
       typ
     }
-    ord <- if (!is.null(effect_orders) && length(effect_orders) >= i) {
+    ord <- if (identical(typ, "rgeneric") && !is.null(effect_orders) && length(effect_orders) >= i) {
+      as.integer(effect_orders[i])
+    } else if (!is.null(effect_orders) && length(effect_orders) >= i) {
       as.integer(effect_orders[i])
     } else {
       0L

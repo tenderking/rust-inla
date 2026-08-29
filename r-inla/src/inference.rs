@@ -1,11 +1,12 @@
 //! Observation builders and INLA inference entry points for R.
 
 use crate::convert::{
-    csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based, parse_effect_positions,
-    posterior_q_slots,
+    csc_from_r_precision, csc_from_r_slots, marginals_to_r_list, parse_adj_list_1based,
+    parse_effect_positions, posterior_q_slots,
 };
 use crate::mesh::parse_effect_meshes;
 use extendr_api::prelude::*;
+use std::sync::Arc;
 
 /// Canonicalize likelihood family strings (R-INLA aliases → internal names).
 fn canonicalize_family(family: &str) -> String {
@@ -51,6 +52,110 @@ fn parse_link(link: &str, family: &str) -> std::result::Result<inla_core::Link, 
         "log" => Ok(inla_core::Link::Log),
         "logit" => Ok(inla_core::Link::Logit),
         other => Err(Error::Other(format!("unknown link function: {other}"))),
+    }
+}
+
+/// Host `rgeneric` callbacks owned by R (`SEXP` closures). Valid for this `.Call`.
+#[derive(Clone)]
+struct HostGeneric {
+    q: Robj,
+    log_prior: Option<Robj>,
+}
+
+// R SEXPs stay protected by the `.Call` argument list; extendr `Function::call`
+// serializes via `single_threaded`.
+unsafe impl Send for HostGeneric {}
+unsafe impl Sync for HostGeneric {}
+
+fn list_named(list: &List, key: &str) -> Option<Robj> {
+    for (name, value) in list.iter() {
+        if name == key {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn parse_rgeneric_callbacks(
+    list: &List,
+    n_effects: usize,
+) -> std::result::Result<Vec<Option<HostGeneric>>, Error> {
+    if list.is_empty() {
+        return Ok(vec![None; n_effects]);
+    }
+    if list.len() != n_effects {
+        return Err(Error::Other(format!(
+            "rgeneric_callbacks length ({}) must match number of effects ({n_effects})",
+            list.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(n_effects);
+    for (ei, item) in list.values().enumerate() {
+        if item.is_null() {
+            out.push(None);
+            continue;
+        }
+        if item.as_function().is_some() {
+            out.push(Some(HostGeneric {
+                q: item.clone(),
+                log_prior: None,
+            }));
+            continue;
+        }
+        let sub: List = item.try_into().map_err(|e| {
+            Error::Other(format!(
+                "rgeneric_callbacks[{ei}] must be NULL, a Q function, or list(Q=, log.prior=): {e}"
+            ))
+        })?;
+        if sub.is_empty() {
+            out.push(None);
+            continue;
+        }
+        let q = list_named(&sub, "Q")
+            .ok_or_else(|| Error::Other(format!("rgeneric_callbacks[{ei}] missing Q function")))?;
+        if q.as_function().is_none() {
+            return Err(Error::Other(format!(
+                "rgeneric_callbacks[{ei}]$Q must be a function(theta)"
+            )));
+        }
+        let log_prior = list_named(&sub, "log.prior")
+            .or_else(|| list_named(&sub, "log_prior"))
+            .filter(|v| !v.is_null() && v.as_function().is_some());
+        out.push(Some(HostGeneric { q, log_prior }));
+    }
+    Ok(out)
+}
+
+fn eval_rgeneric_q(
+    cb: &HostGeneric,
+    theta: &[f64],
+    n: usize,
+) -> std::result::Result<inla_core::CscMatrix, String> {
+    let f =
+        cb.q.as_function()
+            .ok_or_else(|| "rgeneric Q is not a function".to_string())?;
+    let res = f
+        .call(Pairlist::from_pairs([("", r!(theta.to_vec()))]))
+        .map_err(|e| format!("rgeneric Q(theta) failed: {e}"))?;
+    csc_from_r_precision(&res, n).map_err(|e| e.to_string())
+}
+
+fn eval_rgeneric_log_prior(cb: &HostGeneric, theta: &[f64]) -> f64 {
+    match &cb.log_prior {
+        None => -0.5 * 0.1 * theta.iter().map(|v| v * v).sum::<f64>(),
+        Some(fun) => {
+            let Some(f) = fun.as_function() else {
+                return f64::NEG_INFINITY;
+            };
+            match f.call(Pairlist::from_pairs([("", r!(theta.to_vec()))])) {
+                Ok(res) => res
+                    .as_real_vector()
+                    .and_then(|v| v.first().copied())
+                    .filter(|x| x.is_finite())
+                    .unwrap_or(f64::NEG_INFINITY),
+                Err(_) => f64::NEG_INFINITY,
+            }
+        }
     }
 }
 
@@ -483,6 +588,7 @@ fn inla_rs_run_inla_structured(
     dic: bool,
     waic: bool,
     cpo: bool,
+    rgeneric_callbacks: List,
 ) -> std::result::Result<List, Error> {
     let n_obs = y_obs.len();
     let a_nrow_u = usize::try_from(a_nrow).map_err(|_| Error::Other("a_nrow".into()))?;
@@ -686,21 +792,110 @@ fn inla_rs_run_inla_structured(
         })
         .collect();
 
-    let constr_opt = inla_core::structured_constraints(&effects).map_err(Error::Other)?;
+    let callbacks = parse_rgeneric_callbacks(&rgeneric_callbacks, effects.len())?;
+    for (ei, effect) in effects.iter().enumerate() {
+        let is_rgeneric = effect.model_key() == "rgeneric";
+        match (is_rgeneric, callbacks[ei].is_some()) {
+            (true, false) => {
+                return Err(Error::Other(
+                    "f(..., model='rgeneric') requires a host Q callback; Rust has no built-in rgeneric Q".into(),
+                ));
+            }
+            (false, true) => {
+                return Err(Error::Other(format!(
+                    "host Q callback supplied for non-rgeneric effect '{}'",
+                    effect.model_key()
+                )));
+            }
+            _ => {}
+        }
+    }
+    let has_host_q = callbacks.iter().any(|c| c.is_some());
+    let callbacks = Arc::new(callbacks);
+
+    let constr_opt = if has_host_q {
+        let full_n: usize = effects.iter().map(|e| e.n).sum();
+        let mut stacked: Option<inla_core::ConstraintSpec> = None;
+        let mut offset = 0usize;
+        for (ei, effect) in effects.iter().enumerate() {
+            let n_e = effect.n;
+            if callbacks[ei].is_some() {
+                offset += n_e;
+                continue;
+            }
+            if let Some(block) = inla_core::structured_constraints(std::slice::from_ref(effect))
+                .map_err(Error::Other)?
+            {
+                let embedded = block.embed(full_n, offset).map_err(Error::Other)?;
+                stacked = Some(match stacked {
+                    None => embedded,
+                    Some(prev) => prev.vstack(&embedded).map_err(Error::Other)?,
+                });
+            }
+            offset += n_e;
+        }
+        stacked
+    } else {
+        inla_core::structured_constraints(&effects).map_err(Error::Other)?
+    };
 
     let effects_for_q = effects.clone();
+    let callbacks_q = Arc::clone(&callbacks);
     let build_prior = move |theta: &[f64]| -> std::result::Result<inla_core::CscMatrix, String> {
         let latent_th = if gaussian_free_prec {
             if theta.is_empty() { &[] } else { &theta[1..] }
         } else {
             theta
         };
-        inla_core::build_structured_precision(&effects_for_q, latent_th, fixed_prec)
+        if !has_host_q {
+            return inla_core::build_structured_precision(&effects_for_q, latent_th, fixed_prec);
+        }
+        let mut blocks = Vec::with_capacity(effects_for_q.len());
+        let mut off = 0usize;
+        for (ei, effect) in effects_for_q.iter().enumerate() {
+            let tlen = effect.theta_len;
+            if off + tlen > latent_th.len() {
+                return Err(format!(
+                    "theta length {} too short for rgeneric/structured mix (need at least {})",
+                    latent_th.len(),
+                    off + tlen
+                ));
+            }
+            let ti = &latent_th[off..off + tlen];
+            off += tlen;
+            if let Some(cb) = &callbacks_q[ei] {
+                blocks.push(eval_rgeneric_q(cb, ti, effect.n)?);
+            } else {
+                blocks.push(inla_core::build_structured_precision(
+                    std::slice::from_ref(effect),
+                    ti,
+                    fixed_prec,
+                )?);
+            }
+        }
+        if off != latent_th.len() {
+            return Err(format!(
+                "theta length {} != consumed latent theta {off}",
+                latent_th.len()
+            ));
+        }
+        inla_core::block_diag_csc(&blocks)
     };
 
     let log_prior_density = {
+        let structured_effects: Vec<inla_core::StructuredEffect> = effects
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| callbacks[*i].is_none())
+            .map(|(_, e)| e.clone())
+            .collect();
+        let structured_theta_len: usize = structured_effects.iter().map(|e| e.theta_len).sum();
         let stack = if prior_names.is_empty() {
-            inla_core::structured_prior_stack(&effects).map_err(Error::Other)?
+            if structured_effects.is_empty() {
+                inla_core::HyperPriorStack::new(Vec::new())
+            } else {
+                inla_core::structured_prior_stack(&structured_effects).map_err(Error::Other)?
+            }
         } else {
             let mut params = Vec::with_capacity(prior_names.len());
             for (i, item) in prior_params.values().enumerate() {
@@ -711,10 +906,9 @@ fn inla_rs_run_inla_structured(
             }
             let stack = inla_core::HyperPriorStack::from_names_params(&prior_names, &params)
                 .map_err(Error::Other)?;
-            let latent_theta_len: usize = effect_theta_lens_u.iter().sum();
-            if stack.theta_dim() != latent_theta_len {
+            if stack.theta_dim() != structured_theta_len {
                 return Err(Error::Other(format!(
-                    "prior theta dimension {} != latent theta dimension {latent_theta_len}",
+                    "prior theta dimension {} != structured latent theta dimension {structured_theta_len}",
                     stack.theta_dim()
                 )));
             }
@@ -729,19 +923,42 @@ fn inla_rs_run_inla_structured(
                 family_prior_name
             )));
         }
+        let effects_lp = effects.clone();
+        let callbacks_lp = Arc::clone(&callbacks);
         move |theta: &[f64]| -> f64 {
-            if gaussian_free_prec {
+            let mut lp = 0.0;
+            let latent_th = if gaussian_free_prec {
                 if theta.is_empty() {
                     return f64::NEG_INFINITY;
                 }
-                let lp_fam = fam_prior
+                lp += fam_prior
                     .log_density(&theta[..1])
                     .unwrap_or(f64::NEG_INFINITY);
-                let lp_latent = stack.log_density(&theta[1..]).unwrap_or(f64::NEG_INFINITY);
-                lp_fam + lp_latent
+                &theta[1..]
             } else {
-                stack.log_density(theta).unwrap_or(f64::NEG_INFINITY)
+                theta
+            };
+            if !has_host_q {
+                return lp + stack.log_density(latent_th).unwrap_or(f64::NEG_INFINITY);
             }
+            let mut off = 0usize;
+            let mut structured_th = Vec::with_capacity(structured_theta_len);
+            for (ei, effect) in effects_lp.iter().enumerate() {
+                let tlen = effect.theta_len;
+                if off + tlen > latent_th.len() {
+                    return f64::NEG_INFINITY;
+                }
+                let ti = &latent_th[off..off + tlen];
+                off += tlen;
+                if let Some(cb) = &callbacks_lp[ei] {
+                    lp += eval_rgeneric_log_prior(cb, ti);
+                } else if tlen > 0 {
+                    structured_th.extend_from_slice(ti);
+                }
+            }
+            lp + stack
+                .log_density(&structured_th)
+                .unwrap_or(f64::NEG_INFINITY)
         }
     };
 
@@ -769,7 +986,7 @@ fn inla_rs_run_inla_structured(
     let compute = inla_core::ComputeOptions {
         strategy: strategy.to_string(),
         step_or_f0,
-        deterministic,
+        deterministic: deterministic || has_host_q,
         dic,
         waic,
         cpo,
@@ -786,7 +1003,7 @@ fn inla_rs_run_inla_structured(
         strategy,
         step_or_f0,
         &inla_core::MarginalOptions::default(),
-        deterministic,
+        deterministic || has_host_q,
         None,
         build_obs_opt,
         Some(&compute),
