@@ -1089,6 +1089,7 @@ pub fn run_inla_inference_a_cancellable(
         let q_prior = build_prior(&[])?;
         let (x_star, marginal_log_lik) =
             find_latent_mode_a_with_solver(&q_prior, obs, a, constraints, 200, 1e-5, &mut solver)?;
+        // Sparse posterior: Takahashi `diag(Q⁻¹)`; dense factors keep dense inverse diag.
         let variances = solver.diag_inv().map_err(|e| e.to_string())?;
         let eta = match a {
             None => x_star.clone(),
@@ -1317,6 +1318,7 @@ pub fn run_inla_inference_a_cancellable(
                 }
             };
 
+            // CCD/grid node: same Takahashi (sparse) / dense-diag path as the Laplace node.
             let variances = solver.diag_inv().map_err(|e| e.to_string())?;
             let eta = match a {
                 None => x_star.clone(),
