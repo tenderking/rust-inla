@@ -1029,7 +1029,14 @@ inla_rs <- function(
     model_chr <- as.character(model)[1]
     # The shared Rust registry owns the scale.model default (intrinsic models).
     if (is.null(scale.model)) {
-      scale.model <- isTRUE(.inla_rs_model_meta(model_chr)$default_scale_model)
+      supported <- .inla_rs_supported_f_models()
+      key <- tolower(model_chr)
+      if (key %in% supported || key %in% .GENERIC_MODEL_ALIASES) {
+        scale.model <- isTRUE(.inla_rs_model_meta(model_chr)$default_scale_model)
+      } else {
+        # Named host-callback models (models=list(myiid=...)) are not in the registry.
+        scale.model <- FALSE
+      }
     }
     extra <- list(...)
     if (!is.null(copy)) extra$copy <- copy
