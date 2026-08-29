@@ -10,13 +10,14 @@ description = "Facade re-exporting inla_fmesher + inla_math + inla_stats (legacy
 crate-type = ["rlib"]
 
 [features]
-default = []
+default = ["sparse-ldlt"]
+sparse-ldlt = ["inla_math/sparse-ldlt", "inla_stats/sparse-ldlt"]
 gmrflib-ffi = ["inla_stats/gmrflib-ffi"]
 
 [dependencies]
 inla_fmesher = { path = "../inla_fmesher" }
-inla_math = { path = "../inla_math" }
-inla_stats = { path = "../inla_stats" }
+inla_math = { path = "../inla_math", features = ["sparse-ldlt"] }
+inla_stats = { path = "../inla_stats", features = ["sparse-ldlt"] }
 
 [lints]
 workspace = true

@@ -1,8 +1,11 @@
 //! R-INLA-compatible FGN via AR(1) mixture (`order` = 3 or 4).
 //!
 //! Matches `inlaprog/src/fgn.c` (`Qfunc_fgn`) and coefficient tables from
-//! `fgn-tables-{3,4}.h` / `fgn-code.h`. Latent field is length `(order+1)*n`:
-//! `(z, x_1, …, x_order)` with soft constraint `z ≈ Σ x_i`.
+//! `fgn-tables-{3,4}.h` / `fgn-code.h`. Latent field is length `(order+1)*n` in
+//! **mixture-major** order `(z, x_1, …, x_order)` with soft constraint `z ≈ Σ x_i`.
+//! Observations / `A` therefore index the first `n` entries (`z`). Sparse LDLᵀ
+//! applies a time-major permutation at factorize time so the Cholesky envelope
+//! is `O(order)`, without changing this stored layout.
 
 #[path = "fgn_tables.rs"]
 mod fgn_tables;
@@ -79,6 +82,10 @@ pub fn fgn_ar_coeffs(h_intern: f64, order: usize) -> Result<(Vec<f64>, Vec<f64>)
 }
 
 /// Sparse FGN precision of size `(order+1)*n`, R-INLA `model="fgn"`.
+///
+/// Stored CSC is mixture-major (`z` then each AR component) so projectors that
+/// observe the first `n` latents stay valid. Factorization reorders to
+/// time-major internally (see `inla_math` sparse LDLᵀ).
 ///
 /// `hurst` must be in (0.5, 1). `prec_eps` defaults to `1e8` (R-INLA `f(..., precision=)`).
 pub fn fgn_approx_precision_csc(

@@ -4,15 +4,17 @@ use std::sync::Arc;
 
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::ldlt::factor::LdltRegularization;
+use faer::perm::PermRef;
 use faer::prelude::*;
 use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::linalg::cholesky::{
-    self, CholeskySymbolicParams, LdltRef, SymbolicCholesky, SymbolicCholeskyRaw,
+    self, CholeskySymbolicParams, LdltRef, SymbolicCholesky, SymbolicCholeskyRaw, SymmetricOrdering,
 };
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, Par, Side};
 
 use crate::error::MathError;
+use crate::ordering::{CholeskyOrder, choose_symmetric_order};
 use crate::scratch::LdltScratch;
 use crate::sparse::CscMatrix;
 
@@ -51,6 +53,13 @@ impl SparseLdltFactor {
     /// Shared symbolic pattern (for cache / refactorize checks).
     pub fn symbolic_arc(&self) -> Arc<SymbolicCholesky<usize>> {
         Arc::clone(&self.symbolic)
+    }
+
+    /// Number of stored entries in `L` (including `D` on the diagonal).
+    ///
+    /// For a time-major / banded FGN approx this is `O(n · order²)`, not `Θ(n²)`.
+    pub fn nnz_l(&self) -> usize {
+        self.l_values.len()
     }
 }
 
@@ -147,7 +156,40 @@ fn symbolic_params() -> CholeskySymbolicParams<'static> {
     }
 }
 
-/// Sparse LDLᵀ of a CSC precision matrix (AMD ordering, simplicial or supernodal).
+fn factorize_symbolic(
+    q: &CscMatrix,
+    a: &SparseColMat<usize, f64>,
+) -> Result<SymbolicCholesky<usize>, MathError> {
+    let order = choose_symmetric_order(q);
+    let symbolic = match &order {
+        CholeskyOrder::Amd => cholesky::factorize_symbolic_cholesky(
+            a.symbolic(),
+            Side::Lower,
+            SymmetricOrdering::Amd,
+            symbolic_params(),
+        ),
+        CholeskyOrder::Custom { fwd, inv } => {
+            let perm = PermRef::<usize>::new_checked(fwd, inv, a.nrows());
+            cholesky::factorize_symbolic_cholesky(
+                a.symbolic(),
+                Side::Lower,
+                SymmetricOrdering::Custom(perm),
+                symbolic_params(),
+            )
+        }
+    }
+    .map_err(|e| match e {
+        faer::sparse::FaerError::OutOfMemory => MathError::OutOfMemory,
+        other => MathError::Message(format!("sparse symbolic LDLᵀ failed: {other:?}")),
+    })?;
+    Ok(symbolic)
+}
+
+/// Sparse LDLᵀ of a CSC precision matrix.
+///
+/// Ordering: time-major for mixture-major Kronecker / FGN-approx graphs, else
+/// RCM when it cuts the envelope, else AMD. The stored CSC (and A-matrix
+/// indexing) is not rewritten.
 ///
 /// When `scratch` already holds a matching CSC pattern, only the numeric
 /// factor is recomputed (Symbolica-style factorize-once / evaluate-many).
@@ -166,16 +208,7 @@ pub fn factorize_sparse(
     }
 
     let a = csc_to_faer(q)?;
-    let symbolic = cholesky::factorize_symbolic_cholesky(
-        a.symbolic(),
-        Side::Lower,
-        Default::default(),
-        symbolic_params(),
-    )
-    .map_err(|e| match e {
-        faer::sparse::FaerError::OutOfMemory => MathError::OutOfMemory,
-        other => MathError::Message(format!("sparse symbolic LDLᵀ failed: {other:?}")),
-    })?;
+    let symbolic = factorize_symbolic(q, &a)?;
 
     let n = symbolic.nrows();
     let par = par_for(n);
@@ -260,16 +293,7 @@ pub fn sparse_diagonal_inverse(
 /// Symbolic pattern only (factorize-once / numeric-many).
 pub fn symbolic_pattern(q: &CscMatrix) -> Result<Arc<SymbolicCholesky<usize>>, MathError> {
     let a = csc_to_faer(q)?;
-    let symbolic = cholesky::factorize_symbolic_cholesky(
-        a.symbolic(),
-        Side::Lower,
-        Default::default(),
-        symbolic_params(),
-    )
-    .map_err(|e| match e {
-        faer::sparse::FaerError::OutOfMemory => MathError::OutOfMemory,
-        other => MathError::Message(format!("sparse symbolic LDLᵀ failed: {other:?}")),
-    })?;
+    let symbolic = factorize_symbolic(q, &a)?;
     Ok(Arc::new(symbolic))
 }
 
@@ -311,4 +335,56 @@ pub fn refactorize_numeric_arc(
         symbolic,
         l_values,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::LdltScratch;
+    use sprs::TriMatI;
+
+    fn mixture_major_fgn_like(n_time: usize, n_comp: usize) -> CscMatrix {
+        let n = n_time * n_comp;
+        let mut tri = TriMatI::<f64, usize>::new((n, n));
+        for t in 0..n_time {
+            for c in 0..n_comp {
+                let i = c * n_time + t;
+                tri.add_triplet(i, i, 6.0);
+                for d in (c + 1)..n_comp {
+                    let j = d * n_time + t;
+                    tri.add_triplet(i, j, -0.4);
+                    tri.add_triplet(j, i, -0.4);
+                }
+                if t + 1 < n_time && c > 0 {
+                    let i2 = c * n_time + t + 1;
+                    tri.add_triplet(i, i2, -1.2);
+                    tri.add_triplet(i2, i, -1.2);
+                }
+            }
+        }
+        tri.to_csc()
+    }
+
+    #[test]
+    fn fgn_like_factor_is_sparse_and_not_cubic() {
+        let n_time = 64;
+        let n_comp = 5;
+        let n = n_time * n_comp;
+        let q = mixture_major_fgn_like(n_time, n_comp);
+        let mut scratch = LdltScratch::default();
+        let f = factorize_sparse(&q, &mut scratch).expect("sparse factor");
+        assert_eq!(f.n, n);
+        assert!(
+            f.nnz_l() < n * n / 8,
+            "nnz_L={} looks Θ(n²) for n={n}",
+            f.nnz_l()
+        );
+        assert!(
+            scratch.dense.len() < n * n,
+            "sparse path must not allocate a dense n×n workspace"
+        );
+        let mut x = vec![1.0; n];
+        sparse_solve_in_place(&f, &mut x, &mut scratch).expect("solve");
+        assert!(x.iter().all(|v| v.is_finite()));
+    }
 }

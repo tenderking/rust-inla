@@ -65,6 +65,28 @@ impl LdltFactor {
     pub fn log_abs_det(&self) -> f64 {
         self.diagonal().iter().map(|&v| v.abs().ln()).sum()
     }
+
+    /// True when the factor came from the sparse (faer) backend.
+    pub fn is_sparse(&self) -> bool {
+        match self {
+            #[cfg(feature = "sparse-ldlt")]
+            Self::Sparse(_) => true,
+            #[cfg(not(feature = "sparse-ldlt"))]
+            Self::Sparse(_) => false,
+            Self::Dense(_) => false,
+        }
+    }
+
+    /// Stored `L` nonzeros for a sparse factor (`None` if dense).
+    pub fn nnz_l(&self) -> Option<usize> {
+        match self {
+            #[cfg(feature = "sparse-ldlt")]
+            Self::Sparse(f) => Some(f.nnz_l()),
+            #[cfg(not(feature = "sparse-ldlt"))]
+            Self::Sparse(_) => None,
+            Self::Dense(_) => None,
+        }
+    }
 }
 
 /// Densify a square CSC matrix into row-major storage.

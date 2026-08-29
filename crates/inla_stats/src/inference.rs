@@ -2729,6 +2729,7 @@ mod sparse_path_smoke {
         let n = 20;
         let q = crate::ar1::ar1_precision_csc(n, 0.7, 4.0).unwrap();
         let f = ldlt_factorize(&q).expect("ar1 factorize");
+        assert!(f.is_sparse() || cfg!(not(feature = "sparse-ldlt")));
         let x = ldlt_solve(&f, &vec![1.0; n]).expect("ar1 solve");
         assert!(x.iter().all(|v| v.is_finite()));
 
@@ -2736,6 +2737,30 @@ mod sparse_path_smoke {
         let q = crate::latent_models::fgn_precision_csc(n, 0.7, 1.0).unwrap();
         let f = ldlt_factorize(&q).expect("fgn factorize");
         let x = ldlt_solve(&f, &vec![1.0; n]).expect("fgn solve");
+        assert!(x.iter().all(|v| v.is_finite()));
+        assert!(f.log_abs_det().is_finite());
+    }
+
+    #[cfg(feature = "sparse-ldlt")]
+    #[test]
+    fn fgn_approx_n64_is_sparse_factor_not_dense_n3() {
+        let n_time = 64;
+        let order = 4;
+        let q = crate::fgn::fgn_approx_precision_csc(n_time, 0.7, 1.0, order, 1e8).unwrap();
+        let n = q.rows();
+        assert_eq!(n, n_time * (order + 1));
+        let f = ldlt_factorize(&q).expect("fgn approx factorize");
+        assert!(
+            f.is_sparse(),
+            "FGN approx must use sparse LDLᵀ, got dense n={n}"
+        );
+        let nnz = f.nnz_l().expect("sparse L");
+        // Time-major / AMD fill is O(n · order²), not Θ(n²) dense L.
+        assert!(
+            nnz < n * n / 8,
+            "nnz_L={nnz} looks like a dense factor for n={n}"
+        );
+        let x = ldlt_solve(&f, &vec![1.0; n]).expect("solve");
         assert!(x.iter().all(|v| v.is_finite()));
         assert!(f.log_abs_det().is_finite());
     }

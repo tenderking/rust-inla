@@ -14,6 +14,8 @@ pub mod sparse;
 #[cfg(feature = "sparse-ldlt")]
 pub mod dense_faer;
 #[cfg(feature = "sparse-ldlt")]
+mod ordering;
+#[cfg(feature = "sparse-ldlt")]
 pub mod sparse_ldlt;
 
 pub use backend::{
