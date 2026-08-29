@@ -908,7 +908,7 @@ pub fn find_latent_mode_a_with_solver(
                 alpha *= 0.5;
                 if alpha < 1e-8 {
                     return Err(
-                        "Newton-Raphson step is not finite (contains NaN or Inf)".to_string(),
+                        "Newton-Raphson step is not finite (contains NaN or Inf)".to_string()
                     );
                 }
             }
