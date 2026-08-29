@@ -10,9 +10,12 @@ pub mod ldlt;
 pub mod scratch;
 pub mod solver;
 pub mod sparse;
+pub mod toeplitz;
 
 #[cfg(feature = "sparse-ldlt")]
 pub mod dense_faer;
+#[cfg(feature = "sparse-ldlt")]
+mod ordering;
 #[cfg(feature = "sparse-ldlt")]
 pub mod sparse_ldlt;
 
@@ -44,12 +47,14 @@ pub use solver::{FaerCpuSolver, InlaSolver, SolverError};
 pub use sparse::{
     CscForR, CscMatrix, csc_for_r_dgcmatrix, kronecker_csc, sparse_from_triplets, triplets_to_csc,
 };
+pub use toeplitz::invert_spd_toeplitz;
 
 #[cfg(feature = "sparse-ldlt")]
 pub use dense_faer::selfadjoint_eigen;
 #[cfg(feature = "sparse-ldlt")]
 pub use sparse_ldlt::{
-    SparseLdltFactor, factorize_sparse, refactorize_numeric_arc, symbolic_pattern,
+    SparseLdltFactor, factorize_sparse, refactorize_numeric_arc, sparse_diagonal_inverse,
+    sparse_diagonal_inverse_by_solves, symbolic_pattern,
 };
 
 /// Invert an SPD matrix via Cholesky (`A = L Lᵀ ⇒ A⁻¹ = L⁻ᵀ L⁻¹`).

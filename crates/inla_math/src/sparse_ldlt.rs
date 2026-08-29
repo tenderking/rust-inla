@@ -4,15 +4,17 @@ use std::sync::Arc;
 
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::ldlt::factor::LdltRegularization;
+use faer::perm::PermRef;
 use faer::prelude::*;
 use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::linalg::cholesky::{
-    self, CholeskySymbolicParams, LdltRef, SymbolicCholesky, SymbolicCholeskyRaw,
+    self, CholeskySymbolicParams, LdltRef, SymbolicCholesky, SymbolicCholeskyRaw, SymmetricOrdering,
 };
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Conj, Par, Side};
 
 use crate::error::MathError;
+use crate::ordering::{CholeskyOrder, choose_symmetric_order};
 use crate::scratch::LdltScratch;
 use crate::sparse::CscMatrix;
 
@@ -51,6 +53,13 @@ impl SparseLdltFactor {
     /// Shared symbolic pattern (for cache / refactorize checks).
     pub fn symbolic_arc(&self) -> Arc<SymbolicCholesky<usize>> {
         Arc::clone(&self.symbolic)
+    }
+
+    /// Number of stored entries in `L` (including `D` on the diagonal).
+    ///
+    /// For a time-major / banded FGN approx this is `O(n · order²)`, not `Θ(n²)`.
+    pub fn nnz_l(&self) -> usize {
+        self.l_values.len()
     }
 }
 
@@ -147,7 +156,40 @@ fn symbolic_params() -> CholeskySymbolicParams<'static> {
     }
 }
 
-/// Sparse LDLᵀ of a CSC precision matrix (AMD ordering, simplicial or supernodal).
+fn factorize_symbolic(
+    q: &CscMatrix,
+    a: &SparseColMat<usize, f64>,
+) -> Result<SymbolicCholesky<usize>, MathError> {
+    let order = choose_symmetric_order(q);
+    let symbolic = match &order {
+        CholeskyOrder::Amd => cholesky::factorize_symbolic_cholesky(
+            a.symbolic(),
+            Side::Lower,
+            SymmetricOrdering::Amd,
+            symbolic_params(),
+        ),
+        CholeskyOrder::Custom { fwd, inv } => {
+            let perm = PermRef::<usize>::new_checked(fwd, inv, a.nrows());
+            cholesky::factorize_symbolic_cholesky(
+                a.symbolic(),
+                Side::Lower,
+                SymmetricOrdering::Custom(perm),
+                symbolic_params(),
+            )
+        }
+    }
+    .map_err(|e| match e {
+        faer::sparse::FaerError::OutOfMemory => MathError::OutOfMemory,
+        other => MathError::Message(format!("sparse symbolic LDLᵀ failed: {other:?}")),
+    })?;
+    Ok(symbolic)
+}
+
+/// Sparse LDLᵀ of a CSC precision matrix.
+///
+/// Ordering: time-major for mixture-major Kronecker / FGN-approx graphs, else
+/// RCM when it cuts the envelope, else AMD. The stored CSC (and A-matrix
+/// indexing) is not rewritten.
 ///
 /// When `scratch` already holds a matching CSC pattern, only the numeric
 /// factor is recomputed (Symbolica-style factorize-once / evaluate-many).
@@ -166,16 +208,7 @@ pub fn factorize_sparse(
     }
 
     let a = csc_to_faer(q)?;
-    let symbolic = cholesky::factorize_symbolic_cholesky(
-        a.symbolic(),
-        Side::Lower,
-        Default::default(),
-        symbolic_params(),
-    )
-    .map_err(|e| match e {
-        faer::sparse::FaerError::OutOfMemory => MathError::OutOfMemory,
-        other => MathError::Message(format!("sparse symbolic LDLᵀ failed: {other:?}")),
-    })?;
+    let symbolic = factorize_symbolic(q, &a)?;
 
     let n = symbolic.nrows();
     let par = par_for(n);
@@ -231,11 +264,190 @@ pub fn sparse_solve_in_place(
     Ok(())
 }
 
-/// Marginal variances `diag(Q⁻¹)` via blocked multi-column solves.
+/// Lower CSC of unit-`L` plus `D` on the diagonal, in factor (AMD) order.
+/// Pattern is the filled `L` (including structural zeros).
+struct FilledUnitLdlt {
+    n: usize,
+    col_ptr: Vec<usize>,
+    row_idx: Vec<usize>,
+    /// CSC values: `D_j` on the diagonal, unit-`L` below.
+    vals: Vec<f64>,
+    /// `orig_of_factor[j]` is the original index of factor index `j`.
+    orig_of_factor: Vec<usize>,
+}
+
+fn orig_of_factor(symbolic: &SymbolicCholesky<usize>, n: usize) -> Vec<usize> {
+    match symbolic.perm() {
+        Some(perm) => perm.arrays().0.to_vec(),
+        None => (0..n).collect(),
+    }
+}
+
+fn packed_lower_csc(
+    n: usize,
+    cols: &mut [Vec<(usize, f64)>],
+    orig_of_factor: Vec<usize>,
+) -> FilledUnitLdlt {
+    let mut col_ptr = Vec::with_capacity(n + 1);
+    col_ptr.push(0);
+    let mut row_idx = Vec::new();
+    let mut vals = Vec::new();
+    for col in cols.iter_mut() {
+        col.sort_unstable_by_key(|&(r, _)| r);
+        for &(r, v) in col.iter() {
+            row_idx.push(r);
+            vals.push(v);
+        }
+        col_ptr.push(row_idx.len());
+    }
+    FilledUnitLdlt {
+        n,
+        col_ptr,
+        row_idx,
+        vals,
+        orig_of_factor,
+    }
+}
+
+fn filled_l_from_factor(factor: &SparseLdltFactor) -> Result<FilledUnitLdlt, MathError> {
+    let n = factor.n;
+    let orig = orig_of_factor(factor.symbolic.as_ref(), n);
+    match factor.symbolic.raw() {
+        SymbolicCholeskyRaw::Simplicial(sym) => {
+            let col_ptr = sym.col_ptr().to_vec();
+            let row_idx = sym.row_idx().to_vec();
+            let mut cols: Vec<Vec<(usize, f64)>> = (0..n)
+                .map(|j| {
+                    let a = col_ptr[j];
+                    let b = col_ptr[j + 1];
+                    row_idx[a..b]
+                        .iter()
+                        .zip(&factor.l_values[a..b])
+                        .map(|(&r, &v)| (r, v))
+                        .collect()
+                })
+                .collect();
+            Ok(packed_lower_csc(n, &mut cols, orig))
+        }
+        SymbolicCholeskyRaw::Supernodal(sym) => {
+            let ldlt = cholesky::supernodal::SupernodalLdltRef::new(sym, &factor.l_values);
+            let mut cols: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+            for s in 0..sym.n_supernodes() {
+                let sn = ldlt.supernode(s);
+                let start = sn.start();
+                let size = sn.val().ncols();
+                let val = sn.val();
+                let pattern = sn.pattern();
+                for js in 0..size {
+                    let j = start + js;
+                    cols[j].push((j, val[(js, js)]));
+                    for is in (js + 1)..size {
+                        cols[j].push((start + is, val[(is, js)]));
+                    }
+                    for (p, row) in pattern.iter().enumerate() {
+                        cols[j].push((*row, val[(size + p, js)]));
+                    }
+                }
+            }
+            Ok(packed_lower_csc(n, &mut cols, orig))
+        }
+    }
+}
+
+fn lookup_s(l: &FilledUnitLdlt, s: &[f64], i: usize, j: usize) -> Result<f64, MathError> {
+    let (row, col) = if i >= j { (i, j) } else { (j, i) };
+    debug_assert!(row >= col);
+    let a = l.col_ptr[col];
+    let b = l.col_ptr[col + 1];
+    match l.row_idx[a..b].binary_search(&row) {
+        Ok(k) => Ok(s[a + k]),
+        Err(_) => Err(MathError::Message(format!(
+            "Takahashi: missing selected-inverse entry ({row},{col})"
+        ))),
+    }
+}
+
+/// Takahashi selected inverse on the filled pattern of `L`: only `S_{ij}` with
+/// `L_{ij} ≠ 0` (structurally), which is enough for `diag(Q⁻¹)`.
 ///
-/// Solves `Q X = I` in column blocks of width [`DIAG_INV_BLOCK`] instead of
-/// `n` independent single-column solves (better BLAS-3 / cache behaviour).
+/// For `Q = L D Lᵀ` with unit lower `L`:
+/// `S_{ij} = −∑_{k>j} L_{kj} S_{ki}` (`i > j` in the pattern),
+/// `S_{jj} = 1/D_j − ∑_{k>j} L_{kj} S_{kj}`.
+fn takahashi_selected_diag(l: &FilledUnitLdlt) -> Result<Vec<f64>, MathError> {
+    let n = l.n;
+    let mut s = vec![0.0; l.vals.len()];
+    for j in (0..n).rev() {
+        let start = l.col_ptr[j];
+        let end = l.col_ptr[j + 1];
+        if start >= end {
+            return Err(MathError::Singular);
+        }
+        let Some(diag_off) = l.row_idx[start..end].iter().position(|&r| r == j) else {
+            return Err(MathError::Singular);
+        };
+        let diag_p = start + diag_off;
+        let dj = l.vals[diag_p];
+        if !dj.is_finite() || dj.abs() < 1e-14 {
+            return Err(MathError::Singular);
+        }
+
+        // Largest `i > j` first so `S_{ii}` (and larger columns) are already done.
+        for p in (start..end).rev() {
+            let i = l.row_idx[p];
+            if i <= j {
+                continue;
+            }
+            let mut acc = 0.0;
+            for pk in start..end {
+                let k = l.row_idx[pk];
+                if k <= j {
+                    continue;
+                }
+                acc += l.vals[pk] * lookup_s(l, &s, k, i)?;
+            }
+            s[p] = -acc;
+        }
+
+        let mut sjj = 1.0 / dj;
+        for pk in start..end {
+            if l.row_idx[pk] <= j {
+                continue;
+            }
+            sjj -= l.vals[pk] * s[pk];
+        }
+        s[diag_p] = sjj;
+    }
+
+    let mut diag = vec![0.0; n];
+    for j in 0..n {
+        let start = l.col_ptr[j];
+        let end = l.col_ptr[j + 1];
+        let diag_off = l.row_idx[start..end]
+            .iter()
+            .position(|&r| r == j)
+            .ok_or(MathError::Singular)?;
+        diag[l.orig_of_factor[j]] = s[start + diag_off];
+    }
+    Ok(diag)
+}
+
+/// Marginal variances `diag(Q⁻¹)` by Takahashi selected inversion on `L`'s fill.
+///
+/// Dense fallback is [`crate::ldlt::dense_diagonal_inverse`] for `LdltFactor::Dense`
+/// (exact FGN and other densified systems). This path never forms `Q⁻¹`.
 pub fn sparse_diagonal_inverse(
+    factor: &SparseLdltFactor,
+    _scratch: &mut LdltScratch,
+) -> Result<Vec<f64>, MathError> {
+    let filled = filled_l_from_factor(factor)?;
+    takahashi_selected_diag(&filled)
+}
+
+/// Reference `diag(Q⁻¹)` via blocked multi-column solves (`Q X = I`).
+///
+/// Kept for tests and the AR1 / Besag timing comparison in `benches/ar1_ldlt.rs`.
+/// Typical cost is `Θ(n)` triangular solves vs Takahashi `Θ(nnz(L))`.
+pub fn sparse_diagonal_inverse_by_solves(
     factor: &SparseLdltFactor,
     _scratch: &mut LdltScratch,
 ) -> Result<Vec<f64>, MathError> {
@@ -260,16 +472,7 @@ pub fn sparse_diagonal_inverse(
 /// Symbolic pattern only (factorize-once / numeric-many).
 pub fn symbolic_pattern(q: &CscMatrix) -> Result<Arc<SymbolicCholesky<usize>>, MathError> {
     let a = csc_to_faer(q)?;
-    let symbolic = cholesky::factorize_symbolic_cholesky(
-        a.symbolic(),
-        Side::Lower,
-        Default::default(),
-        symbolic_params(),
-    )
-    .map_err(|e| match e {
-        faer::sparse::FaerError::OutOfMemory => MathError::OutOfMemory,
-        other => MathError::Message(format!("sparse symbolic LDLᵀ failed: {other:?}")),
-    })?;
+    let symbolic = factorize_symbolic(q, &a)?;
     Ok(Arc::new(symbolic))
 }
 
@@ -311,4 +514,158 @@ pub fn refactorize_numeric_arc(
         symbolic,
         l_values,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{DenseBackend, LdltBackend};
+    use crate::scratch::LdltScratch;
+    use crate::sparse::sparse_from_triplets;
+    use sprs::TriMatI;
+
+    fn mixture_major_fgn_like(n_time: usize, n_comp: usize) -> CscMatrix {
+        let n = n_time * n_comp;
+        let mut tri = TriMatI::<f64, usize>::new((n, n));
+        for t in 0..n_time {
+            for c in 0..n_comp {
+                let i = c * n_time + t;
+                tri.add_triplet(i, i, 6.0);
+                for d in (c + 1)..n_comp {
+                    let j = d * n_time + t;
+                    tri.add_triplet(i, j, -0.4);
+                    tri.add_triplet(j, i, -0.4);
+                }
+                if t + 1 < n_time && c > 0 {
+                    let i2 = c * n_time + t + 1;
+                    tri.add_triplet(i, i2, -1.2);
+                    tri.add_triplet(i2, i, -1.2);
+                }
+            }
+        }
+        tri.to_csc()
+    }
+
+    #[test]
+    fn fgn_like_factor_is_sparse_and_not_cubic() {
+        let n_time = 64;
+        let n_comp = 5;
+        let n = n_time * n_comp;
+        let q = mixture_major_fgn_like(n_time, n_comp);
+        let mut scratch = LdltScratch::default();
+        let f = factorize_sparse(&q, &mut scratch).expect("sparse factor");
+        assert_eq!(f.n, n);
+        assert!(
+            f.nnz_l() < n * n / 8,
+            "nnz_L={} looks Θ(n²) for n={n}",
+            f.nnz_l()
+        );
+        assert!(
+            scratch.dense.len() < n * n,
+            "sparse path must not allocate a dense n×n workspace"
+        );
+        let mut x = vec![1.0; n];
+        sparse_solve_in_place(&f, &mut x, &mut scratch).expect("solve");
+        assert!(x.iter().all(|v| v.is_finite()));
+    }
+
+    fn ar1_q(n: usize, rho: f64, tau: f64) -> CscMatrix {
+        let mut trips = Vec::with_capacity(3 * n);
+        for i in 0..n {
+            let diag = if i == 0 || i == n - 1 {
+                tau
+            } else {
+                tau * (1.0 + rho * rho)
+            };
+            trips.push((i, i, diag));
+            if i + 1 < n {
+                trips.push((i, i + 1, -tau * rho));
+                trips.push((i + 1, i, -tau * rho));
+            }
+        }
+        sparse_from_triplets(n, n, &trips)
+    }
+
+    /// Intrinsic Besag (graph Laplacian) plus a ridge so `Q` is SPD.
+    fn besag_ridge_q(adj: &[Vec<usize>], tau: f64, ridge: f64) -> CscMatrix {
+        let n = adj.len();
+        let mut trips = Vec::new();
+        for i in 0..n {
+            let deg = adj[i].len() as f64;
+            trips.push((i, i, tau * deg + ridge));
+            for &j in &adj[i] {
+                if j > i {
+                    trips.push((i, j, -tau));
+                    trips.push((j, i, -tau));
+                }
+            }
+        }
+        sparse_from_triplets(n, n, &trips)
+    }
+
+    fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max)
+    }
+
+    fn compare_takahashi_vs_dense(q: &CscMatrix, tol: f64) {
+        let mut scratch = LdltScratch::default();
+        let sparse = factorize_sparse(q, &mut scratch).expect("sparse LDLᵀ");
+        let taka = sparse_diagonal_inverse(&sparse, &mut scratch).expect("Takahashi");
+        let by_solves = sparse_diagonal_inverse_by_solves(&sparse, &mut scratch).expect("solves");
+
+        let mut dense_scratch = LdltScratch::default();
+        let dense = DenseBackend
+            .factorize(q, &mut dense_scratch)
+            .expect("dense LDLᵀ");
+        let dense_diag = DenseBackend
+            .diagonal_inverse(&dense, &mut dense_scratch)
+            .expect("dense diag");
+
+        assert_eq!(taka.len(), q.rows());
+        assert!(
+            max_abs_diff(&taka, &dense_diag) < tol,
+            "Takahashi vs dense max|Δ|={} tol={tol}\n taka={taka:?}\n dense={dense_diag:?}",
+            max_abs_diff(&taka, &dense_diag)
+        );
+        assert!(
+            max_abs_diff(&taka, &by_solves) < tol,
+            "Takahashi vs blocked solves max|Δ|={}",
+            max_abs_diff(&taka, &by_solves)
+        );
+    }
+
+    #[test]
+    fn takahashi_matches_dense_diag_ar1() {
+        compare_takahashi_vs_dense(&ar1_q(12, 0.7, 2.5), 1e-9);
+        compare_takahashi_vs_dense(&ar1_q(3, 0.2, 1.0), 1e-10);
+    }
+
+    #[test]
+    fn takahashi_matches_dense_diag_besag() {
+        // 4-cycle plus a chord (small connected Besag graph).
+        let adj = vec![vec![1, 3], vec![0, 2, 3], vec![1, 3], vec![0, 1, 2]];
+        compare_takahashi_vs_dense(&besag_ridge_q(&adj, 1.5, 0.25), 1e-9);
+        // Path of 6 (tree-like ICAR).
+        let path: Vec<Vec<usize>> = (0..6)
+            .map(|i| {
+                let mut nbs = Vec::new();
+                if i > 0 {
+                    nbs.push(i - 1);
+                }
+                if i + 1 < 6 {
+                    nbs.push(i + 1);
+                }
+                nbs
+            })
+            .collect();
+        compare_takahashi_vs_dense(&besag_ridge_q(&path, 1.0, 0.1), 1e-9);
+    }
+
+    // Timing note (do not treat as a CI benchmark): on AR1 n≈400, Takahashi is
+    // Θ(nnz(L)) ≈ O(n) while `sparse_diagonal_inverse_by_solves` does Θ(n)
+    // triangular solves and the dense path densifies then inverts. See
+    // `benches/ar1_ldlt.rs` (`diag_inv_ar1`).
 }

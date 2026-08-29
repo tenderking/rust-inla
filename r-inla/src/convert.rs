@@ -124,6 +124,102 @@ pub(crate) fn csc_from_r_slots(
     inla_core::csc_from_triplets_0based(n, n, &rows, &cols, &vals).map_err(Error::Other)
 }
 
+/// Convert an R `dgCMatrix` (or dense matrix) to the engine CSC contract.
+pub(crate) fn csc_from_r_precision(
+    obj: &Robj,
+    n: usize,
+) -> std::result::Result<inla_core::CscMatrix, Error> {
+    if obj.inherits("dgCMatrix") {
+        let s4: S4 = obj.try_into().map_err(map_r_error)?;
+        let i = slot_i32(&s4, "i")?;
+        let p = slot_i32(&s4, "p")?;
+        let x = slot_f64(&s4, "x")?;
+        let dim = slot_i32(&s4, "Dim")?;
+        if dim.len() != 2 {
+            return Err(Error::Other("dgCMatrix Dim must have length 2".into()));
+        }
+        let nrow = usize::try_from(dim[0]).map_err(|_| Error::Other("dgCMatrix nrow".into()))?;
+        let ncol = usize::try_from(dim[1]).map_err(|_| Error::Other("dgCMatrix ncol".into()))?;
+        if nrow != n || ncol != n {
+            return Err(Error::Other(format!(
+                "Q(theta) is {nrow}x{ncol}, expected {n}x{n}"
+            )));
+        }
+        return csc_from_r_slots(n, &i, &p, &x);
+    }
+
+    let dim = obj.dim();
+    let Some(dim) = dim else {
+        return Err(Error::Other(
+            "rgeneric Q(theta) must return a dgCMatrix or numeric matrix".into(),
+        ));
+    };
+    if dim.len() != 2 {
+        return Err(Error::Other(
+            "rgeneric Q(theta) matrix must be 2-dimensional".into(),
+        ));
+    }
+    let nrow_i = Option::<i32>::from(dim[0]).ok_or_else(|| Error::Other("Q nrow is NA".into()))?;
+    let ncol_i = Option::<i32>::from(dim[1]).ok_or_else(|| Error::Other("Q ncol is NA".into()))?;
+    let nrow = usize::try_from(nrow_i).map_err(|_| Error::Other("Q nrow".into()))?;
+    let ncol = usize::try_from(ncol_i).map_err(|_| Error::Other("Q ncol".into()))?;
+    if nrow != n || ncol != n {
+        return Err(Error::Other(format!(
+            "Q(theta) is {nrow}x{ncol}, expected {n}x{n}"
+        )));
+    }
+    let vals = obj
+        .as_real_vector()
+        .ok_or_else(|| Error::Other("rgeneric Q(theta) dense matrix must be numeric".into()))?;
+    if vals.len() != n * n {
+        return Err(Error::Other(format!(
+            "Q(theta) dense length {} != {n}*{n}",
+            vals.len()
+        )));
+    }
+    let mut rows = Vec::new();
+    let mut cols = Vec::new();
+    let mut nz = Vec::new();
+    for col in 0..n {
+        for row in 0..n {
+            let v = vals[col * n + row];
+            if v != 0.0 && v.is_finite() {
+                rows.push(row);
+                cols.push(col);
+                nz.push(v);
+            } else if !v.is_finite() {
+                return Err(Error::Other(
+                    "rgeneric Q(theta) has a non-finite entry".into(),
+                ));
+            }
+        }
+    }
+    inla_core::csc_from_triplets_0based(n, n, &rows, &cols, &nz).map_err(Error::Other)
+}
+
+fn slot_i32(s4: &S4, name: &str) -> std::result::Result<Vec<i32>, Error> {
+    let slot = s4
+        .get_slot(name)
+        .ok_or_else(|| Error::Other(format!("dgCMatrix missing slot '{name}'")))?;
+    if let Some(v) = slot.as_integer_vector() {
+        return Ok(v);
+    }
+    if let Some(v) = slot.as_real_vector() {
+        return Ok(v.into_iter().map(|x| x as i32).collect());
+    }
+    Err(Error::Other(format!(
+        "dgCMatrix slot '{name}' must be integer or numeric"
+    )))
+}
+
+fn slot_f64(s4: &S4, name: &str) -> std::result::Result<Vec<f64>, Error> {
+    let slot = s4
+        .get_slot(name)
+        .ok_or_else(|| Error::Other(format!("dgCMatrix missing slot '{name}'")))?;
+    slot.as_real_vector()
+        .ok_or_else(|| Error::Other(format!("dgCMatrix slot '{name}' must be numeric")))
+}
+
 pub(crate) fn marginals_to_r_list(
     ms: &[inla_core::Marginal1D],
 ) -> std::result::Result<List, Error> {

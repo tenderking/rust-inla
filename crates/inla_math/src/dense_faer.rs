@@ -76,7 +76,8 @@ pub fn ldlt_factorize(a: &[f64], n: usize) -> Result<DenseLdltFactor, MathError>
 
 /// Invert an SPD matrix via faer LLᵀ Cholesky: `A = L Lᵀ ⇒ A⁻¹ = L⁻ᵀ L⁻¹`.
 ///
-/// Input/output are row-major. Used for exact FGN precision construction.
+/// Input/output are row-major. Exact FGN precision uses `invert_spd_toeplitz`
+/// instead; this unstructured inverse remains the oracle / generic SPD path.
 pub fn invert_spd_cholesky(a: &[f64], n: usize) -> Result<Vec<f64>, MathError> {
     if a.len() != n * n {
         return Err(MathError::DimensionMismatch {

@@ -33,8 +33,10 @@ pub trait InlaSolver: Send + Sync {
     /// Solves Q * x = rhs. Must reuse the cached factorization if factorize() was already called.
     fn solve(&mut self, rhs: &[f64]) -> Result<Vec<f64>, SolverError>;
 
-    /// Computes the diagonal of the selected inverse (marginal variances) of Q.
-    /// Must utilize a sparse inverse pass (e.g. Takahashi's equations) rather than full inversion.
+    /// Diagonal of the selected inverse (marginal variances) of Q.
+    ///
+    /// Sparse factors use Takahashi on the filled pattern of `L`. Dense factors
+    /// (exact FGN) keep the dense LDLᵀ diagonal inverse.
     fn diag_inv(&mut self) -> Result<Vec<f64>, SolverError>;
 
     /// Log absolute determinant of Q based on current factorization.

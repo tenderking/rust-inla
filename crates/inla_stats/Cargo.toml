@@ -10,13 +10,15 @@ description = "Likelihoods, latent GMRF models, INLA inference, and model select
 crate-type = ["rlib"]
 
 [features]
-default = []
+default = ["sparse-ldlt"]
+## faer sparse LDLᵀ for CSC GMRFs (AR1, RW, Besag, FGN approx)
+sparse-ldlt = ["inla_math/sparse-ldlt"]
 gmrflib-ffi = ["dep:inla_sys"]
 
 [dependencies]
 sprs = "0.11"
 rayon = "1"
-inla_math = { path = "../inla_math" }
+inla_math = { path = "../inla_math", features = ["sparse-ldlt"] }
 inla_fmesher = { path = "../inla_fmesher" }
 inla_sys = { path = "../inla_sys", optional = true }
 
