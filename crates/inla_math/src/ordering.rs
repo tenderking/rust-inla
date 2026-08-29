@@ -64,7 +64,7 @@ pub fn try_time_major_kronecker(q: &CscMatrix) -> Option<(Vec<usize>, Vec<usize>
     }
     let mut best: Option<(usize, Vec<usize>, Vec<usize>)> = None;
     for n_comp in 2..=8 {
-        if n % n_comp != 0 {
+        if !n.is_multiple_of(n_comp) {
             continue;
         }
         let n_time = n / n_comp;
