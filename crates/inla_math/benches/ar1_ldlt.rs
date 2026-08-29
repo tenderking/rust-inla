@@ -1,7 +1,8 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use inla_math::{
-    CscMatrix, Eval1D, FaerCpuSolver, laplace_newton_step, laplace_newton_step_a_solver,
-    sparse_from_triplets,
+    CscMatrix, DenseBackend, Eval1D, FaerCpuSolver, InlaSolver, LdltBackend, LdltScratch,
+    factorize_sparse, laplace_newton_step, laplace_newton_step_a_solver, sparse_diagonal_inverse,
+    sparse_diagonal_inverse_by_solves, sparse_from_triplets,
 };
 
 /// Local AR(1) CSC for math-only benches (avoids depending on inla_stats).
@@ -75,5 +76,52 @@ fn bench_laplace_ldlt(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_ar1_build, bench_laplace_ldlt);
+/// Takahashi selected inverse vs blocked `QX=I` solves vs dense LDLᵀ diag.
+///
+/// Run: `cargo bench -p inla_math --bench ar1_ldlt -- diag_inv` (short; n≤400).
+fn bench_diag_inv_ar1(c: &mut Criterion) {
+    let mut g = c.benchmark_group("diag_inv_ar1");
+    for &n in &[50usize, 200, 400] {
+        let q = ar1_precision_csc(n, 0.7, 1.0).expect("ar1");
+        let mut scratch = LdltScratch::default();
+        let sparse = factorize_sparse(&q, &mut scratch).expect("sparse factor");
+        g.bench_with_input(BenchmarkId::new("takahashi", n), &n, |b, _| {
+            b.iter(|| {
+                black_box(sparse_diagonal_inverse(black_box(&sparse), &mut scratch).expect("taka"))
+            })
+        });
+        g.bench_with_input(BenchmarkId::new("blocked_solves", n), &n, |b, _| {
+            b.iter(|| {
+                black_box(
+                    sparse_diagonal_inverse_by_solves(black_box(&sparse), &mut scratch)
+                        .expect("solves"),
+                )
+            })
+        });
+        g.bench_with_input(BenchmarkId::new("dense_diag", n), &n, |b, _| {
+            b.iter(|| {
+                let mut s = LdltScratch::default();
+                let f = DenseBackend
+                    .factorize(black_box(&q), &mut s)
+                    .expect("dense");
+                black_box(DenseBackend.diagonal_inverse(&f, &mut s).expect("diag"))
+            })
+        });
+        g.bench_with_input(BenchmarkId::new("solver_diag_inv", n), &n, |b, _| {
+            b.iter(|| {
+                let mut solver = FaerCpuSolver::new();
+                solver.factorize(black_box(&q)).expect("factor");
+                black_box(solver.diag_inv().expect("diag_inv"))
+            })
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_ar1_build,
+    bench_laplace_ldlt,
+    bench_diag_inv_ar1
+);
 criterion_main!(benches);

@@ -53,7 +53,8 @@ pub use toeplitz::invert_spd_toeplitz;
 pub use dense_faer::selfadjoint_eigen;
 #[cfg(feature = "sparse-ldlt")]
 pub use sparse_ldlt::{
-    SparseLdltFactor, factorize_sparse, refactorize_numeric_arc, symbolic_pattern,
+    SparseLdltFactor, factorize_sparse, refactorize_numeric_arc, sparse_diagonal_inverse,
+    sparse_diagonal_inverse_by_solves, symbolic_pattern,
 };
 
 /// Invert an SPD matrix via Cholesky (`A = L Lᵀ ⇒ A⁻¹ = L⁻ᵀ L⁻¹`).
