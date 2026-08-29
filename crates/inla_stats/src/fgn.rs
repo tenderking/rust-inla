@@ -80,6 +80,10 @@ pub fn fgn_ar_coeffs(h_intern: f64, order: usize) -> Result<(Vec<f64>, Vec<f64>)
 
 /// Sparse FGN precision of size `(order+1)*n`, R-INLA `model="fgn"`.
 ///
+/// AR(1) mixture (`order` = 3 or 4) with Θ(n) nonzeros. Use this for large `n`;
+/// the exact Gram inverse [`crate::fgn_precision_csc`] is dense (Θ(n²) storage,
+/// Θ(n²) Trench inversion) and is only practical for small series.
+///
 /// `hurst` must be in (0.5, 1). `prec_eps` defaults to `1e8` (R-INLA `f(..., precision=)`).
 pub fn fgn_approx_precision_csc(
     n: usize,

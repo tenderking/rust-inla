@@ -10,6 +10,7 @@ pub mod ldlt;
 pub mod scratch;
 pub mod solver;
 pub mod sparse;
+pub mod toeplitz;
 
 #[cfg(feature = "sparse-ldlt")]
 pub mod dense_faer;
@@ -44,6 +45,7 @@ pub use solver::{FaerCpuSolver, InlaSolver, SolverError};
 pub use sparse::{
     CscForR, CscMatrix, csc_for_r_dgcmatrix, kronecker_csc, sparse_from_triplets, triplets_to_csc,
 };
+pub use toeplitz::invert_spd_toeplitz;
 
 #[cfg(feature = "sparse-ldlt")]
 pub use dense_faer::selfadjoint_eigen;

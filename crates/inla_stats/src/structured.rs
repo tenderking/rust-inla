@@ -395,6 +395,7 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
             let q0 = maybe_scale(besag_precision_csc(adj, 1.0)?, effect.scale_model)?;
             apply_tau(&q0, tau)
         }
+        // Exact Q is dense Trench (small n). order=3/4 is the sparse AR-mixture.
         "fgn" => {
             let order = if effect.order > 0 {
                 effect.order as usize

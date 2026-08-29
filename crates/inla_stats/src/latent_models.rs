@@ -192,6 +192,16 @@ pub fn two_diid_precision_csc(n_pairs: usize, rho: f64, tau: f64) -> Result<CscM
     Ok(tri.to_csc())
 }
 
+/// Exact FGN precision `Q(θ) = Σ(H)⁻¹` with `θ` consumed as `(tau, hurst)` here
+/// (`structured` maps `[log τ, hurst_intern]` onto these arguments).
+///
+/// `Σ_{ij} = γ_H(|i-j|) / τ` is SPD Toeplitz, so `Q` is computed with
+/// Durbin–Levinson + Trench in Θ(n²) time and Θ(n²) storage. The inverse of a
+/// finite Toeplitz covariance is dense, so assembly cannot drop below Θ(n²)
+/// entries. Prefer [`crate::fgn_approx_precision_csc`] with `order = 3` or `4`
+/// when `n` is large: that path is sparse (Θ(n) nonzeros, latent length
+/// `(order+1) n`) and is the R-INLA default. Use this exact path for small `n`
+/// or when you need the true FGN Gram inverse rather than the AR-mixture.
 pub fn fgn_precision_csc(n: usize, hurst: f64, tau: f64) -> Result<CscMatrix, String> {
     if n == 0 {
         return Err("fgn requires n >= 1".to_string());
@@ -213,17 +223,12 @@ pub fn fgn_precision_csc(n: usize, hurst: f64, tau: f64) -> Result<CscMatrix, St
         acf[k] = 0.5 * ((k_f + 1.0).powf(h2) - 2.0 * k_f.powf(h2) + (k_f - 1.0).powf(h2)) / tau;
     }
 
-    let mut cov = vec![0.0; n * n];
-    for i in 0..n {
-        for j in 0..=i {
-            let v = acf[i - j];
-            cov[i * n + j] = v;
-            cov[j * n + i] = v;
+    let prec = inla_math::invert_spd_toeplitz(&acf).map_err(|e| match e {
+        inla_math::MathError::NotPositiveDefinite => {
+            "FGN covariance is not positive definite".to_string()
         }
-    }
-
-    // Covariance is SPD: Cholesky inversion is O(n³) and more stable than GE.
-    let prec = invert_spd_cholesky(&cov, n)?;
+        other => other.to_string(),
+    })?;
 
     let mut tri = TriMatI::<f64, usize>::with_capacity((n, n), n * n);
     for i in 0..n {
@@ -236,16 +241,6 @@ pub fn fgn_precision_csc(n: usize, hurst: f64, tau: f64) -> Result<CscMatrix, St
     }
 
     Ok(tri.to_csc())
-}
-
-/// Invert an SPD matrix via Cholesky: A = L Lᵀ ⇒ A⁻¹ = L⁻ᵀ L⁻¹.
-fn invert_spd_cholesky(a: &[f64], n: usize) -> Result<Vec<f64>, String> {
-    inla_math::invert_spd_cholesky(a, n).map_err(|e| match e {
-        inla_math::MathError::NotPositiveDefinite => {
-            "FGN covariance is not positive definite".to_string()
-        }
-        other => other.to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -415,5 +410,52 @@ mod tests {
         let q_dep = fgn_precision_csc(3, 0.7, 1.0).expect("fgn H=0.7");
         assert_eq!(q_dep.rows(), 3);
         assert_eq!(q_dep.cols(), 3);
+    }
+
+    fn fgn_acf(n: usize, hurst: f64, tau: f64) -> Vec<f64> {
+        let h2 = 2.0 * hurst;
+        let mut acf = vec![0.0; n];
+        acf[0] = 1.0 / tau;
+        for k in 1..n {
+            let kf = k as f64;
+            acf[k] = 0.5 * ((kf + 1.0).powf(h2) - 2.0 * kf.powf(h2) + (kf - 1.0).powf(h2)) / tau;
+        }
+        acf
+    }
+
+    fn fgn_precision_cholesky_oracle(n: usize, hurst: f64, tau: f64) -> Vec<f64> {
+        let acf = fgn_acf(n, hurst, tau);
+        let mut cov = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let v = acf[i - j];
+                cov[i * n + j] = v;
+                cov[j * n + i] = v;
+            }
+        }
+        inla_math::invert_spd_cholesky(&cov, n).expect("cholesky oracle")
+    }
+
+    #[test]
+    fn exact_fgn_trench_matches_cholesky_oracle() {
+        for n in [8usize, 16] {
+            for &(hurst, tau) in &[(0.5, 1.0), (0.7, 2.0), (0.9, 1.0)] {
+                let q = fgn_precision_csc(n, hurst, tau).expect("trench fgn");
+                assert_eq!(q.rows(), n);
+                assert_eq!(q.cols(), n);
+                let d = dense_from_csc(&q);
+                let oracle = fgn_precision_cholesky_oracle(n, hurst, tau);
+                let scale = oracle.iter().fold(0.0_f64, |m, v| m.max(v.abs())).max(1.0);
+                for i in 0..n * n {
+                    let err = (d[i] - oracle[i]).abs();
+                    assert!(
+                        err < 1e-9 * scale,
+                        "n={n} H={hurst} tau={tau} idx={i} left={} right={} err={err}",
+                        d[i],
+                        oracle[i]
+                    );
+                }
+            }
+        }
     }
 }
