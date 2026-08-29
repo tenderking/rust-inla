@@ -693,6 +693,25 @@ pub fn eval_likelihood(eta: f64, o: &Obs) -> Result<Eval1D, String> {
     }
 }
 
+/// True when every observation is Gaussian with an identity link.
+///
+/// Then `∂² log π(y|η) / ∂η² = −prec` is independent of `x` (and of `A x`), so the
+/// latent posterior is exactly Gaussian: one Newton step is the closed-form mode
+/// and a second factorization cannot change `Q_post`. Mixed or non-identity
+/// families must not take this path.
+fn all_gaussian_identity_constant_hessian(obs: &[Obs]) -> bool {
+    !obs.is_empty()
+        && obs.iter().all(|o| {
+            matches!(
+                o,
+                Obs::Gaussian(GaussianObs {
+                    link: Link::Identity,
+                    ..
+                })
+            )
+        })
+}
+
 pub fn find_latent_mode(
     q_prior: &CscMatrix,
     obs: &[Obs],
@@ -823,7 +842,12 @@ pub fn find_latent_mode_a_with_solver(
     let mut x = vec![0.0; n];
     let mut converged = false;
 
-    for iter in 0..max_iter {
+    if all_gaussian_identity_constant_hessian(obs) {
+        // Closed form: Q_post = Q + Aᵀ diag(prec) A is independent of x.
+        // One factorize + one solve from x=0 is the exact mode; skip confirmation.
+        if max_iter == 0 {
+            return Err("Newton-Raphson did not converge".to_string());
+        }
         let eta = match a {
             None => x.clone(),
             Some(a_mat) => matvec_csc(a_mat, &x)?,
@@ -832,48 +856,20 @@ pub fn find_latent_mode_a_with_solver(
         for i in 0..obs.len() {
             evals.push(eval_likelihood(eta[i], &obs[i])?);
         }
-
         let step = laplace_newton_step_a_solver(q_work, &evals, a, &x, solver)
             .map_err(|e| e.to_string())?;
         if step.iter().any(|s| !s.is_finite()) {
             return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
         }
-
-        // Cap large steps (GLM Newton can overshoot from x=0 with weak curvature).
-        let max_step = step.iter().fold(0.0_f64, |m, s| m.max(s.abs()));
-        let mut alpha = if max_step > 10.0 {
-            10.0 / max_step
-        } else {
-            1.0
-        };
-
-        // Backtrack only when the trial point yields a non-finite objective.
-        let mut x_trial = x.clone();
-        for _ in 0..12 {
-            for i in 0..n {
-                x_trial[i] = x[i] + alpha * step[i];
-            }
-            if let Some(c) = constraints {
-                project_constraints(&mut x_trial, c)?;
-            }
-            if latent_objective(q_work, obs, a, &x_trial).is_ok() {
-                break;
-            }
-            alpha *= 0.5;
-            if alpha < 1e-8 {
-                return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
-            }
-        }
-
-        let mut max_diff = 0.0;
         for i in 0..n {
-            let dx = x_trial[i] - x[i];
-            max_diff = f64::max(max_diff, dx.abs());
-            x[i] = x_trial[i];
+            x[i] += step[i];
         }
-
-        if max_diff < tol || max_step < tol {
-            // Recompute Newton system at the converged point so solver holds Q_post(x*).
+        if let Some(c) = constraints {
+            project_constraints(&mut x, c)?;
+        }
+        converged = true;
+    } else {
+        for iter in 0..max_iter {
             let eta = match a {
                 None => x.clone(),
                 Some(a_mat) => matvec_csc(a_mat, &x)?,
@@ -882,14 +878,67 @@ pub fn find_latent_mode_a_with_solver(
             for i in 0..obs.len() {
                 evals.push(eval_likelihood(eta[i], &obs[i])?);
             }
-            let _ = laplace_newton_step_a_solver(q_work, &evals, a, &x, solver)
-                .map_err(|e| e.to_string())?;
-            converged = true;
-            break;
-        }
 
-        if iter == max_iter - 1 {
-            return Err("Newton-Raphson did not converge".to_string());
+            let step = laplace_newton_step_a_solver(q_work, &evals, a, &x, solver)
+                .map_err(|e| e.to_string())?;
+            if step.iter().any(|s| !s.is_finite()) {
+                return Err("Newton-Raphson step is not finite (contains NaN or Inf)".to_string());
+            }
+
+            // Cap large steps (GLM Newton can overshoot from x=0 with weak curvature).
+            let max_step = step.iter().fold(0.0_f64, |m, s| m.max(s.abs()));
+            let mut alpha = if max_step > 10.0 {
+                10.0 / max_step
+            } else {
+                1.0
+            };
+
+            // Backtrack only when the trial point yields a non-finite objective.
+            let mut x_trial = x.clone();
+            for _ in 0..12 {
+                for i in 0..n {
+                    x_trial[i] = x[i] + alpha * step[i];
+                }
+                if let Some(c) = constraints {
+                    project_constraints(&mut x_trial, c)?;
+                }
+                if latent_objective(q_work, obs, a, &x_trial).is_ok() {
+                    break;
+                }
+                alpha *= 0.5;
+                if alpha < 1e-8 {
+                    return Err(
+                        "Newton-Raphson step is not finite (contains NaN or Inf)".to_string(),
+                    );
+                }
+            }
+
+            let mut max_diff = 0.0;
+            for i in 0..n {
+                let dx = x_trial[i] - x[i];
+                max_diff = f64::max(max_diff, dx.abs());
+                x[i] = x_trial[i];
+            }
+
+            if max_diff < tol || max_step < tol {
+                // Recompute Newton system at the converged point so solver holds Q_post(x*).
+                let eta = match a {
+                    None => x.clone(),
+                    Some(a_mat) => matvec_csc(a_mat, &x)?,
+                };
+                let mut evals = Vec::with_capacity(obs.len());
+                for i in 0..obs.len() {
+                    evals.push(eval_likelihood(eta[i], &obs[i])?);
+                }
+                let _ = laplace_newton_step_a_solver(q_work, &evals, a, &x, solver)
+                    .map_err(|e| e.to_string())?;
+                converged = true;
+                break;
+            }
+
+            if iter == max_iter - 1 {
+                return Err("Newton-Raphson did not converge".to_string());
+            }
         }
     }
 
@@ -2716,6 +2765,259 @@ mod tests {
         );
         let vars = solver.diag_inv().unwrap();
         assert_eq!(vars.len(), n);
+    }
+
+    #[test]
+    fn constant_hessian_gate_is_gaussian_identity_only() {
+        let g_id = Obs::Gaussian(GaussianObs {
+            y: 0.0,
+            precision: 1.0,
+            link: Link::Identity,
+        });
+        let g_log = Obs::Gaussian(GaussianObs {
+            y: 1.0,
+            precision: 1.0,
+            link: Link::Log,
+        });
+        let pois = Obs::Poisson(PoissonObs {
+            y: 1.0,
+            exposure: 1.0,
+            link: Link::Log,
+        });
+        let bin = Obs::Binomial(BinomialObs {
+            y: 1.0,
+            n: 4.0,
+            link: Link::Logit,
+        });
+        assert!(all_gaussian_identity_constant_hessian(&[g_id, g_id]));
+        assert!(!all_gaussian_identity_constant_hessian(&[g_log]));
+        assert!(!all_gaussian_identity_constant_hessian(&[pois]));
+        assert!(!all_gaussian_identity_constant_hessian(&[bin]));
+        assert!(!all_gaussian_identity_constant_hessian(&[g_id, pois]));
+        assert!(!all_gaussian_identity_constant_hessian(&[]));
+    }
+
+    struct CountingSolver {
+        inner: FaerCpuSolver,
+        factorize_calls: std::sync::atomic::AtomicUsize,
+        solve_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingSolver {
+        fn new() -> Self {
+            Self {
+                inner: FaerCpuSolver::new(),
+                factorize_calls: std::sync::atomic::AtomicUsize::new(0),
+                solve_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn factorizes(&self) -> usize {
+            self.factorize_calls
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn solves(&self) -> usize {
+            self.solve_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl InlaSolver for CountingSolver {
+        fn factorize(&mut self, q: &CscMatrix) -> Result<(), inla_math::SolverError> {
+            self.factorize_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.factorize(q)
+        }
+        fn solve(&mut self, rhs: &[f64]) -> Result<Vec<f64>, inla_math::SolverError> {
+            self.solve_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.solve(rhs)
+        }
+        fn diag_inv(&mut self) -> Result<Vec<f64>, inla_math::SolverError> {
+            self.inner.diag_inv()
+        }
+        fn log_abs_det(&self) -> Result<f64, inla_math::SolverError> {
+            self.inner.log_abs_det()
+        }
+    }
+
+    #[test]
+    fn gaussian_identity_mode_matches_linear_solve_and_skips_confirmation() {
+        let n = 4usize;
+        let tau = 2.0;
+        let q = identity_csc(n, tau).unwrap();
+        let y = [0.5, -1.0, 2.0, 0.25];
+        let prec = [1.0, 4.0, 0.5, 9.0];
+        let obs: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: y[i],
+                    precision: prec[i],
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+
+        let evals: Vec<_> = (0..n)
+            .map(|i| eval_likelihood(0.0, &obs[i]).unwrap())
+            .collect();
+        let x0 = vec![0.0; n];
+        let (q_post, rhs) = laplace_newton_system_a(&q, &evals, None, &x0).unwrap();
+        let mut lin = FaerCpuSolver::new();
+        lin.factorize(&q_post).unwrap();
+        let x_lin = lin.solve(&rhs).unwrap();
+
+        let mut solver = CountingSolver::new();
+        let (x, mlik) =
+            find_latent_mode_a_with_solver(&q, &obs, None, None, 50, 1e-12, &mut solver).unwrap();
+        assert!(mlik.is_finite());
+        assert_eq!(x.len(), n);
+        for i in 0..n {
+            assert!(
+                (x[i] - x_lin[i]).abs() < 1e-10,
+                "mode[{i}]={} vs linear {}",
+                x[i],
+                x_lin[i]
+            );
+        }
+        // Prior log-det factorize + one posterior factorize/solve; no confirmation Newton.
+        assert_eq!(solver.factorizes(), 2);
+        assert_eq!(solver.solves(), 1);
+    }
+
+    #[test]
+    fn gaussian_identity_with_projector_matches_linear_solve() {
+        let n = 3usize;
+        let n_obs = 5usize;
+        let q = identity_csc(n, 1.5).unwrap();
+        let a = csc_from_triplets_0based(
+            n_obs,
+            n,
+            &[0, 1, 1, 2, 3, 3, 4],
+            &[0, 0, 1, 1, 1, 2, 2],
+            &[1.0, 0.5, 0.5, 1.0, 0.25, 0.75, 1.0],
+        )
+        .unwrap();
+        let obs: Vec<Obs> = (0..n_obs)
+            .map(|i| {
+                Obs::Gaussian(GaussianObs {
+                    y: 0.2 * i as f64 - 0.4,
+                    precision: 1.0 + i as f64,
+                    link: Link::Identity,
+                })
+            })
+            .collect();
+        let evals: Vec<_> = obs
+            .iter()
+            .map(|o| eval_likelihood(0.0, o).unwrap())
+            .collect();
+        let x0 = vec![0.0; n];
+        let (q_post, rhs) = laplace_newton_system_a(&q, &evals, Some(&a), &x0).unwrap();
+        let mut lin = FaerCpuSolver::new();
+        lin.factorize(&q_post).unwrap();
+        let x_lin = lin.solve(&rhs).unwrap();
+
+        let mut solver = CountingSolver::new();
+        let (x, _) =
+            find_latent_mode_a_with_solver(&q, &obs, Some(&a), None, 50, 1e-12, &mut solver)
+                .unwrap();
+        for i in 0..n {
+            assert!((x[i] - x_lin[i]).abs() < 1e-10);
+        }
+        assert_eq!(solver.factorizes(), 2);
+        assert_eq!(solver.solves(), 1);
+    }
+
+    #[test]
+    fn poisson_and_binomial_still_use_newton_confirmation() {
+        let n = 6usize;
+        let q = identity_csc(n, 1.0).unwrap();
+
+        let pois: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Poisson(PoissonObs {
+                    y: (i + 1) as f64,
+                    exposure: 1.0,
+                    link: Link::Log,
+                })
+            })
+            .collect();
+        let mut pois_solver = CountingSolver::new();
+        let (x_p, mlik_p) =
+            find_latent_mode_a_with_solver(&q, &pois, None, None, 100, 1e-8, &mut pois_solver)
+                .unwrap();
+        assert!(mlik_p.is_finite());
+        assert!(x_p.iter().all(|v| v.is_finite()));
+        assert!(
+            pois_solver.factorizes() > 2,
+            "poisson should iterate / confirm; factorizes={}",
+            pois_solver.factorizes()
+        );
+        assert!(
+            pois_solver.solves() > 1,
+            "poisson should take more than one Newton solve; solves={}",
+            pois_solver.solves()
+        );
+
+        let bin: Vec<Obs> = (0..n)
+            .map(|i| {
+                Obs::Binomial(BinomialObs {
+                    y: if i % 2 == 0 { 2.0 } else { 5.0 },
+                    n: 8.0,
+                    link: Link::Logit,
+                })
+            })
+            .collect();
+        let mut bin_solver = CountingSolver::new();
+        let (x_b, mlik_b) =
+            find_latent_mode_a_with_solver(&q, &bin, None, None, 100, 1e-8, &mut bin_solver)
+                .unwrap();
+        assert!(mlik_b.is_finite());
+        assert!(x_b.iter().all(|v| v.is_finite()));
+        assert!(
+            bin_solver.factorizes() > 2,
+            "binomial should iterate / confirm; factorizes={}",
+            bin_solver.factorizes()
+        );
+        assert!(bin_solver.solves() > 1);
+
+        let mixed = vec![
+            Obs::Gaussian(GaussianObs {
+                y: 0.0,
+                precision: 1.0,
+                link: Link::Identity,
+            }),
+            Obs::Poisson(PoissonObs {
+                y: 3.0,
+                exposure: 1.0,
+                link: Link::Log,
+            }),
+            Obs::Gaussian(GaussianObs {
+                y: 1.0,
+                precision: 2.0,
+                link: Link::Identity,
+            }),
+            Obs::Poisson(PoissonObs {
+                y: 1.0,
+                exposure: 1.0,
+                link: Link::Log,
+            }),
+            Obs::Gaussian(GaussianObs {
+                y: -0.5,
+                precision: 1.0,
+                link: Link::Identity,
+            }),
+            Obs::Poisson(PoissonObs {
+                y: 4.0,
+                exposure: 1.0,
+                link: Link::Log,
+            }),
+        ];
+        let mut mixed_solver = CountingSolver::new();
+        find_latent_mode_a_with_solver(&q, &mixed, None, None, 100, 1e-8, &mut mixed_solver)
+            .unwrap();
+        assert!(
+            mixed_solver.factorizes() > 2,
+            "mixed families must not take the Gaussian closed-form path"
+        );
     }
 }
 
