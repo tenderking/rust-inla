@@ -101,7 +101,9 @@ impl LdltBackend for DenseBackend {
     }
 }
 
-/// Default backend: sparse faer LDLᵀ when enabled, else dense.
+/// Default backend: sparse faer LDLᵀ when `sparse-ldlt` is on (no `csc_to_dense`).
+///
+/// Dense factorize is used only for already-dense matrices, or as an OOM fallback.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DefaultBackend;
 

@@ -11,7 +11,7 @@ name = "inla_rs"
 
 [dependencies]
 extendr-api = "0.9"
-inla_core = { path = "../crates/inla_core" }
+inla_core = { path = "../crates/inla_core", features = ["sparse-ldlt"] }
 
 [lints]
 workspace = true

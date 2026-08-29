@@ -50,7 +50,8 @@ impl LdltScratch {
     pub fn with_capacity(n: usize, nnz_hint: usize) -> Self {
         Self {
             rhs: Vec::with_capacity(n),
-            dense: Vec::with_capacity(n.saturating_mul(n)),
+            // Dense workspace is allocated only by [`DenseBackend`] (`ensure_dense`).
+            dense: Vec::new(),
             col: Vec::with_capacity(n),
             l_values: Vec::with_capacity(nnz_hint),
             #[cfg(feature = "sparse-ldlt")]
