@@ -560,8 +560,9 @@ inla_rs_coxph_expand <- function(data, time = "time", event = "status", cutpoint
 #' Bin a continuous covariate into `n` groups (classic R-INLA `inla.group`).
 #'
 #' Returns the **median** of each occupied bin (not integer codes `1..K`).
-#' Those medians are the RW2/`$ID` locations, matching
-#' `f(inla.group(x, n), model = "rw2")`.
+#' Those medians are the latent `$ID` **labels**, matching
+#' `f(inla.group(x, n), model = "rw2")`. Classic `rw2` still uses equal-spacing
+#' `Q` on that rank order; pass `positions=` or `model="crw2"` for geometric lags.
 inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = FALSE) {
   method <- match.arg(method)
   x <- as.numeric(x)
@@ -600,6 +601,29 @@ inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = F
   ok <- is.finite(x)
   out[ok] <- core(x[ok])
   out
+}
+
+.inla_rs_location_models <- c("crw1", "crw2")
+
+# Classic rw1/rw2 Q is equal-spacing on rank. Unique IDs are labels, not lags.
+# Infer positions only for crw1/crw2, or when the user passed positions=.
+.inla_rs_effect_positions <- function(model, raw_pos, data, ids, n_knots) {
+  if (!is.null(raw_pos)) {
+    if (is.character(raw_pos) && length(raw_pos) == 1L) {
+      if (is.null(data[[raw_pos]])) {
+        stop("positions column '", raw_pos, "' not found in data", call. = FALSE)
+      }
+      return(as.numeric(data[[raw_pos]]))
+    }
+    return(as.numeric(raw_pos))
+  }
+  if (tolower(as.character(model)[1]) %in% .inla_rs_location_models) {
+    cand <- suppressWarnings(as.numeric(ids))
+    if (length(cand) == n_knots && all(is.finite(cand))) {
+      return(cand)
+    }
+  }
+  numeric(0)
 }
 
 #' Scale a Besag/GMRF precision so geom-mean marginal variance ≈ 1.
@@ -1670,23 +1694,7 @@ inla_rs <- function(
     } else {
       n_e
     }
-    pos <- numeric(0)
-    raw_pos <- fs$args$positions
-    if (!is.null(raw_pos)) {
-      if (is.character(raw_pos) && length(raw_pos) == 1L) {
-        if (is.null(data[[raw_pos]])) {
-          stop("positions column '", raw_pos, "' not found in data", call. = FALSE)
-        }
-        pos <- as.numeric(data[[raw_pos]])
-      } else {
-        pos <- as.numeric(raw_pos)
-      }
-    } else {
-      cand <- suppressWarnings(as.numeric(ids))
-      if (length(cand) == n_knots && all(is.finite(cand))) {
-        pos <- cand
-      }
-    }
+    pos <- .inla_rs_effect_positions(model, fs$args$positions, data, ids, n_knots)
     if (length(pos) > 0L && all(is.finite(pos))) {
       effect_positions[[length(effect_positions) + 1L]] <- pos
     } else {

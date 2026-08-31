@@ -85,6 +85,30 @@ def test_float_group_indices_and_id():
     assert len(tab["mean"]) == len(group_medians)
 
 
+def test_rw2_does_not_infer_positions_from_group_ids():
+    """Classic rw2: unique IDs are labels. Geometric lags need crw2 or positions=."""
+    from inla.api import _effect_positions
+
+    ids = np.array([0.0, 1.0, 1.5, 8.0, 9.0])
+    assert _effect_positions("rw2", None, ids=ids, n_knots=5) is None
+    assert _effect_positions("rw1", None, ids=ids, n_knots=5) is None
+    np.testing.assert_allclose(
+        _effect_positions("crw2", None, ids=ids, n_knots=5),
+        ids,
+    )
+    np.testing.assert_allclose(
+        _effect_positions("rw2", ids.tolist(), n_knots=5),
+        ids,
+    )
+
+
+def test_rw2_equal_spacing_q_differs_from_irregular_medians():
+    ids = [0.0, 1.0, 1.5, 8.0, 9.0]
+    q_eq = core.rw2_precision_matrix(5).to_scipy().toarray()
+    q_gal = core.crw2_precision_matrix(ids, 1.0, layout="simple").to_scipy().toarray()
+    assert float(np.max(np.abs(q_eq - q_gal))) > 1.0
+
+
 def test_besag_and_rw2_joint_model():
     """Verify joint Besag + RW2 model with free Gaussian precision reproduces latent fields."""
     rng = np.random.default_rng(999)
@@ -154,8 +178,9 @@ def test_scale_model_csc_parity():
 
     These are the geometric-mean-of-diag(ginv(Q)) factors used by
     ``scale_model_csc``. Equal-spacing RW2 of length 25/73 is the case
-    R-INLA ``inla.rw(n, order=2, scale.model=TRUE)`` targets; irregular
-    ``inla.group`` medians use the Galerkin Q instead (see
+    R-INLA ``inla.rw(n, order=2, scale.model=TRUE)`` targets. Formula
+    ``f(inla.group(...), model="rw2")`` uses that equal-spacing Q; pass
+    ``positions=`` or ``model="crw2"`` for geometric lags (see
     ``test_rw2_unit_spacing_galerkin_matches_d2``).
     """
     # n=6 cycle: exact scale factor is 72/35 ~= 2.057142857

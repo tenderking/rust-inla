@@ -208,6 +208,11 @@ fn spde_fem(effect: &StructuredEffect) -> Result<(inla_fmesher::FemBlocks, usize
 /// spatially structured covariates into Besag.
 const RW2_CONSTR_DIAGONAL: f64 = 1e-4;
 
+/// Equal-spacing `D₂'D₂` unless the caller passes knot locations.
+///
+/// Classic `f(inla.group(x), model="rw2")` uses unique IDs as **labels**, not
+/// as lags. Bindings must not auto-fill `positions` from those IDs; that is
+/// `crw2` / explicit `positions=`.
 fn rw2_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, String> {
     match positions {
         Some(pos) if pos.len() == n => crw2_precision_csc(pos, 1.0, "simple"),
