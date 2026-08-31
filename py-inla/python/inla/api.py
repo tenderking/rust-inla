@@ -351,8 +351,11 @@ def group(
 ) -> np.ndarray:
     """Classic R-INLA ``inla.group``: replace values by the median of their bin.
 
-    The returned values are the RW2 ``$ID`` locations. Empty bins are omitted
-    from the unique sorted latent nodes, matching ``f(inla.group(x, n), ...)``.
+    The returned values are the latent ``$ID`` **labels** (bin medians). Empty
+    bins are omitted from the unique sorted nodes, matching
+    ``f(inla.group(x, n), ...)``. Classic ``model="rw2"`` still uses
+    equal-spacing ``Q`` on that rank order; pass ``positions=`` or
+    ``model="crw2"`` for geometric lags.
     """
     arr = np.asarray(x, dtype=float).reshape(-1)
     out = np.full(arr.shape, np.nan)
@@ -388,6 +391,42 @@ def group(
     else:
         out[ok] = med[codes]
     return out
+
+
+_LOCATION_MODELS = frozenset({"crw1", "crw2"})
+
+
+def _effect_positions(
+    model: str,
+    raw_pos,
+    *,
+    data: Mapping[str, Any] | None = None,
+    ids=None,
+    n_knots: int = 0,
+    group_model: str | None = None,
+) -> list[float] | None:
+    """Positions for location-aware Q, or None for discrete equal-spacing RW.
+
+    Classic R-INLA ``f(i, model="rw2")`` uses unique sorted ``i`` as node
+    **labels** and builds equal-spacing second differences. Geometric lags are
+    ``crw1``/``crw2``, or ``rw1``/``rw2`` with an explicit ``positions=`` argument.
+    """
+    if raw_pos is not None:
+        if isinstance(raw_pos, str):
+            if data is None:
+                raise ValueError(f"positions column {raw_pos!r} requires data")
+            return [float(p) for p in _get_col(data, raw_pos)]
+        return [float(p) for p in np.asarray(raw_pos, dtype=float).reshape(-1)]
+    if group_model is not None:
+        return None
+    if str(model).lower() not in _LOCATION_MODELS:
+        return None
+    if ids is None or n_knots <= 0:
+        return None
+    cand = np.asarray(ids, dtype=float).reshape(-1)
+    if cand.size == n_knots and np.all(np.isfinite(cand)):
+        return [float(p) for p in cand]
+    return None
 
 
 def _as_param_list(val) -> list[float]:
@@ -1882,22 +1921,14 @@ def _fit(
         effect_ids.append(eff_id)
 
         raw_pos = ft.kwargs.get("positions")
-        if raw_pos is not None:
-            if isinstance(raw_pos, str):
-                pos_arr = _get_col(data, raw_pos).tolist()
-            else:
-                pos_arr = [float(p) for p in np.asarray(raw_pos, dtype=float).reshape(-1)]
-        elif group_model is not None:
-            pos_arr = None
-        else:
-            try:
-                cand = np.asarray(eff_id, dtype=float).reshape(-1)
-                if cand.size == n_main and np.all(np.isfinite(cand)):
-                    pos_arr = [float(p) for p in cand]
-                else:
-                    pos_arr = [float(p) for p in range(n_main)]
-            except (TypeError, ValueError):
-                pos_arr = [float(p) for p in range(n_main)]
+        pos_arr = _effect_positions(
+            model,
+            raw_pos,
+            data=data,
+            ids=eff_id,
+            n_knots=n_main,
+            group_model=group_model,
+        )
         effect_positions.append(pos_arr)
         effect_layouts.append(layout)
         season = int(ft.kwargs.get("season", ft.kwargs.get("s", order if order > 0 else 4)))
