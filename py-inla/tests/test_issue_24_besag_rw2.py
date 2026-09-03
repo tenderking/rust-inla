@@ -85,13 +85,19 @@ def test_float_group_indices_and_id():
     assert len(tab["mean"]) == len(group_medians)
 
 
-def test_rw2_does_not_infer_positions_from_group_ids():
-    """Classic rw2: unique IDs are labels. Geometric lags need crw2 or positions=."""
+def test_rw2_infers_positions_from_group_ids():
+    """Classic rw2/rw1: irregular numeric IDs are knot positions (Lindgren & Rue 2008)."""
     from inla.api import _effect_positions
 
     ids = np.array([0.0, 1.0, 1.5, 8.0, 9.0])
-    assert _effect_positions("rw2", None, ids=ids, n_knots=5) is None
-    assert _effect_positions("rw1", None, ids=ids, n_knots=5) is None
+    np.testing.assert_allclose(
+        _effect_positions("rw2", None, ids=ids, n_knots=5),
+        ids,
+    )
+    np.testing.assert_allclose(
+        _effect_positions("rw1", None, ids=ids, n_knots=5),
+        ids,
+    )
     np.testing.assert_allclose(
         _effect_positions("crw2", None, ids=ids, n_knots=5),
         ids,
@@ -100,6 +106,28 @@ def test_rw2_does_not_infer_positions_from_group_ids():
         _effect_positions("rw2", ids.tolist(), n_knots=5),
         ids,
     )
+    # Cyclic rw1/rw2 skips location inference
+    assert _effect_positions("rw2", None, ids=ids, n_knots=5, cyclic=True) is None
+    assert _effect_positions("rw1", None, ids=ids, n_knots=5, cyclic=True) is None
+
+    # Numeric vector of bad length raises with n_knots
+    with pytest.raises(ValueError, match="expected 5 knots"):
+        _effect_positions("rw2", [0.0, 1.0], n_knots=5)
+
+    # Observation-length column maps in knot/ids order (Nit 1)
+    knot_ids = np.array([10, 20, 30])
+    obs_zcol = np.array([2, 0, 1, 0, 2, 1])
+    obs_pos = np.array([300.0, 100.0, 200.0, 100.0, 300.0, 200.0])
+    mapped = _effect_positions(
+        "rw2",
+        "pcol",
+        data={"pcol": obs_pos},
+        ids=knot_ids,
+        zcol=obs_zcol,
+        n_obs=6,
+        n_knots=3,
+    )
+    np.testing.assert_allclose(mapped, [100.0, 200.0, 300.0])
 
 
 def test_rw2_equal_spacing_q_differs_from_irregular_medians():
@@ -178,10 +206,7 @@ def test_scale_model_csc_parity():
 
     These are the geometric-mean-of-diag(ginv(Q)) factors used by
     ``scale_model_csc``. Equal-spacing RW2 of length 25/73 is the case
-    R-INLA ``inla.rw(n, order=2, scale.model=TRUE)`` targets. Formula
-    ``f(inla.group(...), model="rw2")`` uses that equal-spacing Q; pass
-    ``positions=`` or ``model="crw2"`` for geometric lags (see
-    ``test_rw2_unit_spacing_galerkin_matches_d2``).
+    R-INLA ``inla.rw(n, order=2, scale.model=TRUE)`` targets.
     """
     # n=6 cycle: exact scale factor is 72/35 ~= 2.057142857
     adj_6 = [[1, 5], [0, 2], [1, 3], [2, 4], [3, 5], [4, 0]]

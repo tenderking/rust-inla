@@ -351,11 +351,10 @@ def group(
 ) -> np.ndarray:
     """Classic R-INLA ``inla.group``: replace values by the median of their bin.
 
-    The returned values are the latent ``$ID`` **labels** (bin medians). Empty
+    The returned values are the latent ``$ID`` locations (bin medians). Empty
     bins are omitted from the unique sorted nodes, matching
-    ``f(inla.group(x, n), ...)``. Classic ``model="rw2"`` still uses
-    equal-spacing ``Q`` on that rank order; pass ``positions=`` or
-    ``model="crw2"`` for geometric lags.
+    ``f(inla.group(x, n), ...)``. Classic ``model="rw2"`` uses these medians
+    as knot positions for the Lindgren & Rue (2008) irregular Galerkin precision.
     """
     arr = np.asarray(x, dtype=float).reshape(-1)
     out = np.full(arr.shape, np.nan)
@@ -393,7 +392,7 @@ def group(
     return out
 
 
-_LOCATION_MODELS = frozenset({"crw1", "crw2"})
+_LOCATION_MODELS = frozenset({"crw1", "crw2", "rw1", "rw2"})
 
 
 def _effect_positions(
@@ -402,30 +401,67 @@ def _effect_positions(
     *,
     data: Mapping[str, Any] | None = None,
     ids=None,
+    zcol=None,
+    n_obs: int = 0,
     n_knots: int = 0,
     group_model: str | None = None,
+    cyclic: bool = False,
 ) -> list[float] | None:
-    """Positions for location-aware Q, or None for discrete equal-spacing RW.
+    """Positions for location-aware Q (RW1, RW2, CRW1, CRW2).
 
-    Classic R-INLA ``f(i, model="rw2")`` uses unique sorted ``i`` as node
-    **labels** and builds equal-spacing second differences. Geometric lags are
-    ``crw1``/``crw2``, or ``rw1``/``rw2`` with an explicit ``positions=`` argument.
+    Classic R-INLA ``f(i, model="rw2")`` uses unique sorted ``i`` locations
+    (e.g. bin medians from ``inla.group``) as knot positions for the Lindgren & Rue
+    (2008) irregular precision matrix. When locations are unit-spaced integers,
+    this reduces identically to discrete equal-spacing second differences.
     """
     if raw_pos is not None:
         if isinstance(raw_pos, str):
             if data is None:
                 raise ValueError(f"positions column {raw_pos!r} requires data")
-            return [float(p) for p in _get_col(data, raw_pos)]
-        return [float(p) for p in np.asarray(raw_pos, dtype=float).reshape(-1)]
+            col = np.asarray(_get_col(data, raw_pos), dtype=float).reshape(-1)
+            if col.size == n_knots:
+                return [float(p) for p in col]
+            if col.size == n_obs and zcol is not None and n_knots > 0:
+                knot_positions = []
+                for i in range(n_knots):
+                    obs_idx = np.where(zcol == i)[0]
+                    if obs_idx.size == 0:
+                        raise ValueError(
+                            f"positions: knot {i} has no matching observations to infer position"
+                        )
+                    p_vals = col[obs_idx]
+                    p_first = p_vals[0]
+                    if not np.allclose(p_vals, p_first, equal_nan=False):
+                        raise ValueError(
+                            f"positions: conflicting positions for knot {i}: {np.unique(p_vals)}"
+                        )
+                    knot_positions.append(float(p_first))
+                return knot_positions
+            u = np.unique(col[np.isfinite(col)])
+            if u.size == n_knots:
+                return [float(p) for p in u]
+            raise ValueError(
+                f"positions column {raw_pos!r} has {col.size} entries, "
+                f"expected {n_knots} knots or {n_obs} observations"
+            )
+        arr = np.asarray(raw_pos, dtype=float).reshape(-1)
+        if arr.size == n_knots:
+            return [float(p) for p in arr]
+        raise ValueError(f"positions vector has length {arr.size}, expected {n_knots} knots")
     if group_model is not None:
+        return None
+    if cyclic and str(model).lower() in ("rw1", "rw2"):
         return None
     if str(model).lower() not in _LOCATION_MODELS:
         return None
     if ids is None or n_knots <= 0:
         return None
-    cand = np.asarray(ids, dtype=float).reshape(-1)
-    if cand.size == n_knots and np.all(np.isfinite(cand)):
-        return [float(p) for p in cand]
+    try:
+        cand = np.asarray(ids, dtype=float).reshape(-1)
+        if cand.size == n_knots and np.all(np.isfinite(cand)):
+            return [float(p) for p in cand]
+    except (TypeError, ValueError):
+        pass
     return None
 
 
@@ -1926,8 +1962,11 @@ def _fit(
             raw_pos,
             data=data,
             ids=eff_id,
+            zcol=zcol,
+            n_obs=n_obs,
             n_knots=n_main,
             group_model=group_model,
+            cyclic=cyclic,
         )
         effect_positions.append(pos_arr)
         effect_layouts.append(layout)

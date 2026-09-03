@@ -560,9 +560,8 @@ inla_rs_coxph_expand <- function(data, time = "time", event = "status", cutpoint
 #' Bin a continuous covariate into `n` groups (classic R-INLA `inla.group`).
 #'
 #' Returns the **median** of each occupied bin (not integer codes `1..K`).
-#' Those medians are the latent `$ID` **labels**, matching
-#' `f(inla.group(x, n), model = "rw2")`. Classic `rw2` still uses equal-spacing
-#' `Q` on that rank order; pass `positions=` or `model="crw2"` for geometric lags.
+#' Those medians are the latent `$ID` locations, matching
+#' `f(inla.group(x, n), model = "rw2")` with Lindgren & Rue (2008) Galerkin precision.
 inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = FALSE) {
   method <- match.arg(method)
   x <- as.numeric(x)
@@ -603,19 +602,49 @@ inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = F
   out
 }
 
-.inla_rs_location_models <- c("crw1", "crw2")
+.inla_rs_location_models <- c("crw1", "crw2", "rw1", "rw2")
 
-# Classic rw1/rw2 Q is equal-spacing on rank. Unique IDs are labels, not lags.
-# Infer positions only for crw1/crw2, or when the user passed positions=.
-.inla_rs_effect_positions <- function(model, raw_pos, data, ids, n_knots) {
+# Classic R-INLA rw1/rw2 uses knot locations for irregular precision (Lindgren & Rue 2008),
+# reducing to discrete differences when unit spaced.
+.inla_rs_effect_positions <- function(model, raw_pos, data, ids, zcol = NULL, n_obs = 0L, n_knots = 0L, cyclic = FALSE) {
   if (!is.null(raw_pos)) {
     if (is.character(raw_pos) && length(raw_pos) == 1L) {
       if (is.null(data[[raw_pos]])) {
         stop("positions column '", raw_pos, "' not found in data", call. = FALSE)
       }
-      return(as.numeric(data[[raw_pos]]))
+      col <- as.numeric(data[[raw_pos]])
+      if (length(col) == n_knots) {
+        return(col)
+      }
+      if (!is.null(zcol) && length(col) == n_obs && n_knots > 0L) {
+        out_p <- numeric(n_knots)
+        for (k in seq_len(n_knots)) {
+          match_idx <- which(zcol == (k - 1L))
+          if (length(match_idx) == 0L) {
+            stop("positions: knot ", k, " has no matching observations", call. = FALSE)
+          }
+          p_vals <- col[match_idx]
+          if (!all(abs(p_vals - p_vals[1L]) < 1e-12)) {
+            stop("positions: conflicting values for knot ", k, call. = FALSE)
+          }
+          out_p[k] <- p_vals[1L]
+        }
+        return(out_p)
+      }
+      u <- sort(unique(col[is.finite(col)]))
+      if (length(u) == n_knots) {
+        return(u)
+      }
+      stop("positions column '", raw_pos, "' has length ", length(col), ", expected ", n_knots, " knots or ", n_obs, " observations", call. = FALSE)
     }
-    return(as.numeric(raw_pos))
+    arr <- as.numeric(raw_pos)
+    if (length(arr) == n_knots) {
+      return(arr)
+    }
+    stop("positions vector has length ", length(arr), ", expected ", n_knots, " knots", call. = FALSE)
+  }
+  if (isTRUE(cyclic) && tolower(as.character(model)[1]) %in% c("rw1", "rw2")) {
+    return(numeric(0))
   }
   if (tolower(as.character(model)[1]) %in% .inla_rs_location_models) {
     cand <- suppressWarnings(as.numeric(ids))
@@ -1694,7 +1723,11 @@ inla_rs <- function(
     } else {
       n_e
     }
-    pos <- .inla_rs_effect_positions(model, fs$args$positions, data, ids, n_knots)
+    pos <- .inla_rs_effect_positions(
+      model, fs$args$positions, data, ids,
+      zcol = zcol, n_obs = n_obs, n_knots = n_knots,
+      cyclic = as.logical(cyclic_i)
+    )
     if (length(pos) > 0L && all(is.finite(pos))) {
       effect_positions[[length(effect_positions) + 1L]] <- pos
     } else {
