@@ -426,18 +426,23 @@ def _effect_positions(
                 for i in range(n_knots):
                     obs_idx = np.where(zcol == i)[0]
                     if obs_idx.size == 0:
-                        raise ValueError(f"positions: knot {i} has no matching observations to infer position")
+                        raise ValueError(
+                            f"positions: knot {i} has no matching observations to infer position"
+                        )
                     p_vals = col[obs_idx]
                     p_first = p_vals[0]
                     if not np.allclose(p_vals, p_first, equal_nan=False):
-                        raise ValueError(f"positions: conflicting positions for knot {i}: {np.unique(p_vals)}")
+                        raise ValueError(
+                            f"positions: conflicting positions for knot {i}: {np.unique(p_vals)}"
+                        )
                     knot_positions.append(float(p_first))
                 return knot_positions
             u = np.unique(col[np.isfinite(col)])
             if u.size == n_knots:
                 return [float(p) for p in u]
             raise ValueError(
-                f"positions column {raw_pos!r} has {col.size} entries, expected {n_knots} knots or {n_obs} observations"
+                f"positions column {raw_pos!r} has {col.size} entries, "
+                f"expected {n_knots} knots or {n_obs} observations"
             )
         arr = np.asarray(raw_pos, dtype=float).reshape(-1)
         if arr.size == n_knots:

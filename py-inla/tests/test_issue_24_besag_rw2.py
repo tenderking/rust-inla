@@ -87,7 +87,6 @@ def test_float_group_indices_and_id():
 
 def test_rw2_infers_positions_from_group_ids():
     """Classic rw2/rw1: irregular numeric IDs are knot positions (Lindgren & Rue 2008)."""
-    import pytest
     from inla.api import _effect_positions
 
     ids = np.array([0.0, 1.0, 1.5, 8.0, 9.0])
