@@ -103,8 +103,7 @@ res = inla(
     "y ~ x + f(region, model='besag', graph='graph', scale_model=True)",
     data=data,
     family="poisson",
-    dic=True,
-    waic=True,
+    control_compute={"dic": True, "waic": True},
 )
 
 print(f"Marginal log-likelihood: {res.marginal_log_lik:.2f}")

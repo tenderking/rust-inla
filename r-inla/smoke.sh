@@ -197,6 +197,12 @@ res_rw1 <- inla_rs(y ~ -1 + f(idx, model = "rw1", obs_precision = 50.0), data = 
 cat("RW1 Marginal Log-Likelihood:", round(res_rw1$marginal_log_lik, 4), "\n")
 stopifnot(is.finite(res_rw1$marginal_log_lik))
 
+res_rw2_cyc <- inla_rs(y ~ -1 + f(idx, model = "rw2", cyclic = TRUE, scale.model = TRUE, obs_precision = 50.0), data = df_rw)
+cat("RW2 cyclic Marginal Log-Likelihood:", round(res_rw2_cyc$marginal_log_lik, 4), "\n")
+stopifnot(is.finite(res_rw2_cyc$marginal_log_lik))
+stopifnot(length(.inla_rs_effect_positions("rw2", NULL, df_rw, c(0.1, 0.5, 2.0), n_knots = 3L, cyclic = TRUE)) == 0L)
+stopifnot(length(.inla_rs_effect_positions("rw2", NULL, df_rw, c(0.1, 0.5, 2.0), n_knots = 3L, group_model = "ar1")) == 0L)
+
 t_seas <- 1:24
 df_seas <- data.frame(y = sin(t_seas * 0.5) + rnorm(24, sd = 0.1), idx = t_seas)
 res_seas <- inla_rs(y ~ -1 + f(idx, model = "seasonal", season = 4L, obs_precision = 50.0), data = df_seas)

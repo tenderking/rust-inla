@@ -283,11 +283,14 @@ pub fn default_scale_model(model: &str) -> bool {
     )
 }
 
-/// Null-space dimension used for hard constraints (`cyclic` shrinks lattice models).
+/// Null-space dimension used for hard constraints (`cyclic` shrinks lattice and rw2 models).
 pub fn rank_deficiency(model: &str, cyclic: bool) -> usize {
     let m = model.trim().to_ascii_lowercase();
     if m == "rw2d" {
         return if cyclic { 1 } else { 3 };
+    }
+    if m == "rw2" && cyclic {
+        return 1;
     }
     inla_math::model_rank_deficiency(&m)
 }

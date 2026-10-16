@@ -10,8 +10,11 @@ pub fn crw1_precision_csc(positions: &[f64], tau: f64) -> Result<CscMatrix, Stri
         return Err("crw1 tau must be finite and > 0".to_string());
     }
     for i in 0..(n - 1) {
-        if positions[i] >= positions[i + 1] {
-            return Err("positions must be strictly increasing".to_string());
+        if !positions[i].is_finite()
+            || !positions[i + 1].is_finite()
+            || positions[i] >= positions[i + 1]
+        {
+            return Err("positions must be finite and strictly increasing".to_string());
         }
     }
 
@@ -49,8 +52,11 @@ pub fn crw2_precision_csc(positions: &[f64], tau: f64, layout: &str) -> Result<C
         return Err("crw2 tau must be finite and > 0".to_string());
     }
     for i in 0..(n - 1) {
-        if positions[i] >= positions[i + 1] {
-            return Err("positions must be strictly increasing".to_string());
+        if !positions[i].is_finite()
+            || !positions[i + 1].is_finite()
+            || positions[i] >= positions[i + 1]
+        {
+            return Err("positions must be finite and strictly increasing".to_string());
         }
     }
 
