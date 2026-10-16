@@ -19,8 +19,8 @@ use crate::crw::{crw1_precision_csc, crw2_precision_csc};
 use crate::fgn::{fgn_approx_precision_csc, fgn_hurst_from_intern};
 use crate::iidkd::{iidkd_dim, iidkd_precision_csc};
 use crate::latent_models::{
-    fgn_precision_csc, iid_precision_csc, rw1_precision_csc, rw2_precision_csc,
-    seasonal_precision_csc,
+    fgn_precision_csc, iid_precision_csc, rw1_cyclic_precision_csc, rw1_precision_csc,
+    rw2_cyclic_precision_csc, rw2_precision_csc, seasonal_precision_csc,
 };
 use crate::matern2d::matern2d_precision_csc;
 use crate::priors::HyperPriorStack;
@@ -213,7 +213,14 @@ const RW2_CONSTR_DIAGONAL: f64 = 1e-4;
 /// When `positions` are provided, computes the irregular RW2 precision matrix
 /// (`crw2_precision_csc(..., "simple")`). If unit spaced, this reduces identically
 /// to discrete `D₂'D₂`.
-fn rw2_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, String> {
+fn rw2_structure_csc(
+    n: usize,
+    positions: Option<&[f64]>,
+    cyclic: bool,
+) -> Result<CscMatrix, String> {
+    if cyclic {
+        return rw2_cyclic_precision_csc(n, 1.0);
+    }
     match positions {
         Some(pos) if pos.len() == n => crw2_precision_csc(pos, 1.0, "simple"),
         Some(pos) => Err(format!(
@@ -224,7 +231,14 @@ fn rw2_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, S
     }
 }
 
-fn rw1_structure_csc(n: usize, positions: Option<&[f64]>) -> Result<CscMatrix, String> {
+fn rw1_structure_csc(
+    n: usize,
+    positions: Option<&[f64]>,
+    cyclic: bool,
+) -> Result<CscMatrix, String> {
+    if cyclic {
+        return rw1_cyclic_precision_csc(n, 1.0);
+    }
     match positions {
         Some(pos) if pos.len() == n => crw1_precision_csc(pos, 1.0),
         Some(pos) => Err(format!(
@@ -249,7 +263,7 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
         "rw1" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
             let q0 = maybe_scale(
-                rw1_structure_csc(n_e, effect.positions.as_deref())?,
+                rw1_structure_csc(n_e, effect.positions.as_deref(), effect.cyclic)?,
                 effect.scale_model,
             )?;
             apply_tau(&q0, tau)
@@ -257,11 +271,15 @@ fn one_block(effect: &StructuredEffect, th: &[f64], fixed_prec: f64) -> Result<C
         "rw2" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
             let q0 = maybe_scale(
-                rw2_structure_csc(n_e, effect.positions.as_deref())?,
+                rw2_structure_csc(n_e, effect.positions.as_deref(), effect.cyclic)?,
                 effect.scale_model,
             )?;
             let q_tau = apply_tau(&q0, tau)?;
-            add_csc(&q_tau, &identity_csc(n_e, RW2_CONSTR_DIAGONAL)?)
+            if effect.cyclic {
+                Ok(q_tau)
+            } else {
+                add_csc(&q_tau, &identity_csc(n_e, RW2_CONSTR_DIAGONAL)?)
+            }
         }
         "rw2d" => {
             let tau = th.first().copied().unwrap_or(0.0).exp();
@@ -1504,5 +1522,31 @@ mod tests {
         let err =
             build_structured_precision(std::slice::from_ref(&effect), &[0.0], 1e-4).unwrap_err();
         assert!(err.contains("Q is") || err.contains("expected"), "{err}");
+    }
+
+    #[test]
+    fn rw1_and_rw2_cyclic_use_circulant_precision() {
+        let n = 6usize;
+        let mut rw1_cyc = StructuredEffect::simple("rw1", n, 1);
+        rw1_cyc.cyclic = true;
+        let q1 = build_structured_precision(&[rw1_cyc], &[0.0], 1e-4)
+            .unwrap()
+            .to_dense();
+        // Circulant RW1 has 2.0 on every diagonal entry and -1.0 on wrap-around corners (0, n-1).
+        for i in 0..n {
+            assert!((q1[[i, i]] - 2.0).abs() < 1e-12);
+        }
+        assert!((q1[[0, n - 1]] + 1.0).abs() < 1e-12);
+
+        let mut rw2_cyc = StructuredEffect::simple("rw2", n, 1);
+        rw2_cyc.cyclic = true;
+        let q2 = build_structured_precision(&[rw2_cyc], &[0.0], 1e-4)
+            .unwrap()
+            .to_dense();
+        // Circulant RW2 has 6.0 on every diagonal entry and -4.0 on wrap-around corners (0, n-1).
+        for i in 0..n {
+            assert!((q2[[i, i]] - 6.0).abs() < 1e-12);
+        }
+        assert!((q2[[0, n - 1]] + 4.0).abs() < 1e-12);
     }
 }

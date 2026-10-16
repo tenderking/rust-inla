@@ -195,6 +195,33 @@ def _adj_from_matrix(mat) -> list[list[int]]:
     return out
 
 
+def _adj_from_dict(d: Mapping[Any, Any]) -> list[list[int]]:
+    if not d:
+        return []
+    keys = [int(k) for k in d.keys()]
+    n = len(keys)
+    kset = set(keys)
+    if kset == set(range(1, n + 1)):
+        offset = 1
+    elif kset == set(range(n)):
+        offset = 0
+    else:
+        raise ValueError("adjacency dict keys must be contiguous 0..n-1 or 1..n")
+    by_key = {int(k): v for k, v in d.items()}
+    out: list[list[int]] = []
+    for i in range(n):
+        raw_nbs = by_key[i + offset]
+        nbs: list[int] = []
+        for j in raw_nbs:
+            nb = int(j) - offset
+            if nb < 0 or nb >= n:
+                raise ValueError(f"adjacency neighbor {j} out of range for graph size {n}")
+            if nb != i:
+                nbs.append(nb)
+        out.append(nbs)
+    return out
+
+
 def _resolve_graph(f_term, data: Mapping[str, Any]) -> list[list[int]]:
     g = f_term.graph
     if g is None:
@@ -202,6 +229,8 @@ def _resolve_graph(f_term, data: Mapping[str, Any]) -> list[list[int]]:
             return _adj_from_matrix(data["adj_matrix"])
         if "adj_list" in data:
             raw = data["adj_list"]
+            if isinstance(raw, Mapping):
+                return _adj_from_dict(raw)
             return [[int(j) for j in row] for row in raw]
         raise ValueError(
             f"f({f_term.index}, model='besag') requires graph=... or data['adj_matrix']"
@@ -210,6 +239,8 @@ def _resolve_graph(f_term, data: Mapping[str, Any]) -> list[list[int]]:
         if g not in data:
             raise KeyError(f"graph='{g}' not found in data")
         g = data[g]
+    if isinstance(g, Mapping):
+        return _adj_from_dict(g)
     if isinstance(g, (list, tuple)) and (len(g) == 0 or isinstance(g[0], (list, tuple))):
         return [[int(j) for j in row] for row in g]
     return _adj_from_matrix(g)
@@ -419,6 +450,8 @@ def _effect_positions(
             if data is None:
                 raise ValueError(f"positions column {raw_pos!r} requires data")
             col = np.asarray(_get_col(data, raw_pos), dtype=float).reshape(-1)
+            if not np.all(np.isfinite(col)):
+                raise ValueError(f"positions column {raw_pos!r} contains non-finite values")
             if col.size == n_knots:
                 return [float(p) for p in col]
             if col.size == n_obs and zcol is not None and n_knots > 0:
@@ -437,14 +470,13 @@ def _effect_positions(
                         )
                     knot_positions.append(float(p_first))
                 return knot_positions
-            u = np.unique(col[np.isfinite(col)])
-            if u.size == n_knots:
-                return [float(p) for p in u]
             raise ValueError(
                 f"positions column {raw_pos!r} has {col.size} entries, "
                 f"expected {n_knots} knots or {n_obs} observations"
             )
         arr = np.asarray(raw_pos, dtype=float).reshape(-1)
+        if not np.all(np.isfinite(arr)):
+            raise ValueError("positions vector contains non-finite values")
         if arr.size == n_knots:
             return [float(p) for p in arr]
         raise ValueError(f"positions vector has length {arr.size}, expected {n_knots} knots")

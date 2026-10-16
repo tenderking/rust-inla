@@ -114,6 +114,22 @@ def test_rw2_infers_positions_from_group_ids():
     with pytest.raises(ValueError, match="expected 5 knots"):
         _effect_positions("rw2", [0.0, 1.0], n_knots=5)
 
+    # Non-finite values in vector or column raise
+    with pytest.raises(ValueError, match="non-finite"):
+        _effect_positions("rw2", [0.0, 1.0, float("nan")], n_knots=3)
+    with pytest.raises(ValueError, match="non-finite"):
+        _effect_positions("rw2", "pcol", data={"pcol": [0.0, float("inf"), 2.0]}, n_knots=3)
+
+    # Column of wrong length (neither n_knots nor n_obs) raises even if unique count == n_knots
+    with pytest.raises(ValueError, match="expected 3 knots or 6 observations"):
+        _effect_positions(
+            "rw2",
+            "pcol",
+            data={"pcol": [10.0, 20.0, 30.0, 30.0]},
+            n_obs=6,
+            n_knots=3,
+        )
+
     # Observation-length column maps in knot/ids order (Nit 1)
     knot_ids = np.array([10, 20, 30])
     obs_zcol = np.array([2, 0, 1, 0, 2, 1])
@@ -128,6 +144,56 @@ def test_rw2_infers_positions_from_group_ids():
         n_knots=3,
     )
     np.testing.assert_allclose(mapped, [100.0, 200.0, 300.0])
+
+
+def test_readme_quickstart_dict_graph_and_cyclic_rw():
+    """Verify dict adjacency graphs (1-based and 0-based) and cyclic rw1/rw2 fits."""
+    adj_1 = {1: [2, 3], 2: [1, 4], 3: [1, 4], 4: [2, 3]}
+    adj_0 = {0: [1, 2], 1: [0, 3], 2: [0, 3], 3: [1, 2]}
+    data_1 = {
+        "y": np.array([2, 5, 3, 8]),
+        "x": np.array([0.1, -0.4, 0.5, 1.2]),
+        "region": np.array([1, 2, 3, 4]),
+        "graph": adj_1,
+    }
+    data_0 = {**data_1, "graph": adj_0}
+
+    res_1 = inla(
+        "y ~ x + f(region, model='besag', graph='graph', scale_model=True)",
+        data=data_1,
+        family="poisson",
+        control_compute={"dic": True, "waic": True},
+        deterministic=True,
+    )
+    res_0 = inla(
+        "y ~ x + f(region, model='besag', graph='graph', scale_model=True)",
+        data=data_0,
+        family="poisson",
+        control_compute={"dic": True, "waic": True},
+        deterministic=True,
+    )
+    assert np.isfinite(res_1.marginal_log_lik)
+    assert res_1.dic is not None and np.isfinite(res_1.dic)
+    assert res_1.waic is not None and np.isfinite(res_1.waic)
+    np.testing.assert_allclose(
+        res_1.summary_random["region"]["mean"],
+        res_0.summary_random["region"]["mean"],
+        atol=1e-10,
+    )
+
+    # Cyclic RW1 and RW2 with uneven IDs use circulant precision and sum-to-zero constraint
+    t_uneven = np.array([0.0, 0.5, 1.2, 2.5, 4.0, 6.0, 8.5, 10.0])
+    y_cyc = np.sin(np.linspace(0, 2 * np.pi, len(t_uneven), endpoint=False))
+    for mod in ("rw1", "rw2"):
+        res_cyc = inla(
+            f"y ~ -1 + f(t, model='{mod}', cyclic=True, scale_model=True)",
+            data={"y": y_cyc, "t": t_uneven},
+            family="gaussian",
+            deterministic=True,
+        )
+        assert np.isfinite(res_cyc.marginal_log_lik)
+        mean_est = np.asarray(res_cyc.summary_random["t"]["mean"], dtype=float)
+        assert abs(float(np.sum(mean_est))) < 1e-6
 
 
 def test_rw2_equal_spacing_q_differs_from_irregular_medians():

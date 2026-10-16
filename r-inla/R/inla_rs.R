@@ -606,13 +606,16 @@ inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = F
 
 # Classic R-INLA rw1/rw2 uses knot locations for irregular precision (Lindgren & Rue 2008),
 # reducing to discrete differences when unit spaced.
-.inla_rs_effect_positions <- function(model, raw_pos, data, ids, zcol = NULL, n_obs = 0L, n_knots = 0L, cyclic = FALSE) {
+.inla_rs_effect_positions <- function(model, raw_pos, data, ids, zcol = NULL, n_obs = 0L, n_knots = 0L, group_model = NULL, cyclic = FALSE) {
   if (!is.null(raw_pos)) {
     if (is.character(raw_pos) && length(raw_pos) == 1L) {
       if (is.null(data[[raw_pos]])) {
         stop("positions column '", raw_pos, "' not found in data", call. = FALSE)
       }
       col <- as.numeric(data[[raw_pos]])
+      if (!all(is.finite(col))) {
+        stop("positions column '", raw_pos, "' contains non-finite values", call. = FALSE)
+      }
       if (length(col) == n_knots) {
         return(col)
       }
@@ -631,17 +634,19 @@ inla_rs_group <- function(x, n = 25, method = c("cut", "quantile"), idx.only = F
         }
         return(out_p)
       }
-      u <- sort(unique(col[is.finite(col)]))
-      if (length(u) == n_knots) {
-        return(u)
-      }
       stop("positions column '", raw_pos, "' has length ", length(col), ", expected ", n_knots, " knots or ", n_obs, " observations", call. = FALSE)
     }
     arr <- as.numeric(raw_pos)
+    if (!all(is.finite(arr))) {
+      stop("positions vector contains non-finite values", call. = FALSE)
+    }
     if (length(arr) == n_knots) {
       return(arr)
     }
     stop("positions vector has length ", length(arr), ", expected ", n_knots, " knots", call. = FALSE)
+  }
+  if (!is.null(group_model)) {
+    return(numeric(0))
   }
   if (isTRUE(cyclic) && tolower(as.character(model)[1]) %in% c("rw1", "rw2")) {
     return(numeric(0))
@@ -903,7 +908,10 @@ inla_rs_rgeneric_define <- function(n, Q, n_theta = 1L, initial = NULL, log.prio
   if (!requireNamespace("Matrix", quietly = TRUE)) {
     stop("Package 'Matrix' is required for rgeneric Q callbacks", call. = FALSE)
   }
-  methods::as(q, "dgCMatrix")
+  tryCatch(
+    methods::as(methods::as(methods::as(q, "dMatrix"), "generalMatrix"), "CsparseMatrix"),
+    error = function(e) methods::as(q, "dgCMatrix")
+  )
 }
 
 # Coerce host Q to dgCMatrix so extendr can read CSC slots on every θ evaluation.
@@ -1344,10 +1352,12 @@ inla_rs <- function(
     if (is.na(order) || is.null(order)) order <- 0L
     nrow_i <- 0L
     ncol_i <- 0L
-    cyclic_i <- 0L
+    cyclic_i <- if (isTRUE(fs$args$cyclic)) 1L else 0L
     season_i <- 0L
     layout <- "simple"
     mesh_store <- NULL
+    zcol <- NULL
+    main_col <- NULL
     if (identical(model, "crw2") && !is.null(fs$args$layout)) {
       layout <- tolower(as.character(fs$args$layout)[1])
       if (!(layout %in% c("simple", "pairs", "block"))) {
@@ -1718,15 +1728,18 @@ inla_rs <- function(
       rgeneric_callbacks[[length(rgeneric_callbacks) + 1L]] <- NULL
     }
     ids <- effect_ids[[length(effect_ids)]]
-    n_knots <- if (identical(model, "crw2") && layout %in% c("pairs", "block")) {
+    n_knots <- if (!is.null(group_model)) {
+      as.integer(n_main)
+    } else if (identical(model, "crw2") && layout %in% c("pairs", "block")) {
       as.integer(n_e / 2L)
     } else {
       n_e
     }
+    zcol_pos <- if (!is.null(group_model)) main_col else zcol
     pos <- .inla_rs_effect_positions(
       model, fs$args$positions, data, ids,
-      zcol = zcol, n_obs = n_obs, n_knots = n_knots,
-      cyclic = as.logical(cyclic_i)
+      zcol = zcol_pos, n_obs = n_obs, n_knots = n_knots,
+      group_model = group_model, cyclic = as.logical(cyclic_i)
     )
     if (length(pos) > 0L && all(is.finite(pos))) {
       effect_positions[[length(effect_positions) + 1L]] <- pos
